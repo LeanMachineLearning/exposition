@@ -332,7 +332,9 @@ private def mkDeclBlock (decl : DeclInfo) (repoUrl? : Option String)
     let hasDoc := !decl.docBlocks.isEmpty
     if !hasDoc then
       blocks := blocks.push (.para #[.emph #[.text "No docstring."]])
-    blocks := blocks.push (.para #[.bold #[.text "Statement"]])
+    if let some docstringBlock := decl.docstringBlock? then
+      blocks := blocks.push docstringBlock
+    blocks := blocks.push (.para #[.bold #[.text "Code"]])
     blocks := blocks.push (.code decl.displaySignature)
     if let some block := depListBlock typeDepLinks then
       blocks := blocks.push <| .other (Block.details { summary := s!"Type uses ({typeDepLinks.size})" }) #[block]

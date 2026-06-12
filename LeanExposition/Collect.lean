@@ -123,6 +123,7 @@ structure DeclInfo where
   deps : Array Name
   typeDeps : Array Name := #[]
   usedBy : Array Name := #[]
+  docstringBlock? : Option (Block Manual) := none
 deriving Repr
 
 /-- Exposed declarations grouped by Lean module. -/
@@ -577,6 +578,21 @@ def ppExprString (env : Environment) (e : Expr) : IO String := do
   let ctx : PPContext := { env := env, opts := {} }
   return toString (← ctx.runMetaM (Meta.ppExpr e))
 
+/-- Builds the same `Block.docstring` value that `{docstring name}` would produce inside
+a `#doc` page, by directly invoking Verso's signature/declaration-type computation. Returns
+`none` if this fails for the given declaration (e.g. unsupported declaration shapes). -/
+def mkDocstringBlock? (env : Environment) (name : Name) : IO (Option (Block Manual)) := do
+  let coreCtx : Core.Context := { fileName := "<exposition>", fileMap := default }
+  let act : MetaM (Block Manual) := do
+    let declType ← Block.Docstring.DeclType.ofName name
+    let sig ← (Signature.forName name : Elab.TermElabM Signature).run' {}
+    pure <| .other (Block.docstring name declType sig none #[]) #[]
+  try
+    let block ← (act.run' {}).toIO' coreCtx { env := env }
+    pure (some block)
+  catch _ =>
+    pure none
+
 /-- Reads SourceSnippet. -/
 def readSourceSnippet (src : SourceInfo) : IO String := do
   let text ← IO.FS.readFile src.absPath
@@ -984,6 +1000,9 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       | .defnInfo val => val.value.getUsedConstants
       | .thmInfo val => val.value.getUsedConstants
       | .inductInfo _ =>
+        if (getStructureInfo? env name).isNone then
+          #[]
+        else
         (getStructureFields env name).foldl (fun acc fieldName =>
           match getDefaultFnForField? env name fieldName with
           | some defaultFn =>
@@ -996,6 +1015,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       cs.foldl (fun acc dep => if dep != name && !acc.contains dep then acc.push dep else acc) #[]
     let typeDeps := dedup typeUsedConstants
     let deps := dedup (typeUsedConstants ++ valueUsedConstants)
+    let docstringBlock? ← mkDocstringBlock? env name
     let decl : DeclInfo := {
       name := name
       moduleName := moduleName
@@ -1010,6 +1030,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       hasSorry := hasSorryIn info
       deps := deps
       typeDeps := typeDeps
+      docstringBlock? := docstringBlock?
     }
     decls := decls.push decl
   pure decls
