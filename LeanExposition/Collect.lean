@@ -123,6 +123,7 @@ structure DeclInfo where
   deps : Array Name
   typeDeps : Array Name := #[]
   usedBy : Array Name := #[]
+  transDeps : Array Name := #[]
   docstringBlock? : Option (Block Manual) := none
 deriving Repr
 
@@ -338,9 +339,10 @@ def codeListParagraph (label : String) (items : Array String) : Option (Block Ma
       joinInlines entries #[.text " · "]
 
 /-- Helper for mkLinkParagraph. -/
-def mkLinkParagraph (sourceUrl? issueUrl? : Option String) : Option (Block Manual) :=
+def mkLinkParagraph (sourceUrl? issueUrl? detailsUrl? : Option String) : Option (Block Manual) :=
   let items :=
-    ([sourceUrl?.map fun url => .link #[.text "Source"] url,
+    ([detailsUrl?.map fun url => .link #[.text "Details"] url,
+      sourceUrl?.map fun url => .link #[.text "Source"] url,
       issueUrl?.map fun url => .link #[.text "Open Issue"] url].filterMap id)
   if items.isEmpty then
     none
@@ -921,6 +923,16 @@ def declHrefMap (decls : Array DeclInfo) : Std.HashMap Name String :=
     (fun acc decl => acc.insert decl.name (pathForPart decl.groupKey decl.modulePath decl.name))
     {}
 
+/-- Computes path ForDeclPage. -/
+def pathForDeclPage (groupKey modulePath : String) (declName : Name) : String :=
+  s!"{groupHrefOf groupKey}{moduleHrefOf modulePath}decl-{anchorIdOf declName}/"
+
+/-- Maps each declaration name to its dedicated detail page. -/
+def declPageHrefMap (decls : Array DeclInfo) : Std.HashMap Name String :=
+  decls.foldl
+    (fun acc decl => acc.insert decl.name (pathForDeclPage decl.groupKey decl.modulePath decl.name))
+    {}
+
 /-- Helper for runCoreIO. -/
 def runCoreIO {α : Type} (env : Environment) (x : CoreM α) : IO α := do
   x.toIO'
@@ -1049,6 +1061,28 @@ def attachReverseDeps (decls : Array DeclInfo) : Array DeclInfo :=
         acc)
     {}
   decls.map fun decl => { decl with usedBy := (rev.getD decl.name #[]).qsort Name.lt }
+
+/-- Computes the set of declarations reachable from `start` via `depsMap`. -/
+partial def transitiveClosure (depsMap : Std.HashMap Name (Array Name)) (start : Array Name) :
+    Std.HashSet Name :=
+  go {} start.toList
+where
+  go (visited : Std.HashSet Name) : List Name → Std.HashSet Name
+    | [] => visited
+    | n :: rest =>
+      if visited.contains n then
+        go visited rest
+      else
+        go (visited.insert n) ((depsMap.getD n #[]).toList ++ rest)
+
+/-- Adds the transitive closure of `deps` (all declarations reachable, recursively) to each
+declaration as `transDeps`. -/
+def attachTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
+  let depsMap : Std.HashMap Name (Array Name) :=
+    decls.foldl (fun acc decl => acc.insert decl.name decl.deps) {}
+  decls.map fun decl =>
+    let closure := transitiveClosure depsMap decl.deps
+    { decl with transDeps := (closure.toArray.filter (· != decl.name)).qsort Name.lt }
 
 /-- Marks declarations that transitively depend on any `sorry`. -/
 def attachDependsOnSorry (decls : Array DeclInfo) : Array DeclInfo :=

@@ -200,7 +200,7 @@ private def renderConfig (hasTfb : Bool) : RenderConfig :=
     emitTeX := false
     emitHtmlSingle := .no
     emitHtmlMulti := .immediately
-    htmlDepth := 2
+    htmlDepth := 3
     rootTocDepth := some 1
     sectionTocDepth := some 1
     extraCss := [customCss]
@@ -318,10 +318,11 @@ private def mkTrustedBaseIndexBlocks (groups : Array GroupInfo) : Array (Block M
 
 /-- Renders one declaration card with docs, statement, links, and dependencies. -/
 private def mkDeclBlock (decl : DeclInfo) (repoUrl? : Option String)
-    (declHrefs : Std.HashMap Name String) : Block Manual :=
+    (declHrefs declPageHrefs : Std.HashMap Name String) : Block Manual :=
   Id.run do
     let issueUrl := issueUrlOf repoUrl? decl.name decl.moduleName decl.source? decl.hasSorry
     let sourceUrl := sourceUrlOf repoUrl? decl.source?
+    let detailsUrl := declPageHrefs.get? decl.name
     let mkLinks (deps : Array Name) := deps.filterMap fun dep =>
       declHrefs.get? dep |>.map fun href => { label := dep.getString!, href? := some href }
     let typeDepLinks := mkLinks decl.typeDeps
@@ -342,7 +343,7 @@ private def mkDeclBlock (decl : DeclInfo) (repoUrl? : Option String)
       blocks := blocks.push <| .other (Block.details { summary := s!"Body uses ({proofDepLinks.size})" }) #[block]
     if let some block := depListBlock usedByLinks then
       blocks := blocks.push <| .other (Block.details { summary := s!"Used by ({usedByLinks.size})" }) #[block]
-    if let some block := mkLinkParagraph sourceUrl issueUrl then
+    if let some block := mkLinkParagraph sourceUrl issueUrl detailsUrl then
       blocks := blocks.push block
     if let some proof := decl.proofText? then
       blocks := blocks.push <| .other (Block.details { summary := "Proof" }) #[.code proof]
@@ -358,9 +359,44 @@ private def mkDeclBlock (decl : DeclInfo) (repoUrl? : Option String)
     }
     .other (Block.declCard cardData) blocks
 
+/-- Builds a dedicated detail page for one declaration, listing its direct and transitive
+dependencies. -/
+private def mkDeclPart (decl : DeclInfo) (declPageHrefs : Std.HashMap Name String) : Part Manual :=
+  Id.run do
+  let mkLinks (deps : Array Name) := deps.filterMap fun dep =>
+    declPageHrefs.get? dep |>.map fun href => { label := dep.getString!, href? := some href }
+  let typeDepLinks := mkLinks decl.typeDeps
+  let proofDepLinks := mkLinks <| decl.deps.filter (!decl.typeDeps.contains ·)
+  let usedByLinks := mkLinks decl.usedBy
+  let transDepLinks := mkLinks decl.transDeps
+  let mut blocks : Array (Block Manual) := #[]
+  if let some docstringBlock := decl.docstringBlock? then
+    blocks := blocks.push docstringBlock
+  blocks := blocks.push (.para #[.bold #[.text "Code"]])
+  blocks := blocks.push (.code decl.displaySignature)
+  if let some block := depListBlock typeDepLinks then
+    blocks := blocks.push <| .other (Block.details { summary := s!"Type uses ({typeDepLinks.size})" }) #[block]
+  if let some block := depListBlock proofDepLinks then
+    blocks := blocks.push <| .other (Block.details { summary := s!"Body uses ({proofDepLinks.size})" }) #[block]
+  if let some block := depListBlock usedByLinks then
+    blocks := blocks.push <| .other (Block.details { summary := s!"Used by ({usedByLinks.size})" }) #[block]
+  if let some block := depListBlock transDepLinks then
+    blocks := blocks.push <| .other (Block.details { summary := s!"All dependencies, transitively ({transDepLinks.size})" }) #[block]
+  return {
+    title := #[.code decl.name.toString]
+    titleString := decl.name.toString
+    metadata := some {
+      file := some s!"decl-{anchorIdOf decl.name}"
+      shortTitle := some decl.name.getString!
+      number := false
+    }
+    content := blocks
+    subParts := #[]
+  }
+
 /-- Builds a module page from its declarations. -/
 private def mkModulePart (moduleInfo : ModuleInfo) (repoUrl? : Option String)
-    (declHrefs : Std.HashMap Name String) : Part Manual :=
+    (declHrefs declPageHrefs : Std.HashMap Name String) : Part Manual :=
   {
     title := #[.text moduleInfo.path]
     titleString := moduleInfo.path
@@ -375,13 +411,13 @@ private def mkModulePart (moduleInfo : ModuleInfo) (repoUrl? : Option String)
         .code moduleInfo.name.toString,
         .text s!" contains {moduleInfo.decls.size} exposed declarations."
       ]
-    ] ++ moduleInfo.decls.map (fun decl => mkDeclBlock decl repoUrl? declHrefs)
-    subParts := #[]
+    ] ++ moduleInfo.decls.map (fun decl => mkDeclBlock decl repoUrl? declHrefs declPageHrefs)
+    subParts := moduleInfo.decls.map (fun decl => mkDeclPart decl declPageHrefs)
   }
 
 /-- Builds a trusted-base module page from declarations in that module. -/
 private def mkTrustedBaseModulePart (moduleInfo : ModuleInfo) (repoUrl? : Option String)
-    (declHrefs : Std.HashMap Name String) : Part Manual :=
+    (declHrefs declPageHrefs : Std.HashMap Name String) : Part Manual :=
   {
     title := #[.text moduleInfo.path]
     titleString := moduleInfo.path
@@ -396,13 +432,13 @@ private def mkTrustedBaseModulePart (moduleInfo : ModuleInfo) (repoUrl? : Option
         .code moduleInfo.name.toString,
         .text s!" contributes {moduleInfo.decls.size} declarations to the trusted formalization base."
       ]
-    ] ++ moduleInfo.decls.map (fun decl => mkDeclBlock decl repoUrl? declHrefs)
+    ] ++ moduleInfo.decls.map (fun decl => mkDeclBlock decl repoUrl? declHrefs declPageHrefs)
     subParts := #[]
   }
 
 /-- Builds a chapter page that contains regular module pages. -/
 private def mkGroupPart (group : GroupInfo) (repoUrl? : Option String)
-    (declHrefs : Std.HashMap Name String) : Part Manual :=
+    (declHrefs declPageHrefs : Std.HashMap Name String) : Part Manual :=
   let title := humanizeWord group.key
   {
     title := #[.text title]
@@ -415,12 +451,12 @@ private def mkGroupPart (group : GroupInfo) (repoUrl? : Option String)
     content := #[
       .para #[.text s!"Modules in the {title} slice are grouped from the first path component after the project root."]
     ]
-    subParts := group.modules.map fun moduleInfo => mkModulePart moduleInfo repoUrl? declHrefs
+    subParts := group.modules.map fun moduleInfo => mkModulePart moduleInfo repoUrl? declHrefs declPageHrefs
   }
 
 /-- Builds a chapter page for the trusted-base view. -/
 private def mkTrustedBaseGroupPart (group : GroupInfo) (repoUrl? : Option String)
-    (declHrefs : Std.HashMap Name String) : Part Manual :=
+    (declHrefs declPageHrefs : Std.HashMap Name String) : Part Manual :=
   let title := humanizeWord group.key
   {
     title := #[.text title]
@@ -433,12 +469,12 @@ private def mkTrustedBaseGroupPart (group : GroupInfo) (repoUrl? : Option String
     content := #[
       .para #[.text s!"Modules in the {title} slice that contribute declarations to the trusted formalization base."]
     ]
-    subParts := group.modules.map fun moduleInfo => mkTrustedBaseModulePart moduleInfo repoUrl? declHrefs
+    subParts := group.modules.map fun moduleInfo => mkTrustedBaseModulePart moduleInfo repoUrl? declHrefs declPageHrefs
   }
 
 /-- Builds the top-level trusted-base section and its chapter subpages. -/
 private def mkTrustedBasePart (groups : Array GroupInfo) (repoUrl? : Option String)
-    (declHrefs : Std.HashMap Name String) (targetBlocks : Array (Block Manual)) : Part Manual :=
+    (declHrefs declPageHrefs : Std.HashMap Name String) (targetBlocks : Array (Block Manual)) : Part Manual :=
   let declCount := countDecls groups
   let moduleCount := groups.foldl (fun n group => n + group.modules.size) 0
   let intro :=
@@ -462,7 +498,7 @@ private def mkTrustedBasePart (groups : Array GroupInfo) (repoUrl? : Option Stri
       ++ intro
       ++ mkTrustedBaseIndexBlocks groups
       ++ mkDashboardBlocks groups
-    subParts := groups.map fun group => mkTrustedBaseGroupPart group repoUrl? declHrefs
+    subParts := groups.map fun group => mkTrustedBaseGroupPart group repoUrl? declHrefs declPageHrefs
   }
 
 /-- Builds the interactive dependency graph page and graph payload. -/
@@ -500,7 +536,7 @@ private def mkGraphPart (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
 
 /-- Builds the root site part with chapter pages and utility sections. -/
 private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo)
-    (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String)
+    (decls : Array DeclInfo) (declHrefs declPageHrefs : Std.HashMap Name String)
     (introBlocks : Array (Block Manual)) (readerGuideBlocks : Array (Block Manual))
     (extraParts : Array (Part Manual)) : Part Manual :=
   let title := cfg.siteTitle.getD s!"{rootPrefix} exposition"
@@ -516,7 +552,7 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
       ++ introBlocks
       ++ readerGuideBlocks
       ++ mkDashboardBlocks groups
-    subParts := (groups.map fun group => mkGroupPart group cfg.repoUrl declHrefs)
+    subParts := (groups.map fun group => mkGroupPart group cfg.repoUrl declHrefs declPageHrefs)
       ++ extraParts
       ++ #[mkGraphPart decls declHrefs]
   }
@@ -585,22 +621,23 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   else
     IO.println s!"Collected {decls.size} declarations under {rootPrefix}"
   let tfbInfo ← loadTrustedBaseInfo cfg rootPrefix
-  let decls := decls |> attachReverseDeps |> attachDependsOnSorry |> attachTrustedBaseFlags tfbInfo.names
+  let decls := decls |> attachReverseDeps |> attachTransitiveDeps |> attachDependsOnSorry |> attachTrustedBaseFlags tfbInfo.names
   let order ← moduleOrderMap cfg.projectDir rootPrefix
   let modules := buildModules rootPrefix order decls
   let groups := buildGroups order modules
   let declHrefs := declHrefMap decls
+  let declPageHrefs := declPageHrefMap decls
   let (introBlocks, extraParts) ← loadProjectContextParts cfg.projectDir cfg.repoUrl
   let tfbGroups := buildGroups order <| buildModules rootPrefix order <| decls.filter (·.inTfb)
   let targetBlocks ← loadTrustedBaseTargetBlocks cfg.projectDir cfg.repoUrl tfbInfo
   let hasContext := extraParts.any fun part => part.metadata.bind PartMetadata.file == some "context"
   let extraParts :=
     if tfbInfo.comparator?.isSome then
-      extraParts.push <| mkTrustedBasePart tfbGroups cfg.repoUrl declHrefs targetBlocks
+      extraParts.push <| mkTrustedBasePart tfbGroups cfg.repoUrl declHrefs declPageHrefs targetBlocks
     else
       extraParts
   let readerGuideBlocks := mkReaderGuideBlocks hasContext tfbInfo.comparator?.isSome
-  let root := mkRootPart cfg rootPrefix groups decls declHrefs introBlocks readerGuideBlocks extraParts
+  let root := mkRootPart cfg rootPrefix groups decls declHrefs declPageHrefs introBlocks readerGuideBlocks extraParts
   let versoArgs :=
     match cfg.outputDir with
     | some out => ["--output", out]
