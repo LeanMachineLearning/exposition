@@ -225,7 +225,9 @@ body {
   color: var(--site-accent);
 }
 
-body.hide-theorems [data-decl-kind=\"Theorem\"] {
+body.hide-definitions [data-decl-group=\"definition\"],
+body.hide-lemmas [data-decl-group=\"lemma\"],
+body.hide-theorems [data-decl-group=\"theorem\"] {
   display: none;
 }
 

@@ -152,8 +152,12 @@ block_extension Block.declCard (_payload : DeclCardData) where
       else payload.kindLabel
     let cardClass := if isMainTheorem then "decl-card decl-card--theorem" else "decl-card"
     let labelClass := if isMainTheorem then "decl-card-label decl-card-label--theorem" else "decl-card-label"
+    let declGroup :=
+      if isMainTheorem then "theorem"
+      else if payload.kindLabel == "Theorem" || payload.kindLabel == "Instance" then "lemma"
+      else "definition"
     pure {{
-      <section class="decl-section" data-decl-kind={{payload.kindLabel}}>
+      <section class="decl-section" data-decl-kind={{payload.kindLabel}} data-decl-group={{declGroup}}>
         <h2 id={{payload.anchorId}} class="decl-heading">
           <code>{{payload.shortName}}</code>
           <a class="decl-permalink" href={{s!"#{payload.anchorId}"}} title="Permalink">"🔗"</a>

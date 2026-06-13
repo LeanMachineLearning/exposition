@@ -74,39 +74,48 @@ document.addEventListener('DOMContentLoaded', () => {
   const container = toc.querySelector('.first') || toc;
   const beforeNode = container.querySelector('.split-tocs');
 
-  const hideTheoremsKey = 'lean-exposition:hide-theorems';
-  const hideTheoremsButton = document.createElement('button');
-  hideTheoremsButton.type = 'button';
-  hideTheoremsButton.className = 'site-utility-button';
-
-  const applyHideTheorems = hide => {
-    document.body.classList.toggle('hide-theorems', hide);
-    hideTheoremsButton.textContent = hide ? 'Show Theorems' : 'Hide Theorems';
-    hideTheoremsButton.setAttribute('aria-pressed', hide ? 'true' : 'false');
-  };
-
-  let hideTheorems = false;
-  try {
-    hideTheorems = window.localStorage.getItem(hideTheoremsKey) === 'true';
-  } catch (_err) {
-    hideTheorems = false;
-  }
-  applyHideTheorems(hideTheorems);
-
-  hideTheoremsButton.addEventListener('click', () => {
-    hideTheorems = !document.body.classList.contains('hide-theorems');
-    try {
-      window.localStorage.setItem(hideTheoremsKey, String(hideTheorems));
-    } catch (_err) {
-    }
-    applyHideTheorems(hideTheorems);
-  });
+  const visibilityToggles = [
+    { group: 'definitions', cssClass: 'hide-definitions', label: 'Definitions' },
+    { group: 'lemmas', cssClass: 'hide-lemmas', label: 'Lemmas' },
+    { group: 'theorems', cssClass: 'hide-theorems', label: 'Theorems' }
+  ];
 
   const utilityNav = toc.querySelector('.site-utility-nav');
-  if (utilityNav) {
-    utilityNav.appendChild(hideTheoremsButton);
-  } else {
-    container.insertBefore(hideTheoremsButton, beforeNode || null);
+
+  for (const toggle of visibilityToggles) {
+    const key = `lean-exposition:${toggle.cssClass}`;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'site-utility-button';
+
+    const applyHide = hide => {
+      document.body.classList.toggle(toggle.cssClass, hide);
+      button.textContent = hide ? `Show ${toggle.label}` : `Hide ${toggle.label}`;
+      button.setAttribute('aria-pressed', hide ? 'true' : 'false');
+    };
+
+    let hide = false;
+    try {
+      hide = window.localStorage.getItem(key) === 'true';
+    } catch (_err) {
+      hide = false;
+    }
+    applyHide(hide);
+
+    button.addEventListener('click', () => {
+      hide = !document.body.classList.contains(toggle.cssClass);
+      try {
+        window.localStorage.setItem(key, String(hide));
+      } catch (_err) {
+      }
+      applyHide(hide);
+    });
+
+    if (utilityNav) {
+      utilityNav.appendChild(button);
+    } else {
+      container.insertBefore(button, beforeNode || null);
+    }
   }
 });
 "
