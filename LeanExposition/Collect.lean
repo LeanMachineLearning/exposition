@@ -26,8 +26,6 @@ structure Cli where
   repoUrl : Option String := none
   siteTitle : Option String := none
   outputDir : Option String := none
-  comparatorConfig : Option System.FilePath := none
-  tfbExe : String := "extractDeps"
   excludeLibs : Array Name := #[]
 deriving Repr
 
@@ -119,7 +117,6 @@ structure DeclInfo where
   source? : Option SourceInfo
   hasSorry : Bool
   dependsOnSorry : Bool := false
-  inTfb : Bool := false
   deps : Array Name
   typeDeps : Array Name := #[]
   usedBy : Array Name := #[]
@@ -147,30 +144,6 @@ structure MarkdownSection where
   body : String
 deriving Repr
 
-/-- Comparator-driven trusted-base configuration loaded from JSON. -/
-structure ComparatorConfigInfo where
-  challengeModule : String
-  solutionModule : String
-  theoremNames : Array Name
-  permittedAxioms : Array String
-  enableNanoda : Bool
-deriving Repr
-
-/-- Trusted-base closure and comparator availability information. -/
-structure TrustedBaseInfo where
-  names : Std.HashSet Name := {}
-  comparator? : Option ComparatorConfigInfo := none
-  comparatorInstalled : Bool := false
-deriving Repr
-
-/-- Data container for TargetStatementInfo. -/
-structure TargetStatementInfo where
-  theoremName : Name
-  relPath : String
-  line? : Option Nat := none
-  statement? : Option String := none
-deriving Repr
-
 /-- Command-line usage text shown for invalid arguments. -/
 def usage : String :=
   String.intercalate "\n" [
@@ -182,8 +155,6 @@ def usage : String :=
     "  --repo-url URL       GitHub repo URL used for issue/source links",
     "  --title TITLE        Site title override",
     "  --output DIR         Output directory passed to Verso",
-    "  --comparator-config  Comparator config file relative to the target project",
-    "  --tfb-exe NAME       Lake executable used to compute the trusted-base closure",
     "  --exclude-lib NAME   Exclude a root library when importing the target project",
   ]
 
@@ -205,12 +176,6 @@ def parseArgs : List String → Except String Cli
   | "--output" :: out :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with outputDir := some out }
-  | "--comparator-config" :: path :: rest => do
-      let cfg ← parseArgs rest
-      pure { cfg with comparatorConfig := some path }
-  | "--tfb-exe" :: exe :: rest => do
-      let cfg ← parseArgs rest
-      pure { cfg with tfbExe := exe }
   | "--exclude-lib" :: lib :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with excludeLibs := cfg.excludeLibs.push lib.toName }
@@ -351,8 +316,18 @@ def mkLinkParagraph (sourceUrl? issueUrl? detailsUrl? : Option String) : Option 
     some <| .para <|
       #[.bold #[.text "Actions: "]] ++ joinInlines entries #[.text " · "]
 
+/-- Drops lines that consist solely of a raw HTML tag (e.g. `<div align="center">` or `</div>`),
+since `MD_FLAG_NOHTML` causes MD4Lean to render such lines as literal text instead of ignoring
+them. -/
+def stripHtmlOnlyLines (doc : String) : String :=
+  let isHtmlOnlyLine (line : String) : Bool :=
+    let trimmed := line.trimAscii
+    trimmed.startsWith "<" && trimmed.endsWith ">" && !trimmed.startsWith "<!--"
+  String.intercalate "\n" ((doc.splitOn "\n").filter (!isHtmlOnlyLine ·))
+
 /-- Converts markdown text into `Block Manual` nodes. -/
 def markdownToBlocks (doc : String) : Array (Block Manual) :=
+  let doc := stripHtmlOnlyLines doc
   match MD4Lean.parse doc (MD4Lean.MD_DIALECT_GITHUB ||| MD4Lean.MD_FLAG_LATEXMATHSPANS ||| MD4Lean.MD_FLAG_NOHTML) with
   | none => #[.para #[.text doc]]
   | some parsed =>
@@ -410,170 +385,6 @@ def readFileIfExists (path : System.FilePath) : IO (Option String) := do
   if ← path.pathExists then
     return some (← IO.FS.readFile path)
   return none
-
-/-- Helper for extractDepsName?. -/
-def extractDepsName? (line : String) : Option Name :=
-  let trimmed := (String.trimAscii line).toString
-  if trimmed.startsWith "- `" then
-    let rest := (trimmed.drop 3).toString
-    match rest.splitOn "`" with
-    | name :: _ => if name.isEmpty then none else some name.toName
-    | [] => none
-  else
-    none
-
-/-- Loads and validates optional comparator configuration from JSON. -/
-def loadComparatorConfig? (projectDir : System.FilePath)
-    (configPath? : Option System.FilePath := none) : IO (Option ComparatorConfigInfo) := do
-  let cfgPath := projectDir / configPath?.getD "comparator.json"
-  let text? ← readFileIfExists cfgPath
-  match text? with
-  | none => return none
-  | some contents =>
-      match Json.parse contents with
-      | .error _ => pure none
-      | .ok json =>
-          let challenge? :=
-            match json.getObjValAs? String "challenge_module" with
-            | .ok value => some value
-            | .error _ => none
-          let solution? :=
-            match json.getObjValAs? String "solution_module" with
-            | .ok value => some value
-            | .error _ => none
-          let theoremNames? :=
-            match json.getObjValAs? (Array String) "theorem_names" with
-            | .ok value => some <| value.map String.toName
-            | .error _ => none
-          let permittedAxioms? :=
-            match json.getObjValAs? (Array String) "permitted_axioms" with
-            | .ok value => some value
-            | .error _ => none
-          let enableNanoda? :=
-            match json.getObjValAs? Bool "enable_nanoda" with
-            | .ok value => some value
-            | .error _ => none
-          match challenge?, solution?, theoremNames?, permittedAxioms?, enableNanoda? with
-          | some challengeModule, some solutionModule, some theoremNames, some permittedAxioms, some enableNanoda =>
-              pure <| some {
-                challengeModule
-                solutionModule
-                theoremNames
-                permittedAxioms
-                enableNanoda
-              }
-          | _, _, _, _, _ => pure none
-
-/-- Checks whether ComparatorInstalled. -/
-def isComparatorInstalled : IO Bool := do
-  let out ← IO.Process.output {
-    cmd := "which"
-    args := #["comparator"]
-  }
-  pure <| out.exitCode == 0
-
-/-- Computes module RelPathOfString. -/
-def moduleRelPathOfString (moduleName : String) : String :=
-  s!"{moduleName.replace "." "/"}.lean"
-
-/-- Finds DeclarationLine?. -/
-def findDeclarationLine? (lines : Array String) (shortName : String) : Option Nat :=
-  ((List.range lines.size).findSome? fun idx =>
-    let trimmed := (String.trimAscii lines[idx]!).toString
-    if trimmed.startsWith "theorem " && trimmed.contains shortName then
-      some (idx + 1)
-    else
-      none)
-
-/-- Loads theorem statement and source position from a challenge module. -/
-def loadTargetStatementInfo (projectDir : System.FilePath) (challengeModule : String)
-    (theoremName : Name) : IO TargetStatementInfo := do
-  let relPath := moduleRelPathOfString challengeModule
-  let filePath := projectDir / relPath
-  let some contents ← readFileIfExists filePath
-    | pure { theoremName, relPath }
-  let lines := (contents.splitOn "\n").toArray
-  let line? := findDeclarationLine? lines theoremName.getString!
-  let statement? :=
-    line?.bind fun line =>
-      let snippet := String.intercalate "\n" <| (lines.toList.drop (line - 1))
-      let head :=
-        match snippet.splitOn ":=" with
-        | first :: _ => (String.trimAscii first).toString
-        | [] => (String.trimAscii snippet).toString
-      if head.isEmpty then none else some head
-  pure {
-    theoremName
-    relPath
-    line?
-    statement?
-  }
-
-/-- Builds a repository URL for a target theorem source location. -/
-def targetSourceUrlOf (repoUrl? : Option String) (relPath : String) (line? : Option Nat) : Option String :=
-  match repoUrl? with
-  | none => none
-  | some repoUrl =>
-      some <| match line? with
-        | some line => s!"{repoUrl}/blob/main/{relPath}#L{line}"
-        | none => s!"{repoUrl}/blob/main/{relPath}"
-
-/-- Renders trusted-base target theorem summaries for the site. -/
-def loadTrustedBaseTargetBlocks (projectDir : System.FilePath) (repoUrl? : Option String)
-    (tfbInfo : TrustedBaseInfo) : IO (Array (Block Manual)) := do
-  match tfbInfo.comparator? with
-  | none => pure #[]
-  | some comparator =>
-      let mut blocks : Array (Block Manual) := #[]
-      for theoremName in comparator.theoremNames do
-        let info ← loadTargetStatementInfo projectDir comparator.challengeModule theoremName
-        blocks := blocks.push (.para #[.bold #[.text "Checked statement"]])
-        match info.statement? with
-        | some statement => blocks := blocks.push (.code statement)
-        | none => blocks := blocks.push (.para #[.code theoremName.toString])
-        let sourceLabel :=
-          match info.line? with
-          | some line => s!"{info.relPath}:{line}"
-          | none => info.relPath
-        let sourceInline :=
-          match targetSourceUrlOf repoUrl? info.relPath info.line? with
-          | some url => .link #[.text sourceLabel] url
-          | none => .code sourceLabel
-        blocks := blocks.push (.para #[.bold #[.text "Source: "], sourceInline])
-      pure blocks
-
-/-- Computes the trusted-base closure by running `lake exe extractDeps`. -/
-def computeTrustedBaseNames (projectDir : System.FilePath) (rootPrefix : Name)
-    (targets : Array Name) (tfbExe : String := "extractDeps") : IO (Std.HashSet Name) := do
-  if targets.isEmpty then
-    return {}
-  let mut names : Std.HashSet Name := {}
-  for target in targets do
-    let out ← IO.Process.output {
-      cmd := "lake"
-      args := #["exe", tfbExe, target.toString, rootPrefix.toString]
-      cwd := some projectDir
-    }
-    if out.exitCode != 0 then
-      return {}
-    for line in out.stdout.splitOn "\n" do
-      if let some dep := extractDepsName? line then
-        names := names.insert dep
-  pure names
-
-/-- Loads comparator config and trusted-base names into one record. -/
-def loadTrustedBaseInfo (cfg : Cli) (rootPrefix : Name) : IO TrustedBaseInfo := do
-  let comparator? ← loadComparatorConfig? cfg.projectDir cfg.comparatorConfig
-  let comparatorInstalled ← isComparatorInstalled
-  match comparator? with
-  | none => pure { comparatorInstalled := comparatorInstalled }
-  | some comparator =>
-      let names ← computeTrustedBaseNames cfg.projectDir rootPrefix comparator.theoremNames cfg.tfbExe
-      pure {
-        names
-        comparator? := some comparator
-        comparatorInstalled := comparatorInstalled
-      }
 
 /-- Pretty-prints ExprString. -/
 def ppExprString (env : Environment) (e : Expr) : IO String := do
@@ -913,21 +724,9 @@ def groupHrefOf (groupKey : String) : String :=
 def moduleHrefOf (modulePath : String) : String :=
   s!"module-{slugify modulePath}/"
 
-/-- Helper for trustedBaseGroupHrefOf. -/
-def trustedBaseGroupHrefOf (groupKey : String) : String :=
-  s!"tfb-chapter-{slugify groupKey}/"
-
-/-- Helper for trustedBaseModuleHrefOf. -/
-def trustedBaseModuleHrefOf (modulePath : String) : String :=
-  s!"tfb-module-{slugify modulePath}/"
-
 /-- Computes path ForPart. -/
 def pathForPart (groupKey modulePath : String) (declName : Name) : String :=
   s!"{groupHrefOf groupKey}{moduleHrefOf modulePath}#{anchorIdOf declName}"
-
-/-- Computes path ForTrustedBasePart. -/
-def pathForTrustedBasePart (groupKey modulePath : String) (declName : Name) : String :=
-  s!"{trustedBaseGroupHrefOf groupKey}{trustedBaseModuleHrefOf modulePath}#{anchorIdOf declName}"
 
 /-- Maps each declaration name to its generated page anchor path. -/
 def declHrefMap (decls : Array DeclInfo) : Std.HashMap Name String :=
@@ -988,9 +787,84 @@ def toSourceInfo? (projectDir : System.FilePath) (pkg : Lake.Package) (moduleNam
     endLine := ranges.range.endPos.line
   }
 
+/-- One-level "used constants" for a declaration's type (and, if `includeValue`, also its
+value/body), handling inductive constructor types and structure field-default functions: for
+inductives/structures, `info.type` alone does not mention constructor field types, so those are
+pulled in from the constructors' types and (for structures) field-default functions. -/
+def usedConstantsOf (env : Environment) (name : Name) (info : ConstantInfo)
+    (includeValue : Bool) : Array Name :=
+  let typeUsed :=
+    match info with
+    | .inductInfo val =>
+      val.ctors.foldl (fun acc ctorName =>
+        match env.find? ctorName with
+        | some ctorInfo => acc ++ ctorInfo.type.getUsedConstants
+        | none => acc) info.type.getUsedConstants
+    | _ => info.type.getUsedConstants
+  if !includeValue then
+    typeUsed
+  else
+    let valueUsed :=
+      match info with
+      | .defnInfo val => val.value.getUsedConstants
+      | .thmInfo val => val.value.getUsedConstants
+      | .inductInfo _ =>
+        if (getStructureInfo? env name).isNone then
+          #[]
+        else
+          (getStructureFields env name).foldl (fun acc fieldName =>
+            match getDefaultFnForField? env name fieldName with
+            | some defaultFn =>
+              match env.find? defaultFn >>= ConstantInfo.value? with
+              | some value => acc ++ value.getUsedConstants
+              | none => acc
+            | none => acc) #[]
+      | _ => #[]
+    typeUsed ++ valueUsed
+
+/-- Expands `start` by following constants that are project-local (share `rootPrefix`) but are
+not themselves exposed declarations — i.e. compiler-generated helpers such as `_proof_N`,
+`match_..`, or structure field-default functions — recursively pulling in whatever *they* depend
+on instead of stopping at their (uninformative) name. Exposed declarations and external
+(non-project) constants are kept as-is without further expansion.
+
+This mirrors the recursive dependency-collection idea from
+https://github.com/mattrobball/lean-informal/blob/main/Informal/Deps.lean, bounded to the
+project's own constants so it doesn't walk into upstream library internals. `cache` memoizes the
+one-level expansion of internal helpers across declarations. -/
+partial def expandThroughInternals (env : Environment) (rootPrefix : Name)
+    (exposed : Std.HashSet Name) (cache : Std.HashMap Name (Array Name)) (start : Array Name) :
+    Array Name × Std.HashMap Name (Array Name) :=
+  go cache {} #[] start.toList
+where
+  go (cache : Std.HashMap Name (Array Name)) (visited : Std.HashSet Name) (acc : Array Name) :
+      List Name → Array Name × Std.HashMap Name (Array Name)
+    | [] => (acc, cache)
+    | n :: rest =>
+      if visited.contains n then
+        go cache visited acc rest
+      else
+        let visited := visited.insert n
+        let isInternalHelper := !exposed.contains n && hasPrefixName n rootPrefix
+        if !isInternalHelper then
+          go cache visited (acc.push n) rest
+        else
+          match cache.get? n with
+          | some deps => go cache visited acc (rest ++ deps.toList)
+          | none =>
+            match env.find? n with
+            | none => go cache visited acc rest
+            | some info =>
+              let deps := usedConstantsOf env n info true
+              go (cache.insert n deps) visited acc (rest ++ deps.toList)
+
 /-- Collects all exposed declarations and computes their primary metadata. -/
 def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     (pkg : Lake.Package) (env : Environment) : IO (Array DeclInfo) := do
+  let exposed : Std.HashSet Name :=
+    env.constants.toList.foldl (fun acc (name, info) =>
+      if shouldExpose env rootPrefix name info then acc.insert name else acc) {}
+  let mut cache : Std.HashMap Name (Array Name) := {}
   let mut decls := #[]
   for (name, info) in env.constants.toList do
     let some moduleName := moduleNameOf env name | continue
@@ -1009,40 +883,18 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       match doc? with
       | some doc => markdownToBlocks doc
       | none => #[]
-    -- For inductives/structures, `info.type` is just the type former's type
-    -- (e.g. `Type` or `Foo → Type`) and does not mention field/argument types.
-    -- Those live in the constructors' types, so pull constants from there too.
-    let typeUsedConstants :=
-      match info with
-      | .inductInfo val =>
-        val.ctors.foldl (fun acc ctorName =>
-          match env.find? ctorName with
-          | some ctorInfo => acc ++ ctorInfo.type.getUsedConstants
-          | none => acc) info.type.getUsedConstants
-      | _ => info.type.getUsedConstants
-    -- Constants used in the definition's/proof's body, not just its type.
-    -- For structures/classes, field default values are auxiliary `_default`
-    -- definitions, not visible in the constructor's type, so pull them in too.
-    let valueUsedConstants :=
-      match info with
-      | .defnInfo val => val.value.getUsedConstants
-      | .thmInfo val => val.value.getUsedConstants
-      | .inductInfo _ =>
-        if (getStructureInfo? env name).isNone then
-          #[]
-        else
-        (getStructureFields env name).foldl (fun acc fieldName =>
-          match getDefaultFnForField? env name fieldName with
-          | some defaultFn =>
-            match env.find? defaultFn >>= ConstantInfo.value? with
-            | some value => acc ++ value.getUsedConstants
-            | none => acc
-          | none => acc) #[]
-      | _ => #[]
+    -- One-level constants from the type (and, separately, type+value), then expanded through
+    -- any project-local compiler-generated helpers (`_proof_N`, `match_..`, field defaults, ...)
+    -- so that dependencies hidden behind those helpers are surfaced too.
+    let typeUsedConstants := usedConstantsOf env name info false
+    let allUsedConstants := usedConstantsOf env name info true
+    let (typeExpanded, cache1) := expandThroughInternals env rootPrefix exposed cache typeUsedConstants
+    let (allExpanded, cache2) := expandThroughInternals env rootPrefix exposed cache1 allUsedConstants
+    cache := cache2
     let dedup (cs : Array Name) : Array Name :=
       cs.foldl (fun acc dep => if dep != name && !acc.contains dep then acc.push dep else acc) #[]
-    let typeDeps := dedup typeUsedConstants
-    let deps := dedup (typeUsedConstants ++ valueUsedConstants)
+    let typeDeps := dedup typeExpanded
+    let deps := dedup allExpanded
     let docstringBlock? ← mkDocstringBlock? env name
     let decl : DeclInfo := {
       name := name
@@ -1122,10 +974,6 @@ def attachDependsOnSorry (decls : Array DeclInfo) : Array DeclInfo :=
             marked := marked.insert decl.name
             changed := true
     return decls.map fun decl => { decl with dependsOnSorry := marked.contains decl.name }
-
-/-- Marks declarations that belong to the trusted-base closure. -/
-def attachTrustedBaseFlags (tfb : Std.HashSet Name) (decls : Array DeclInfo) : Array DeclInfo :=
-  decls.map fun decl => { decl with inTfb := tfb.contains decl.name }
 
 
 end LeanExposition

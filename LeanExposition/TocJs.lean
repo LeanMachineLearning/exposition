@@ -1,13 +1,7 @@
 namespace LeanExposition
 
-/-- JS for the TOC sidebar. The trusted-base utility link is only included
-when `hasTfb` is true, i.e. when a trusted-base page was generated. -/
-def tocJs (hasTfb : Bool) : String :=
-  let tfbEntry :=
-    if hasTfb then
-      "    { slug: 'trusted-base', label: 'TFB', href: 'trusted-base/' },\n"
-    else
-      ""
+/-- JS for the TOC sidebar. -/
+def tocJs : String :=
   "
 document.addEventListener('DOMContentLoaded', () => {
   const toc = document.getElementById('toc');
@@ -15,7 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const key = 'lean-exposition:toc-collapsed';
   const utilityLinks = [
     { slug: 'context', label: 'Overview', href: 'context/' },
-" ++ tfbEntry ++ "    { slug: 'graph', label: 'Graph', href: 'graph/' }
+    { slug: 'graph', label: 'Graph', href: 'graph/' }
   ];
   const button = document.createElement('button');
   button.type = 'button';

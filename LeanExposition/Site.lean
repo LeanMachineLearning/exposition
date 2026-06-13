@@ -138,7 +138,7 @@ block_extension Block.declCard (_payload : DeclCardData) where
     let tags :=
       payload.tags.map fun tag =>
         let className :=
-          if tag == "TFB" then "decl-card-tag tfb" else "decl-card-tag sorry"
+          if tag == "" then "decl-card-tag sorry" else "decl-card-tag sorry"
         {{<span class={{className}}>{{tag}}</span>}}
     let tagsHtml :=
       if payload.tags.isEmpty then
@@ -195,7 +195,7 @@ block_extension Block.graph (_payload : GraphData) where
     }}
 
 /-- Rendering configuration for the exposition site output. -/
-private def renderConfig (hasTfb : Bool) : RenderConfig :=
+private def renderConfig : RenderConfig :=
   {
     emitTeX := false
     emitHtmlSingle := .no
@@ -204,7 +204,7 @@ private def renderConfig (hasTfb : Bool) : RenderConfig :=
     rootTocDepth := some 1
     sectionTocDepth := some 1
     extraCss := [customCss]
-    extraJs := [graphJs, tocJs hasTfb]
+    extraJs := [graphJs, tocJs]
     extraHead := #[
       Html.tag "script" #[("src", "https://d3js.org/d3.v7.min.js")] .empty
     ]
@@ -213,11 +213,6 @@ private def renderConfig (hasTfb : Bool) : RenderConfig :=
 /-- Counts declarations that contain `sorry`. -/
 private def countSorries (decls : Array DeclInfo) : Nat :=
   decls.foldl (fun n decl => n + if decl.hasSorry then 1 else 0) 0
-
-/-- Counts total declarations across all groups/modules. -/
-private def countDecls (groups : Array GroupInfo) : Nat :=
-  groups.foldl (fun n group =>
-    n + group.modules.foldl (fun inner modInfo => inner + modInfo.decls.size) 0) 0
 
 /-- Builds dashboard summary blocks for chapter and module progress. -/
 private def mkDashboardBlocks (groups : Array GroupInfo) : Array (Block Manual) :=
@@ -239,8 +234,8 @@ private def mkDashboardBlocks (groups : Array GroupInfo) : Array (Block Manual) 
     acc ++ #[intro, .ul items]
   ) #[]
 
-/-- Builds the reader-guide section linking to overview, TFB, and graph pages. -/
-private def mkReaderGuideBlocks (hasContext hasTfb : Bool) : Array (Block Manual) :=
+/-- Builds the reader-guide section linking to overview and graph pages. -/
+private def mkReaderGuideBlocks (hasContext : Bool) : Array (Block Manual) :=
   let contextItems :=
     if hasContext then
       #[Verso.Doc.ListItem.mk #[
@@ -251,23 +246,13 @@ private def mkReaderGuideBlocks (hasContext hasTfb : Bool) : Array (Block Manual
       ]]
     else
       #[]
-  let tfbItems :=
-    if hasTfb then
-      #[Verso.Doc.ListItem.mk #[
-        .para #[
-          .bold #[.link #[.text "Trusted Formalization Base"] "trusted-base/"],
-          .text " shows the declarations a reader must trust for the comparator-facing theorem."
-        ]
-      ]]
-    else
-      #[]
   let graphItems := #[Verso.Doc.ListItem.mk #[
     .para #[
       .bold #[.link #[.text "Dependency Graph"] "graph/"],
       .text " provides the interactive dependency view."
     ]
   ]]
-  let items := contextItems ++ tfbItems ++ graphItems
+  let items := contextItems ++ graphItems
   if items.isEmpty then
     #[]
   else
@@ -275,46 +260,6 @@ private def mkReaderGuideBlocks (hasContext hasTfb : Bool) : Array (Block Manual
       .para #[.bold #[.text "Reader guides"]],
       .ul items
     ]
-
-/-- Builds an index view for trusted-base declarations grouped by chapter/module. -/
-private def mkTrustedBaseIndexBlocks (groups : Array GroupInfo) : Array (Block Manual) :=
-  if groups.isEmpty then
-    #[]
-  else
-    #[.para #[.bold #[.text "Browse the trusted base by chapter."]]]
-    ++ groups.foldl (fun acc group =>
-      let groupTotal := group.modules.foldl (fun n modInfo => n + modInfo.decls.size) 0
-      let moduleItems := group.modules.map fun modInfo =>
-        let declLinks := modInfo.decls.map fun decl =>
-          { label := decl.name.getString!
-            href? := some <| pathForTrustedBasePart group.key modInfo.path decl.name }
-        let linkBlock? :=
-          if declLinks.isEmpty then
-            none
-          else
-            let entries := declLinks.toList.map fun link => #[mkCodeLink link]
-            some <| .para <| joinInlines entries #[.text " · "]
-        let blocks : Array (Block Manual) := #[
-          .para #[
-            .bold #[.link #[.code modInfo.path] s!"{trustedBaseGroupHrefOf group.key}{trustedBaseModuleHrefOf modInfo.path}"],
-            .text s!" ({modInfo.decls.size} declarations)"
-          ]
-        ]
-        let blocks :=
-          match linkBlock? with
-          | some linkBlock => blocks.push linkBlock
-          | none => blocks
-        Verso.Doc.ListItem.mk blocks
-      acc.push <| .other (Block.details {
-        summary := s!"{humanizeWord group.key} ({groupTotal} declarations)"
-      }) #[
-        .para #[
-          .text "Chapter page: ",
-          .link #[.text <| humanizeWord group.key] (trustedBaseGroupHrefOf group.key)
-        ],
-        .ul moduleItems
-      ]
-    ) #[]
 
 /-- Renders one declaration card with docs, statement, links, and dependencies. -/
 private def mkDeclBlock (decl : DeclInfo) (repoUrl? : Option String)
@@ -353,8 +298,7 @@ private def mkDeclBlock (decl : DeclInfo) (repoUrl? : Option String)
       kindLabel := decl.kind.label
       fullName := decl.name.toString
       tags := #[
-        if decl.dependsOnSorry then some "depends transitively on sorry" else none,
-        if decl.inTfb then some "TFB" else none
+        if decl.dependsOnSorry then some "depends transitively on sorry" else none
       ].filterMap id
     }
     .other (Block.declCard cardData) blocks
@@ -437,27 +381,6 @@ private def mkModulePart (moduleInfo : ModuleInfo) (repoUrl? : Option String)
     subParts := moduleInfo.decls.map (fun decl => mkDeclPart decl repoUrl? declByName declHrefs declPageHrefs)
   }
 
-/-- Builds a trusted-base module page from declarations in that module. -/
-private def mkTrustedBaseModulePart (moduleInfo : ModuleInfo) (repoUrl? : Option String)
-    (declHrefs declPageHrefs : Std.HashMap Name String) : Part Manual :=
-  {
-    title := #[.text moduleInfo.path]
-    titleString := moduleInfo.path
-    metadata := some {
-      file := some s!"tfb-module-{slugify moduleInfo.path}"
-      tag := some (.provided s!"tfb-{moduleInfo.name}")
-      shortTitle := some moduleInfo.path
-    }
-    content := #[
-      .para #[
-        .text "Module ",
-        .code moduleInfo.name.toString,
-        .text s!" contributes {moduleInfo.decls.size} declarations to the trusted formalization base."
-      ]
-    ] ++ moduleInfo.decls.map (fun decl => mkDeclBlock decl repoUrl? declHrefs declPageHrefs)
-    subParts := #[]
-  }
-
 /-- Builds a chapter page that contains regular module pages. -/
 private def mkGroupPart (group : GroupInfo) (repoUrl? : Option String)
     (declByName : Std.HashMap Name DeclInfo) (declHrefs declPageHrefs : Std.HashMap Name String) :
@@ -475,53 +398,6 @@ private def mkGroupPart (group : GroupInfo) (repoUrl? : Option String)
       .para #[.text s!"Modules in the {title} slice are grouped from the first path component after the project root."]
     ]
     subParts := group.modules.map fun moduleInfo => mkModulePart moduleInfo repoUrl? declByName declHrefs declPageHrefs
-  }
-
-/-- Builds a chapter page for the trusted-base view. -/
-private def mkTrustedBaseGroupPart (group : GroupInfo) (repoUrl? : Option String)
-    (declHrefs declPageHrefs : Std.HashMap Name String) : Part Manual :=
-  let title := humanizeWord group.key
-  {
-    title := #[.text title]
-    titleString := title
-    metadata := some {
-      file := some s!"tfb-chapter-{slugify group.key}"
-      shortTitle := some title
-      tag := some (.provided s!"tfb-{group.key}")
-    }
-    content := #[
-      .para #[.text s!"Modules in the {title} slice that contribute declarations to the trusted formalization base."]
-    ]
-    subParts := group.modules.map fun moduleInfo => mkTrustedBaseModulePart moduleInfo repoUrl? declHrefs declPageHrefs
-  }
-
-/-- Builds the top-level trusted-base section and its chapter subpages. -/
-private def mkTrustedBasePart (groups : Array GroupInfo) (repoUrl? : Option String)
-    (declHrefs declPageHrefs : Std.HashMap Name String) (targetBlocks : Array (Block Manual)) : Part Manual :=
-  let declCount := countDecls groups
-  let moduleCount := groups.foldl (fun n group => n + group.modules.size) 0
-  let intro :=
-    if declCount == 0 then
-      #[.para #[.text "No exposed declarations were collected into the trusted formalization base from the comparator targets."]]
-    else
-      #[.para #[.text s!"This view collects the {declCount} exposed declarations across {moduleCount} modules that are reachable from the comparator target theorem statements."]]
-  {
-    title := #[.text "Trusted Formalization Base"]
-    titleString := "Trusted Formalization Base"
-    metadata := some {
-      file := some "trusted-base"
-      shortTitle := some "TFB"
-      tag := some (.provided "trusted-base")
-      number := false
-    }
-    content := #[
-        .para #[.text "These are the exposed declarations a reader must trust in order to accept the comparator-facing theorem."]
-      ]
-      ++ targetBlocks
-      ++ intro
-      ++ mkTrustedBaseIndexBlocks groups
-      ++ mkDashboardBlocks groups
-    subParts := groups.map fun group => mkTrustedBaseGroupPart group repoUrl? declHrefs declPageHrefs
   }
 
 /-- Builds the interactive dependency graph page and graph payload. -/
@@ -629,8 +505,7 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
     IO.eprintln s!"No declarations exposed under module filtering. Declarations with matching name prefix: {namedCount}"
   else
     IO.println s!"Collected {decls.size} declarations under {rootPrefix}"
-  let tfbInfo ← loadTrustedBaseInfo cfg rootPrefix
-  let decls := decls |> attachReverseDeps |> attachTransitiveDeps |> attachDependsOnSorry |> attachTrustedBaseFlags tfbInfo.names
+  let decls := decls |> attachReverseDeps |> attachTransitiveDeps |> attachDependsOnSorry
   let order ← moduleOrderMap cfg.projectDir rootPrefix
   let modules := buildModules rootPrefix order decls
   let groups := buildGroups order modules
@@ -638,20 +513,13 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   let declPageHrefs := declPageHrefMap decls
   let declByName := declByNameMap decls
   let (introBlocks, extraParts) ← loadProjectContextParts cfg.projectDir cfg.repoUrl
-  let tfbGroups := buildGroups order <| buildModules rootPrefix order <| decls.filter (·.inTfb)
-  let targetBlocks ← loadTrustedBaseTargetBlocks cfg.projectDir cfg.repoUrl tfbInfo
   let hasContext := extraParts.any fun part => part.metadata.bind PartMetadata.file == some "context"
-  let extraParts :=
-    if tfbInfo.comparator?.isSome then
-      extraParts.push <| mkTrustedBasePart tfbGroups cfg.repoUrl declHrefs declPageHrefs targetBlocks
-    else
-      extraParts
-  let readerGuideBlocks := mkReaderGuideBlocks hasContext tfbInfo.comparator?.isSome
+  let readerGuideBlocks := mkReaderGuideBlocks hasContext
   let root := mkRootPart cfg rootPrefix groups decls declByName declHrefs declPageHrefs introBlocks readerGuideBlocks extraParts
   let versoArgs :=
     match cfg.outputDir with
     | some out => ["--output", out]
     | none => []
-  manualMain root (options := versoArgs) (config := renderConfig tfbInfo.comparator?.isSome)
+  manualMain root (options := versoArgs) (config := renderConfig)
 
 end LeanExposition

@@ -110,12 +110,6 @@ body {
   color: #8b3517;
 }
 
-.decl-card-tag.tfb {
-  background: #eef3ff;
-  border-color: #b8c8ef;
-  color: #294b88;
-}
-
 .decl-card-tagbar {
   align-items: flex-start;
   display: flex;
