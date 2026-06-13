@@ -145,16 +145,23 @@ block_extension Block.declCard (_payload : DeclCardData) where
         .empty
       else
         {{<div class="decl-card-tags">{{tags}}</div>}}
+    let isMainTheorem := payload.kindLabel == "Theorem" && !payload.isLemma && !payload.isInstanceDecl
+    let displayLabel :=
+      if payload.isInstanceDecl then "Instance"
+      else if payload.isLemma then "Lemma"
+      else payload.kindLabel
+    let cardClass := if isMainTheorem then "decl-card decl-card--theorem" else "decl-card"
+    let labelClass := if isMainTheorem then "decl-card-label decl-card-label--theorem" else "decl-card-label"
     pure {{
       <section class="decl-section" data-decl-kind={{payload.kindLabel}}>
         <h2 id={{payload.anchorId}} class="decl-heading">
           <code>{{payload.shortName}}</code>
           <a class="decl-permalink" href={{s!"#{payload.anchorId}"}} title="Permalink">"🔗"</a>
         </h2>
-        <div class="decl-card">
+        <div class={{cardClass}}>
           <div class="decl-card-header">
             <div class="decl-card-title">
-              <span class="decl-card-label">{{payload.kindLabel}}</span>
+              <span class={{labelClass}}>{{displayLabel}}</span>
               <code class="decl-card-name">{{payload.fullName}}</code>
             </div>
             <div class="decl-card-tagbar">{{tagsHtml}}</div>
@@ -296,6 +303,8 @@ private def mkDeclBlock (decl : DeclInfo) (repoUrl? : Option String)
       anchorId := anchorIdOf decl.name
       shortName := decl.name.getString!
       kindLabel := decl.kind.label
+      isLemma := decl.isLemma
+      isInstanceDecl := decl.isInstanceDecl
       fullName := decl.name.toString
       tags := #[
         if decl.dependsOnSorry then some "depends transitively on sorry" else none

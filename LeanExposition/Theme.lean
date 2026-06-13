@@ -15,7 +15,6 @@ def customCss : String := "
   --site-accent: #d65d5d;
   --site-border: #f0d4d4;
   --site-content-min-width: 52rem;
-  --site-collapsed-sidebar-width: 9rem;
 }
 
 body {
@@ -79,6 +78,20 @@ body {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.decl-card--theorem {
+  background: linear-gradient(135deg, #fff7ec 0%, var(--site-card) 55%);
+  border-left-width: 10px;
+  border-left-color: var(--site-accent);
+  box-shadow: 0 12px 32px rgba(214, 93, 93, 0.14);
+}
+
+.decl-card-label--theorem {
+  background: var(--site-accent);
+  border-radius: 6px;
+  color: #fff;
+  padding: 0.1rem 0.5rem;
 }
 
 .decl-card-name {
@@ -171,10 +184,6 @@ body {
     transform var(--verso-toc-transition-time) ease;
 }
 
-.site-toc-toggle {
-  display: none;
-}
-
 .site-utility-nav {
   align-items: flex-start;
   border-bottom: 1px solid rgba(240, 212, 212, 0.9);
@@ -218,41 +227,6 @@ body {
 
 body.hide-theorems [data-decl-kind=\"Theorem\"] {
   display: none;
-}
-
-@media screen and (min-width: 701px) {
-  .site-toc-toggle {
-    background: var(--site-card);
-    border: 1px solid var(--site-border);
-    border-radius: 999px;
-    color: var(--site-ink);
-    cursor: pointer;
-    display: inline-flex;
-    font-family: var(--verso-structure-font-family);
-    font-size: 0.85rem;
-    margin: 0 1rem 0.85rem;
-    padding: 0.45rem 0.8rem;
-    width: fit-content;
-  }
-
-  body.site-toc-collapsed .with-toc #toc {
-    width: var(--site-collapsed-sidebar-width);
-  }
-
-  body.site-toc-collapsed .with-toc > main {
-    padding-left: var(--site-collapsed-sidebar-width);
-  }
-
-  body.site-toc-collapsed .header-logo-wrapper {
-    flex-basis: var(--site-collapsed-sidebar-width);
-    padding-left: 0;
-    width: var(--site-collapsed-sidebar-width);
-  }
-
-  body.site-toc-collapsed #toc .split-tocs,
-  body.site-toc-collapsed #toc .last {
-    display: none;
-  }
 }
 
 @media screen and (min-width: 900px) {

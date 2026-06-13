@@ -6,16 +6,10 @@ def tocJs : String :=
 document.addEventListener('DOMContentLoaded', () => {
   const toc = document.getElementById('toc');
   if (!toc) return;
-  const key = 'lean-exposition:toc-collapsed';
   const utilityLinks = [
     { slug: 'context', label: 'Overview', href: 'context/' },
     { slug: 'graph', label: 'Graph', href: 'graph/' }
   ];
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'site-toc-toggle';
-
-  const isDesktop = () => window.matchMedia('(min-width: 701px)').matches;
 
   const normalizeHref = href => {
     if (!href) return '';
@@ -74,38 +68,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   };
 
-  const applyState = collapsed => {
-    document.body.classList.toggle('site-toc-collapsed', collapsed);
-    button.textContent = collapsed ? 'Show Contents' : 'Hide Contents';
-    button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-  };
-
-  let collapsed = false;
-  try {
-    collapsed = window.localStorage.getItem(key) === 'true';
-  } catch (_err) {
-    collapsed = false;
-  }
   buildUtilityNav();
   pruneUtilityEntries();
-  applyState(collapsed);
-
-  button.addEventListener('click', () => {
-    collapsed = !document.body.classList.contains('site-toc-collapsed');
-    try {
-      window.localStorage.setItem(key, String(collapsed));
-    } catch (_err) {
-    }
-    applyState(collapsed);
-  });
 
   const container = toc.querySelector('.first') || toc;
   const beforeNode = container.querySelector('.split-tocs');
-  if (beforeNode) {
-    container.insertBefore(button, beforeNode);
-  } else {
-    container.appendChild(button);
-  }
 
   const hideTheoremsKey = 'lean-exposition:hide-theorems';
   const hideTheoremsButton = document.createElement('button');

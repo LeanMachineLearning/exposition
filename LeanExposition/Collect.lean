@@ -72,6 +72,8 @@ structure DeclCardData where
   shortName : String
   kindLabel : String
   fullName : String
+  isLemma : Bool := false
+  isInstanceDecl : Bool := false
   tags : Array String := #[]
 deriving Repr, ToJson, FromJson, Inhabited
 
@@ -116,6 +118,12 @@ structure DeclInfo where
   proofText? : Option String
   source? : Option SourceInfo
   hasSorry : Bool
+  /-- True if the declaration was written with the `lemma` keyword (a `theorem` alias used in
+  Mathlib to mark less central results). -/
+  isLemma : Bool := false
+  /-- True if the declaration was written with the `instance` keyword but was not classified as
+  `.instance` by `declKindOf`. -/
+  isInstanceDecl : Bool := false
   dependsOnSorry : Bool := false
   deps : Array Name
   typeDeps : Array Name := #[]
@@ -520,6 +528,34 @@ def displaySignatureFromSource (kind : DeclKind) (src? : Option SourceInfo) : IO
     return none
   return some rendered
 
+/-- True if the cleaned source snippet for a `theorem`-kind declaration starts with the `lemma`
+keyword rather than `theorem`. -/
+def isLemmaFromSource (kind : DeclKind) (src? : Option SourceInfo) : IO Bool := do
+  if kind != .theorem then
+    return false
+  let some src := src? | return false
+  let snippet := cleanDeclSnippet (← readSourceSnippet src)
+  return snippet.startsWith "lemma "
+
+/-- True if the cleaned source snippet for a `theorem`-kind declaration starts with the
+`instance` keyword (e.g. a `Prop`-valued instance whose `@[instance]` attribute was not picked
+up by `declKindOf`). -/
+def isInstanceFromSource (kind : DeclKind) (src? : Option SourceInfo) : IO Bool := do
+  if kind != .theorem then
+    return false
+  let some src := src? | return false
+  let snippet := cleanDeclSnippet (← readSourceSnippet src)
+  return snippet.startsWith "instance "
+
+/-- True if `name`'s last component follows the standard naming convention for
+compiler-generated instances (e.g. `instDecidableEqFoo` from a `deriving` clause), namely
+`inst` followed by an uppercase letter. Such declarations are not written with the `instance`
+keyword in the source (there is no source line to inspect), so `isInstanceFromSource` cannot
+catch them. -/
+def isInstanceName (name : Name) : Bool :=
+  let s := name.getString!
+  s.startsWith "inst" && s.length > 4 && (s.drop 4).front.isUpper
+
 /-- Strips DeclPrefix. -/
 def stripDeclPrefix (kind : DeclKind) (shortName : String) (signature : String) : String :=
   let pfx := s!"{declKeyword kind} {shortName}"
@@ -878,6 +914,9 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       (← displaySignatureFromSource kind source?).getD <|
         displaySignatureFallback kind name expandedSignature
     let proofText? ← proofTextFromSource kind source?
+    let isLemma ← isLemmaFromSource kind source?
+    let isInstanceDecl ← isInstanceFromSource kind source?
+    let isInstanceDecl := isInstanceDecl || (kind == .theorem && isInstanceName name)
     let doc? ← findDocString? env name
     let docBlocks :=
       match doc? with
@@ -908,6 +947,8 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       proofText? := proofText?
       source? := source?
       hasSorry := hasSorryIn info
+      isLemma := isLemma
+      isInstanceDecl := isInstanceDecl
       deps := deps
       typeDeps := typeDeps
       docstringBlock? := docstringBlock?
