@@ -493,7 +493,10 @@ private def firstRootPrefix (ws : Lake.Workspace) (excludeLibs : Array Name) : O
 private unsafe def loadEnv (projectDir : System.FilePath) (ws : Lake.Workspace) (imports : Array Import) : IO Environment := do
   enableInitializersExecution
   Lean.searchPathRef.set ws.augmentedLeanPath
-  withCurrentDir projectDir <| Lean.importModules imports {}
+  -- `loadExts := true` initializes the environment extensions from the imported modules. Without it
+  -- every extension keeps its empty initial state, so the pretty printer has no notation/unexpander
+  -- data and renders raw constants (e.g. `LE.le`/`Eq` instead of `≤`/`=`).
+  withCurrentDir projectDir <| Lean.importModules imports {} (loadExts := true)
 
 /-- Main entry point: collects data, builds pages, and runs the renderer. -/
 unsafe def mainImpl (args : List String) : IO UInt32 := do
