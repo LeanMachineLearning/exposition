@@ -359,6 +359,28 @@ private def mkDeclBlock (decl : DeclInfo) (repoUrl? : Option String)
     }
     .other (Block.declCard cardData) blocks
 
+/-- Builds graph nodes/edges for `decls`, with edges only between declarations that are
+themselves in `decls`. -/
+private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String) :
+    GraphData :=
+  let names : Std.HashSet Name := decls.foldl (fun acc d => acc.insert d.name) {}
+  let nodes := decls.map fun decl => {
+    id := decl.name.toString
+    label := decl.name.getString!
+    kind := decl.kind.label
+    status := if decl.hasSorry then "sorry" else "proved"
+    groupKey := decl.groupKey
+    moduleName := decl.modulePath
+    href := declHrefs.getD decl.name (pathForPart decl.groupKey decl.modulePath decl.name)
+  }
+  let edges := decls.foldl (fun acc decl =>
+    acc ++ decl.deps.filterMap (fun dep =>
+      if names.contains dep then
+        some { source := decl.name.toString, target := dep.toString }
+      else
+        none)) #[]
+  { nodes, edges }
+
 /-- Builds a dedicated detail page for one declaration: its own card, followed by cards for its
 type dependencies, followed by cards for the rest of its transitive dependencies (closest
 first). -/
@@ -370,7 +392,11 @@ private def mkDeclPart (decl : DeclInfo) (repoUrl? : Option String)
     declByName.get? dep |>.map fun d => mkDeclBlock d repoUrl? declHrefs declPageHrefs
   let typeDepCards := decl.typeDeps.filterMap mkCard
   let transDepCards := (decl.transDeps.filter (!decl.typeDeps.contains ·)).filterMap mkCard
+  let pageDecls := #[decl] ++ (decl.transDeps.filterMap declByName.get?)
   let mut blocks : Array (Block Manual) := #[mkDeclBlock decl repoUrl? declHrefs declPageHrefs]
+  if pageDecls.size > 1 then
+    blocks := blocks.push (.para #[.bold #[.text "Dependency graph"]])
+    blocks := blocks.push (.other (Block.graph (mkGraphData pageDecls declHrefs)) #[])
   if !typeDepCards.isEmpty then
     blocks := blocks.push (.para #[.bold #[.text s!"Type dependencies ({typeDepCards.size})"]])
     blocks := blocks ++ typeDepCards
@@ -500,22 +526,7 @@ private def mkTrustedBasePart (groups : Array GroupInfo) (repoUrl? : Option Stri
 
 /-- Builds the interactive dependency graph page and graph payload. -/
 private def mkGraphPart (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String) : Part Manual :=
-  let nodes := decls.map fun decl => {
-    id := decl.name.toString
-    label := decl.name.getString!
-    kind := decl.kind.label
-    status := if decl.hasSorry then "sorry" else "proved"
-    groupKey := decl.groupKey
-    moduleName := decl.modulePath
-    href := declHrefs.getD decl.name (pathForPart decl.groupKey decl.modulePath decl.name)
-  }
-  let edges := decls.foldl (fun acc decl =>
-    acc ++ decl.deps.filterMap (fun dep =>
-      if declHrefs.contains dep then
-        some { source := decl.name.toString, target := dep.toString }
-      else
-        none)) #[]
-  let graphData : GraphData := { nodes, edges }
+  let graphData := mkGraphData decls declHrefs
   {
     title := #[.text "Dependency Graph"]
     titleString := "Dependency Graph"
