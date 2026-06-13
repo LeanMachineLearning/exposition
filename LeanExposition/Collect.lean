@@ -202,7 +202,7 @@ partial def isInternalName : Name → Bool
       isAuxComponent s
       || s ∈ ["brecOn", "below", "casesOn", "noConfusion", "noConfusionType",
               "recOn", "rec", "ind", "mk", "sizeOf_spec", "inject", "injEq",
-              "ctorIdx", "ext_iff"]
+              "ctorIdx", "ext_iff", "congr_simp"]
       || isInternalName p
 
 /-- Checks whether PrefixName. -/
