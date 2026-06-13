@@ -580,17 +580,29 @@ def ppExprString (env : Environment) (e : Expr) : IO String := do
   let ctx : PPContext := { env := env, opts := {} }
   return toString (← ctx.runMetaM (Meta.ppExpr e))
 
+/-- The namespace `n` and all of its ancestor namespaces, innermost first. -/
+partial def namespaceAncestors : Name → List Name
+  | .anonymous => []
+  | n => n :: namespaceAncestors n.getPrefix
+
 /-- Builds the same `Block.docstring` value that `{docstring name}` would produce inside
 a `#doc` page, by directly invoking Verso's signature/declaration-type computation. Returns
-`none` if this fails for the given declaration (e.g. unsupported declaration shapes). -/
+`none` if this fails for the given declaration (e.g. unsupported declaration shapes).
+
+The pretty-printing context opens the declaration's own namespace and all of its ancestors, so
+that `scoped` notation declared in those namespaces (e.g. order notation for a structure defined
+there) is used instead of falling back to raw instance/projection names. -/
 def mkDocstringBlock? (env : Environment) (name : Name) : IO (Option (Block Manual)) := do
-  let coreCtx : Core.Context := { fileName := "<exposition>", fileMap := default }
+  let options := Options.empty.setBool `pp.fieldNotation false
+  let coreCtx : Core.Context := { fileName := "<exposition>", fileMap := default, options }
+  let openDecls := (namespaceAncestors name.getPrefix).map (OpenDecl.simple · [])
   let act : MetaM (Block Manual) := do
     let declType ← Block.Docstring.DeclType.ofName name
     let sig ← (Signature.forName name : Elab.TermElabM Signature).run' {}
     pure <| .other (Block.docstring name declType sig none #[]) #[]
   try
-    let block ← (act.run' {}).toIO' coreCtx { env := env }
+    let block ← (act.run' {}).toIO'
+      { coreCtx with currNamespace := name.getPrefix, openDecls } { env := env }
     pure (some block)
   catch _ =>
     pure none
@@ -933,6 +945,10 @@ def declPageHrefMap (decls : Array DeclInfo) : Std.HashMap Name String :=
     (fun acc decl => acc.insert decl.name (pathForDeclPage decl.groupKey decl.modulePath decl.name))
     {}
 
+/-- Maps each declaration name to its `DeclInfo`. -/
+def declByNameMap (decls : Array DeclInfo) : Std.HashMap Name DeclInfo :=
+  decls.foldl (fun acc decl => acc.insert decl.name decl) {}
+
 /-- Helper for runCoreIO. -/
 def runCoreIO {α : Type} (env : Environment) (x : CoreM α) : IO α := do
   x.toIO'
@@ -1062,27 +1078,33 @@ def attachReverseDeps (decls : Array DeclInfo) : Array DeclInfo :=
     {}
   decls.map fun decl => { decl with usedBy := (rev.getD decl.name #[]).qsort Name.lt }
 
-/-- Computes the set of declarations reachable from `start` via `depsMap`. -/
+/-- Computes the declarations reachable from `start` via `depsMap`, in breadth-first order
+(closest dependencies first). -/
 partial def transitiveClosure (depsMap : Std.HashMap Name (Array Name)) (start : Array Name) :
-    Std.HashSet Name :=
-  go {} start.toList
+    Array Name :=
+  (go {} #[] start.toList).2
 where
-  go (visited : Std.HashSet Name) : List Name → Std.HashSet Name
-    | [] => visited
+  go (visited : Std.HashSet Name) (order : Array Name) :
+      List Name → Std.HashSet Name × Array Name
+    | [] => (visited, order)
     | n :: rest =>
       if visited.contains n then
-        go visited rest
+        go visited order rest
       else
-        go (visited.insert n) ((depsMap.getD n #[]).toList ++ rest)
+        go (visited.insert n) (order.push n) (rest ++ (depsMap.getD n #[]).toList)
 
-/-- Adds the transitive closure of `deps` (all declarations reachable, recursively) to each
-declaration as `transDeps`. -/
+/-- Adds the transitive closure of `deps` (all declarations reachable, recursively, ordered with
+the closest dependencies first) to each declaration as `transDeps`. Expansion follows only
+`typeDeps` for theorems (their proofs are not part of what a reader must trust further) and
+`deps` (type + body) for everything else. -/
 def attachTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
   let depsMap : Std.HashMap Name (Array Name) :=
-    decls.foldl (fun acc decl => acc.insert decl.name decl.deps) {}
+    decls.foldl (fun acc decl =>
+      acc.insert decl.name (if decl.kind == .theorem then decl.typeDeps else decl.deps)) {}
   decls.map fun decl =>
-    let closure := transitiveClosure depsMap decl.deps
-    { decl with transDeps := (closure.toArray.filter (· != decl.name)).qsort Name.lt }
+    let start := if decl.kind == .theorem then decl.typeDeps else decl.deps
+    let closure := transitiveClosure depsMap start
+    { decl with transDeps := closure.filter (· != decl.name) }
 
 /-- Marks declarations that transitively depend on any `sorry`. -/
 def attachDependsOnSorry (decls : Array DeclInfo) : Array DeclInfo :=
