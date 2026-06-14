@@ -138,6 +138,7 @@ structure ModuleInfo where
   path : String
   groupKey : String
   decls : Array DeclInfo
+  docBlocks : Array (Block Manual) := #[]
 deriving Repr
 
 /-- Modules grouped by top-level chapter key. -/

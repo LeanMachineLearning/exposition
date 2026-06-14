@@ -47,13 +47,22 @@ private def sortDeclsInModules (mods : Array ModuleInfo) : Array ModuleInfo :=
         | none, none => a.name.lt b.name
     { modInfo with decls := decls }
 
+/-- Builds the module-level doc comment (`/-! ... -/` at the top of the file) as blocks, using
+heading levels demoted to bold/emph text so the module page is not split into multiple pages. -/
+private def moduleDocBlocks (env : Environment) (name : Name) : Array (Block Manual) :=
+  match Lean.getModuleDoc? env name with
+  | none => #[]
+  | some docs => docs.foldl (fun acc doc => acc ++ markdownToBlocks doc.doc) #[]
+
 /-- Builds module summaries from declarations and applies stable ordering. -/
-private def buildModules (rootPrefix : Name) (order : Std.HashMap Name Nat) (decls : Array DeclInfo) : Array ModuleInfo :=
+private def buildModules (env : Environment) (rootPrefix : Name) (order : Std.HashMap Name Nat)
+    (decls : Array DeclInfo) : Array ModuleInfo :=
   let mods := moduleIndexMap decls |>.toArray.map fun (name, ds) => {
     name := name
     path := modulePathOf rootPrefix name
     groupKey := groupKeyOfModule rootPrefix name
     decls := ds
+    docBlocks := moduleDocBlocks env name
   }
   sortDeclsInModules <| sortModules order mods
 
@@ -384,7 +393,7 @@ private def mkModulePart (moduleInfo : ModuleInfo) (repoUrl? : Option String)
       tag := some (.provided moduleInfo.name.toString)
       shortTitle := some moduleInfo.path
     }
-    content := #[
+    content := moduleInfo.docBlocks ++ #[
       .para #[
         .text "Module ",
         .code moduleInfo.name.toString,
@@ -523,7 +532,7 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
     IO.println s!"Collected {decls.size} declarations under {rootPrefix}"
   let decls := decls |> attachReverseDeps |> attachTransitiveDeps |> attachDependsOnSorry
   let order ← moduleOrderMap cfg.projectDir rootPrefix
-  let modules := buildModules rootPrefix order decls
+  let modules := buildModules env rootPrefix order decls
   let groups := buildGroups order modules
   let declHrefs := declHrefMap decls
   let declPageHrefs := declPageHrefMap decls
