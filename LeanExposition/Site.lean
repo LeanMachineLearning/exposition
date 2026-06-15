@@ -293,15 +293,21 @@ private def mkReaderGuideBlocks (hasContext : Bool) : Array (Block Manual) :=
       .ul items
     ]
 
+/-- Shared lookup tables and configuration threaded through page-building helpers. -/
+private structure SiteContext where
+  repoUrl? : Option String
+  declByName : Std.HashMap Name DeclInfo
+  declHrefs : Std.HashMap Name String
+  declPageHrefs : Std.HashMap Name String
+
 /-- Renders one declaration card with docs, statement, links, and dependencies. -/
-private def mkDeclBlock (decl : DeclInfo) (repoUrl? : Option String)
-    (declHrefs declPageHrefs : Std.HashMap Name String) : Block Manual :=
+private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
   Id.run do
-    let issueUrl := issueUrlOf repoUrl? decl.name decl.moduleName decl.source? decl.hasSorry
-    let sourceUrl := sourceUrlOf repoUrl? decl.source?
-    let detailsUrl := declPageHrefs.get? decl.name
+    let issueUrl := issueUrlOf ctx.repoUrl? decl.name decl.moduleName decl.source? decl.hasSorry
+    let sourceUrl := sourceUrlOf ctx.repoUrl? decl.source?
+    let detailsUrl := ctx.declPageHrefs.get? decl.name
     let mkLinks (deps : Array Name) := deps.filterMap fun dep =>
-      declHrefs.get? dep |>.map fun href => { label := dep.getString!, href? := some href }
+      ctx.declHrefs.get? dep |>.map fun href => { label := dep.getString!, href? := some href }
     let typeDepLinks := mkLinks decl.typeDeps
     let proofDepLinks := mkLinks <| decl.deps.filter (!decl.typeDeps.contains ·)
     let usedByLinks := mkLinks decl.usedBy
@@ -362,19 +368,17 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
 /-- Builds a dedicated detail page for one declaration: its own card, followed by cards for its
 type dependencies, followed by cards for the rest of its transitive dependencies (closest
 first). -/
-private def mkDeclPart (decl : DeclInfo) (repoUrl? : Option String)
-    (declByName : Std.HashMap Name DeclInfo) (declHrefs declPageHrefs : Std.HashMap Name String) :
-    Part Manual :=
+private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   Id.run do
   let mkCard (dep : Name) : Option (Block Manual) :=
-    declByName.get? dep |>.map fun d => mkDeclBlock d repoUrl? declHrefs declPageHrefs
+    ctx.declByName.get? dep |>.map fun d => mkDeclBlock d ctx
   let typeDepCards := decl.typeDeps.filterMap mkCard
   let transDepCards := (decl.transDeps.filter (!decl.typeDeps.contains ·)).filterMap mkCard
-  let pageDecls := #[decl] ++ (decl.transDeps.filterMap declByName.get?)
-  let mut blocks : Array (Block Manual) := #[mkDeclBlock decl repoUrl? declHrefs declPageHrefs]
+  let pageDecls := #[decl] ++ (decl.transDeps.filterMap ctx.declByName.get?)
+  let mut blocks : Array (Block Manual) := #[mkDeclBlock decl ctx]
   if pageDecls.size > 1 then
     blocks := blocks.push (.para #[.bold #[.text "Dependency graph"]])
-    blocks := blocks.push (.other (Block.graph (mkGraphData pageDecls declHrefs)) #[])
+    blocks := blocks.push (.other (Block.graph (mkGraphData pageDecls ctx.declHrefs)) #[])
   if !typeDepCards.isEmpty then
     blocks := blocks.push (.para #[.bold #[.text s!"Type dependencies ({typeDepCards.size})"]])
     blocks := blocks ++ typeDepCards
@@ -394,9 +398,7 @@ private def mkDeclPart (decl : DeclInfo) (repoUrl? : Option String)
   }
 
 /-- Builds a module page from its declarations. -/
-private def mkModulePart (moduleInfo : ModuleInfo) (repoUrl? : Option String)
-    (declByName : Std.HashMap Name DeclInfo) (declHrefs declPageHrefs : Std.HashMap Name String) :
-    Part Manual :=
+private def mkModulePart (moduleInfo : ModuleInfo) (ctx : SiteContext) : Part Manual :=
   {
     title := #[.text moduleInfo.path]
     titleString := moduleInfo.path
@@ -411,14 +413,12 @@ private def mkModulePart (moduleInfo : ModuleInfo) (repoUrl? : Option String)
         .code moduleInfo.name.toString,
         .text s!" contains {moduleInfo.decls.size} exposed declarations."
       ]
-    ] ++ moduleInfo.decls.map (fun decl => mkDeclBlock decl repoUrl? declHrefs declPageHrefs)
-    subParts := moduleInfo.decls.map (fun decl => mkDeclPart decl repoUrl? declByName declHrefs declPageHrefs)
+    ] ++ moduleInfo.decls.map (fun decl => mkDeclBlock decl ctx)
+    subParts := moduleInfo.decls.map (fun decl => mkDeclPart decl ctx)
   }
 
 /-- Builds a chapter page that contains regular module pages. -/
-private def mkGroupPart (group : GroupInfo) (repoUrl? : Option String)
-    (declByName : Std.HashMap Name DeclInfo) (declHrefs declPageHrefs : Std.HashMap Name String) :
-    Part Manual :=
+private def mkGroupPart (group : GroupInfo) (ctx : SiteContext) : Part Manual :=
   let title := humanizeWord group.key
   {
     title := #[.text title]
@@ -431,7 +431,7 @@ private def mkGroupPart (group : GroupInfo) (repoUrl? : Option String)
     content := #[
       .para #[.text s!"Modules in the {title} slice are grouped from the first path component after the project root."]
     ]
-    subParts := group.modules.map fun moduleInfo => mkModulePart moduleInfo repoUrl? declByName declHrefs declPageHrefs
+    subParts := group.modules.map fun moduleInfo => mkModulePart moduleInfo ctx
   }
 
 /-- Builds the interactive dependency graph page and graph payload. -/
@@ -454,8 +454,7 @@ private def mkGraphPart (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
 
 /-- Builds the root site part with chapter pages and utility sections. -/
 private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo)
-    (decls : Array DeclInfo) (declByName : Std.HashMap Name DeclInfo)
-    (declHrefs declPageHrefs : Std.HashMap Name String)
+    (decls : Array DeclInfo) (ctx : SiteContext)
     (introBlocks : Array (Block Manual)) (readerGuideBlocks : Array (Block Manual))
     (extraParts : Array (Part Manual)) : Part Manual :=
   let title := cfg.siteTitle.getD s!"{rootPrefix} exposition"
@@ -482,9 +481,9 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
       ++ introBlocks
       ++ readerGuideBlocks
       ++ mkDashboardBlocks groups
-    subParts := (groups.map fun group => mkGroupPart group cfg.repoUrl declByName declHrefs declPageHrefs)
+    subParts := (groups.map fun group => mkGroupPart group ctx)
       ++ extraParts
-      ++ #[mkGraphPart decls declHrefs]
+      ++ #[mkGraphPart decls ctx.declHrefs]
   }
 
 /-- Runs an IO action in a temporary working directory. -/
@@ -557,13 +556,16 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   let order ← moduleOrderMap cfg.projectDir rootPrefix
   let modules := buildModules env rootPrefix order decls
   let groups := buildGroups order modules
-  let declHrefs := declHrefMap decls
-  let declPageHrefs := declPageHrefMap decls
-  let declByName := declByNameMap decls
+  let ctx : SiteContext := {
+    repoUrl? := cfg.repoUrl
+    declByName := declByNameMap decls
+    declHrefs := declHrefMap decls
+    declPageHrefs := declPageHrefMap decls
+  }
   let (introBlocks, extraParts) ← loadProjectContextParts cfg.projectDir cfg.repoUrl
   let hasContext := extraParts.any fun part => part.metadata.bind PartMetadata.file == some "context"
   let readerGuideBlocks := mkReaderGuideBlocks hasContext
-  let root := mkRootPart cfg rootPrefix groups decls declByName declHrefs declPageHrefs introBlocks readerGuideBlocks extraParts
+  let root := mkRootPart cfg rootPrefix groups decls ctx introBlocks readerGuideBlocks extraParts
   let versoArgs :=
     match cfg.outputDir with
     | some out => ["--output", out]
