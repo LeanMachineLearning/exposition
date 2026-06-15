@@ -557,6 +557,30 @@ def isInstanceName (name : Name) : Bool :=
   let s := name.getString!
   s.startsWith "inst" && s.length > 4 && (s.drop 4).front.isUpper
 
+/-- All ways to split `s` at an internal underscore into a non-empty `(prefix, suffix)` pair. -/
+def underscoreSplits (s : String) : List (String × String) :=
+  let chars := s.toList
+  (List.range chars.length).filterMap fun i =>
+    if i > 0 && i < chars.length - 1 && chars[i]! == '_' then
+      some (String.ofList (chars.take i), String.ofList (chars.drop (i + 1)))
+    else
+      none
+
+/-- True if `name` looks like a `@[simps]`-generated projection lemma: a `@[simp]`-tagged
+theorem whose short name has the form `<sibling>_<field>`, where `<sibling>` is itself a
+declaration in the same namespace (the definition/instance the `@[simps]` attribute was applied
+to). -/
+def isSimpsGeneratedLemma (env : Environment) (simpLemmaNames : Std.HashSet Name) (name : Name)
+    (info : ConstantInfo) : Bool :=
+  match info with
+  | .thmInfo _ =>
+    simpLemmaNames.contains name &&
+      match name with
+      | .str pfx s =>
+          (underscoreSplits s).any fun (sibling, _) => (env.find? (.str pfx sibling)).isSome
+      | _ => false
+  | _ => false
+
 /-- Strips DeclPrefix. -/
 def stripDeclPrefix (kind : DeclKind) (shortName : String) (signature : String) : String :=
   let pfx := s!"{declKeyword kind} {shortName}"
@@ -914,6 +938,12 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
   let exposed : Std.HashSet Name :=
     projectConsts.foldl (fun acc (name, _, info) =>
       if shouldExpose env rootPrefix name info then acc.insert name else acc) {}
+  let simpTheorems ← runCoreIO env Lean.Meta.getSimpTheorems
+  let simpLemmaNames : Std.HashSet Name :=
+    simpTheorems.lemmaNames.fold (fun acc origin =>
+      match origin with
+      | .decl declName .. => acc.insert declName
+      | _ => acc) {}
   let mut cache : Std.HashMap Name (Array Name) := {}
   let mut fileLines : Std.HashMap System.FilePath (Array String) := {}
   let mut decls := #[]
@@ -939,6 +969,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
         displaySignatureFallback kind name expandedSignature
     let proofText? := proofTextFromSource kind source? lines
     let isLemma := isLemmaFromSource kind source? lines
+      || isSimpsGeneratedLemma env simpLemmaNames name info
     let isInstanceDecl := isInstanceFromSource kind source? lines
     let isInstanceDecl := isInstanceDecl || (kind == .theorem && isInstanceName name)
     let doc? ← findDocString? env name
