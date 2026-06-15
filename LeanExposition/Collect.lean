@@ -194,6 +194,7 @@ def parseArgs : List String → Except String Cli
 /-- Checks whether AuxComponent. -/
 def isAuxComponent (s : String) : Bool :=
   s.startsWith "_" || s.startsWith "match_" || s.startsWith "proof_" || s.startsWith "eq_"
+    || s.startsWith "hcongr_"
 
 /-- Checks whether InternalName. -/
 partial def isInternalName : Name → Bool
