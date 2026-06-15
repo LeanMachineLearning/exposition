@@ -134,7 +134,13 @@ private def loadProjectContextParts (projectDir : System.FilePath) (repoUrl? : O
 
   return (rootBlocks, parts)
 
-
+/-- The visibility group a declaration belongs to, matching the "Hide Definitions" /
+"Hide Lemmas" / "Hide Theorems" toggles and the `data-decl-group` attribute on its card. -/
+private def declGroupOfFields (kindLabel : String) (isLemma isInstanceDecl : Bool) : String :=
+  let isMainTheorem := kindLabel == "Theorem" && !isLemma && !isInstanceDecl
+  if isMainTheorem then "theorem"
+  else if kindLabel == "Theorem" || kindLabel == "Instance" then "lemma"
+  else "definition"
 
 block_extension Block.declCard (_payload : DeclCardData) where
   data := ToJson.toJson _payload
@@ -146,9 +152,7 @@ block_extension Block.declCard (_payload : DeclCardData) where
         pure .empty
     let tags :=
       payload.tags.map fun tag =>
-        let className :=
-          if tag == "" then "decl-card-tag sorry" else "decl-card-tag sorry"
-        {{<span class={{className}}>{{tag}}</span>}}
+        {{<span class="decl-card-tag sorry">{{Html.text false tag}}</span>}}
     let tagsHtml :=
       if payload.tags.isEmpty then
         .empty
@@ -161,10 +165,7 @@ block_extension Block.declCard (_payload : DeclCardData) where
       else payload.kindLabel
     let cardClass := if isMainTheorem then "decl-card decl-card--theorem" else "decl-card"
     let labelClass := if isMainTheorem then "decl-card-label decl-card-label--theorem" else "decl-card-label"
-    let declGroup :=
-      if isMainTheorem then "theorem"
-      else if payload.kindLabel == "Theorem" || payload.kindLabel == "Instance" then "lemma"
-      else "definition"
+    let declGroup := declGroupOfFields payload.kindLabel payload.isLemma payload.isInstanceDecl
     pure {{
       <section class="decl-section" data-decl-kind={{payload.kindLabel}} data-decl-group={{declGroup}}>
         <h2 id={{payload.anchorId}} class="decl-heading">
@@ -230,25 +231,36 @@ private def renderConfig : RenderConfig :=
     ]
   }
 
-/-- Counts declarations that contain `sorry`. -/
-private def countSorries (decls : Array DeclInfo) : Nat :=
-  decls.foldl (fun n decl => n + if decl.hasSorry then 1 else 0) 0
+/-- Counts declarations in each visibility group, as `(definitions, lemmas, theorems)`. -/
+private def countGroups (decls : Array DeclInfo) : Nat × Nat × Nat :=
+  decls.foldl (fun (defs, lemmas, thms) decl =>
+    match declGroupOfFields decl.kind.label decl.isLemma decl.isInstanceDecl with
+    | "definition" => (defs + 1, lemmas, thms)
+    | "lemma" => (defs, lemmas + 1, thms)
+    | _ => (defs, lemmas, thms + 1)
+  ) (0, 0, 0)
+
+/-- Renders a `(definitions, lemmas, theorems)` count as a summary string. -/
+private def groupCountsLabel (counts : Nat × Nat × Nat) : String :=
+  let (defs, lemmas, thms) := counts
+  s!"{defs} definitions, {lemmas} lemmas, {thms} theorems"
 
 /-- Builds dashboard summary blocks for chapter and module progress. -/
 private def mkDashboardBlocks (groups : Array GroupInfo) : Array (Block Manual) :=
   groups.foldl (fun acc group =>
-    let groupTotal := group.modules.foldl (fun n modInfo => n + modInfo.decls.size) 0
-    let groupSorry := group.modules.foldl (fun n modInfo => n + countSorries modInfo.decls) 0
+    let groupCounts := group.modules.foldl (fun (defs, lemmas, thms) modInfo =>
+      let (d, l, t) := countGroups modInfo.decls
+      (defs + d, lemmas + l, thms + t)) (0, 0, 0)
     let intro : Block Manual :=
       .para #[
         .bold #[.link #[.text <| humanizeWord group.key] (groupHrefOf group.key)],
-        .text s!"  ({groupTotal} declarations, {groupSorry} with sorry)"
+        .text s!"  ({groupCountsLabel groupCounts})"
       ]
     let items := group.modules.map fun modInfo =>
       Verso.Doc.ListItem.mk #[
         .para #[
           .link #[.code modInfo.path] s!"{groupHrefOf group.key}{moduleHrefOf modInfo.path}",
-          .text s!"  ({modInfo.decls.size} declarations, {countSorries modInfo.decls} with sorry)"
+          .text s!"  ({groupCountsLabel (countGroups modInfo.decls)})"
         ]
       ]
     acc ++ #[intro, .ul items]
