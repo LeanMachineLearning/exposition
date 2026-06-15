@@ -455,7 +455,18 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
       shortTitle := some title
       number := false
     }
-    content := #[.para #[.text "Auto-generated exposition for ", .code rootPrefix.toString, .text "."]]
+    content := #[
+        .para #[.text "Auto-generated exposition for ", .code rootPrefix.toString, .text "."],
+        .para #[
+          .text "Browse the chapters and modules below for each file's declarations, with ",
+          .text "their statements and documentation. The ",
+          .link #[.text "Graph"] "graph/",
+          .text " page shows the dependencies between declarations, and each declaration's ",
+          .text "details page shows its own dependency graph together with the statements of ",
+          .text "the declarations it depends on, so that the assumptions behind a result can ",
+          .text "be checked without leaving the page."
+        ]
+      ]
       ++ introBlocks
       ++ readerGuideBlocks
       ++ mkDashboardBlocks groups
