@@ -427,14 +427,12 @@ def mkDocstringBlock? (env : Environment) (name : Name) : IO (Option (Block Manu
   catch _ =>
     pure none
 
-/-- Reads SourceSnippet. -/
-def readSourceSnippet (src : SourceInfo) : IO String := do
-  let text ← IO.FS.readFile src.absPath
-  let lines := (text.splitOn "\n").toArray
+/-- Extracts a declaration's source snippet from an already-loaded array of the file's lines. -/
+def sliceSourceSnippet (lines : Array String) (src : SourceInfo) : String :=
   let startIdx := src.line - 1
   let endIdx := min src.endLine lines.size
   let selected := (List.range (endIdx - startIdx)).map fun i => lines[startIdx + i]!
-  pure <| String.intercalate "\n" selected
+  String.intercalate "\n" selected
 
 /-- Computes declaration Keyword. -/
 def declKeyword : DeclKind → String
@@ -516,37 +514,38 @@ def headBeforeWhere (snippet : String) : String :=
   (String.trimAscii (go (snippet.splitOn "\n") [])).toString
 
 /-- Helper for displaySignatureFromSource. -/
-def displaySignatureFromSource (kind : DeclKind) (src? : Option SourceInfo) : IO (Option String) := do
-  let some src := src? | return none
-  let snippet := cleanDeclSnippet (← readSourceSnippet src)
-  if snippet.isEmpty then
-    return none
-  let rendered :=
-    match kind with
-    | .definition | .structure | .typeclass | .inductive => snippet
-    | _ => headBeforeAssignment snippet
-  if rendered.isEmpty then
-    return none
-  return some rendered
+def displaySignatureFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : Array String) : Option String :=
+  match src? with
+  | none => none
+  | some src =>
+    let snippet := cleanDeclSnippet (sliceSourceSnippet lines src)
+    if snippet.isEmpty then
+      none
+    else
+      let rendered :=
+        match kind with
+        | .definition | .structure | .typeclass | .inductive => snippet
+        | _ => headBeforeAssignment snippet
+      if rendered.isEmpty then none else some rendered
 
 /-- True if the cleaned source snippet for a `theorem`-kind declaration starts with the `lemma`
 keyword rather than `theorem`. -/
-def isLemmaFromSource (kind : DeclKind) (src? : Option SourceInfo) : IO Bool := do
+def isLemmaFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : Array String) : Bool :=
   if kind != .theorem then
-    return false
-  let some src := src? | return false
-  let snippet := cleanDeclSnippet (← readSourceSnippet src)
-  return snippet.startsWith "lemma "
+    false
+  else match src? with
+    | none => false
+    | some src => (cleanDeclSnippet (sliceSourceSnippet lines src)).startsWith "lemma "
 
 /-- True if the cleaned source snippet for a `theorem`-kind declaration starts with the
 `instance` keyword (e.g. a `Prop`-valued instance whose `@[instance]` attribute was not picked
 up by `declKindOf`). -/
-def isInstanceFromSource (kind : DeclKind) (src? : Option SourceInfo) : IO Bool := do
+def isInstanceFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : Array String) : Bool :=
   if kind != .theorem then
-    return false
-  let some src := src? | return false
-  let snippet := cleanDeclSnippet (← readSourceSnippet src)
-  return snippet.startsWith "instance "
+    false
+  else match src? with
+    | none => false
+    | some src => (cleanDeclSnippet (sliceSourceSnippet lines src)).startsWith "instance "
 
 /-- True if `name`'s last component follows the standard naming convention for
 compiler-generated instances (e.g. `instDecidableEqFoo` from a `deriving` clause), namely
@@ -693,18 +692,18 @@ def moduleOrderMap (projectDir : System.FilePath) (rootPrefix : Name) : IO (Std.
   return order
 
 /-- Helper for proofTextFromSource. -/
-def proofTextFromSource (kind : DeclKind) (src? : Option SourceInfo) : IO (Option String) := do
+def proofTextFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : Array String) : Option String :=
   match kind, src? with
   | .theorem, some src
   | .opaque, some src
   | .instance, some src =>
-      let snippet := (String.trimAscii (← readSourceSnippet src)).toString
+      let snippet := (String.trimAscii (sliceSourceSnippet lines src)).toString
       match snippet.splitOn ":=" with
       | _prefix :: rest@(_ :: _) =>
-          pure <| some <| (String.trimAscii (String.intercalate ":=" rest)).toString
+          some <| (String.trimAscii (String.intercalate ":=" rest)).toString
       | _ =>
-          pure <| some snippet
-  | _, _ => pure none
+          some snippet
+  | _, _ => none
 
 /-- Checks whether SorryIn. -/
 def hasSorryIn (info : ConstantInfo) : Bool :=
@@ -902,6 +901,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     env.constants.toList.foldl (fun acc (name, info) =>
       if shouldExpose env rootPrefix name info then acc.insert name else acc) {}
   let mut cache : Std.HashMap Name (Array Name) := {}
+  let mut fileLines : Std.HashMap System.FilePath (Array String) := {}
   let mut decls := #[]
   for (name, info) in env.constants.toList do
     let some moduleName := moduleNameOf env name | continue
@@ -909,14 +909,24 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       continue
     let ranges? ← findRanges? env name
     let source? ← toSourceInfo? projectDir pkg moduleName ranges?
+    let lines ← match source? with
+      | none => pure #[]
+      | some src =>
+        match fileLines.get? src.absPath with
+        | some ls => pure ls
+        | none => do
+            let text ← IO.FS.readFile src.absPath
+            let ls := (text.splitOn "\n").toArray
+            fileLines := fileLines.insert src.absPath ls
+            pure ls
     let kind := declKindOf env info name
     let expandedSignature ← ppExprString env info.type
     let displaySignature :=
-      (← displaySignatureFromSource kind source?).getD <|
+      (displaySignatureFromSource kind source? lines).getD <|
         displaySignatureFallback kind name expandedSignature
-    let proofText? ← proofTextFromSource kind source?
-    let isLemma ← isLemmaFromSource kind source?
-    let isInstanceDecl ← isInstanceFromSource kind source?
+    let proofText? := proofTextFromSource kind source? lines
+    let isLemma := isLemmaFromSource kind source? lines
+    let isInstanceDecl := isInstanceFromSource kind source? lines
     let isInstanceDecl := isInstanceDecl || (kind == .theorem && isInstanceName name)
     let doc? ← findDocString? env name
     let docBlocks :=
