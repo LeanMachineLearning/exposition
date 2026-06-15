@@ -543,13 +543,16 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
     | .error err =>
         IO.eprintln err
         return 1
-  let ws ← loadWorkspaceAt cfg.projectDir
+  -- The exposition tool always runs inside the target project's own Lake environment (via
+  -- `lake env …/exposition`), so the project to expose is the current working directory.
+  let projectDir : System.FilePath := "."
+  let ws ← loadWorkspaceAt projectDir
   let some rootPrefix := cfg.rootPrefix <|> firstRootPrefix ws cfg.excludeLibs
     | IO.eprintln "Could not determine a root module prefix. Pass --root PREFIX."
       return 1
   let imports := importRoots ws cfg.excludeLibs
-  let env ← loadEnv cfg.projectDir ws imports
-  let decls ← collectDecls cfg.projectDir rootPrefix ws.root env
+  let env ← loadEnv projectDir ws imports
+  let decls ← collectDecls projectDir rootPrefix ws.root env
   let excludedNames :=
     (projectConstants env rootPrefix).filterMap fun (name, _, info) =>
       if shouldExpose env rootPrefix name info then none else some name
@@ -568,7 +571,7 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   else
     IO.println s!"Collected {decls.size} declarations under {rootPrefix}"
   let decls := decls |> attachReverseDeps |> attachTransitiveDeps |> attachDependsOnSorry
-  let order ← moduleOrderMap cfg.projectDir rootPrefix
+  let order ← moduleOrderMap projectDir rootPrefix
   let modules := buildModules env rootPrefix order decls
   let groups := buildGroups order modules
   let ctx : SiteContext := {
@@ -577,7 +580,7 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
     declHrefs := declHrefMap decls
     declPageHrefs := declPageHrefMap decls
   }
-  let (introBlocks, extraParts) ← loadProjectContextParts cfg.projectDir cfg.repoUrl
+  let (introBlocks, extraParts) ← loadProjectContextParts projectDir cfg.repoUrl
   let hasContext := extraParts.any fun part => part.metadata.bind PartMetadata.file == some "context"
   let readerGuideBlocks := mkReaderGuideBlocks hasContext
   let root := mkRootPart cfg rootPrefix groups decls ctx introBlocks readerGuideBlocks extraParts

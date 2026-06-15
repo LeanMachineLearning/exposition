@@ -14,7 +14,6 @@ Current v1 behavior matches the design spec:
 - programmatic `Part Manual` generation from declarations in a compiled environment
 - grouping by the first path component after the root module, with chapter/module order derived from the import graph
 - declaration cards with docstrings, source-first Lean statements, collapsible `Uses` / `Used by`, and collapsible proof bodies
-- comparator-aware trusted formalization base tags plus a browsable TFB view when the target repo provides `comparator.json`
 - dependency graph page backed by inline JSON + D3, with chapter filtering and neighborhood focus
 - multi-page HTML output through Verso's `manualMain`
 
@@ -25,8 +24,8 @@ This is an alpha implementation. The validated execution path is:
 1. build this repo's executable
 2. run that executable inside the target repo's `lake env`
 
-The `--project DIR` flag exists, but cross-workspace loading is not the primary
-tested path yet.
+The exposition tool always exposes the project of the surrounding `lake env`, i.e. the current
+working directory.
 
 ## Build
 
@@ -102,14 +101,8 @@ Optional target-specific flags:
 lake env /path/to/lean-exposition/.lake/build/bin/exposition \
   --root MyLibrary \
   --exclude-lib MySpec \
-  --comparator-config comparator.json \
-  --tfb-exe extractDeps \
   --output /path/to/site-out
 ```
-
-If the target repo provides a comparator config plus a dependency-closure
-executable, `LeanExposition` will compute and render the trusted formalization
-base view.
 
 ## Options
 
@@ -117,15 +110,11 @@ base view.
 - `--repo-url URL`: base GitHub URL used for source and issue links
 - `--title TITLE`: override the site title
 - `--output DIR`: output directory passed through to Verso
-- `--comparator-config FILE`: comparator config file relative to the target project root
-- `--tfb-exe NAME`: Lake executable used to compute the trusted-base dependency closure
 - `--exclude-lib NAME`: root library to skip when importing the target project
-- `--project DIR`: alternate workspace path, currently experimental
 
 ## Current Limitations
 
 - v1 still relies on plain text code blocks and source-file snippets, not SubVerso highlighting
 - undocumented declarations render without prose
 - dependency links and graph edges are only emitted for exposed declarations
-- comparator integration currently depends on a target-side comparator config and dependency-closure executable; it does not yet consume richer comparator output directly
 - issue URLs are generated from `--repo-url` and assume a standard `main` branch layout

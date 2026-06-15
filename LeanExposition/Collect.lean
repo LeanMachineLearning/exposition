@@ -21,7 +21,6 @@ open Verso.Output Html
 
 /-- CLI options used to configure exposition generation. -/
 structure Cli where
-  projectDir : System.FilePath := "."
   rootPrefix : Option Name := none
   repoUrl : Option String := none
   siteTitle : Option String := none
@@ -160,7 +159,6 @@ def usage : String :=
     "Usage: lake exe exposition [options]",
     "",
     "Options:",
-    "  --project DIR        Path to the target Lean project (default: current directory)",
     "  --root PREFIX        Root module prefix to expose (default: first root library)",
     "  --repo-url URL       GitHub repo URL used for issue/source links",
     "  --title TITLE        Site title override",
@@ -171,9 +169,6 @@ def usage : String :=
 /-- Parses CLI arguments into `Cli`, or returns a usage error. -/
 def parseArgs : List String → Except String Cli
   | [] => .ok {}
-  | "--project" :: dir :: rest => do
-      let cfg ← parseArgs rest
-      pure { cfg with projectDir := dir }
   | "--root" :: root :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with rootPrefix := some root.toName }
@@ -234,6 +229,9 @@ def slugify (s : String) : String :=
     else
       acc.push '-'
   let slug := s.foldl pushChar ""
+  -- `pushChar` already drops leading and consecutive separators, but a separator emitted for a
+  -- trailing non-alphanumeric run would dangle at the end, so strip any trailing `-`.
+  let slug := String.ofList (slug.toList.reverse.dropWhile (· == '-')).reverse
   if slug.isEmpty then "item" else slug
 
 /-- Helper for humanizeWord. -/
@@ -928,6 +926,37 @@ where
               let deps := usedConstantsOf env n info true
               go (cache.insert n deps) visited acc (rest ++ deps.toList)
 
+/-- True if `name` is incomplete because of a `sorry`, looking *through* project-local
+compiler-generated helpers (`_proof_N`, `match_..`, field defaults, ...) the same way
+`expandThroughInternals` surfaces hidden dependencies. A direct `sorryAx` in the declaration's own
+type/value, or in any such helper it transitively reaches, counts.
+
+Exposed declarations and external (non-project) constants are *not* followed: a `sorry` reachable
+only through an exposed declaration is surfaced separately by `attachDependsOnSorry`, and upstream
+library constants are assumed sorry-free. This closes the gap where `hasSorryIn` alone would miss a
+`sorry` that the elaborator lifted into an auxiliary `_proof_N` lemma. -/
+partial def usesSorryThroughInternals (env : Environment) (rootPrefix : Name)
+    (exposed : Std.HashSet Name) (name : Name) (info : ConstantInfo) : Bool :=
+  hasSorryIn info || go {} (usedConstantsOf env name info true).toList
+where
+  go (visited : Std.HashSet Name) : List Name → Bool
+    | [] => false
+    | n :: rest =>
+      if visited.contains n then
+        go visited rest
+      else
+        let visited := visited.insert n
+        let isInternalHelper := !exposed.contains n && hasPrefixName n rootPrefix
+        if !isInternalHelper then
+          go visited rest
+        else match env.find? n with
+          | none => go visited rest
+          | some info' =>
+            if hasSorryIn info' then
+              true
+            else
+              go visited (rest ++ (usedConstantsOf env n info' true).toList)
+
 /-- All constants belonging to modules whose name has `rootPrefix`, paired with their module
 name, gathered directly from `env.header.moduleData` so that the (typically much larger) set of
 constants from imported libraries is never iterated. -/
@@ -1010,7 +1039,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       docBlocks := docBlocks
       proofText? := proofText?
       source? := source?
-      hasSorry := hasSorryIn info
+      hasSorry := usesSorryThroughInternals env rootPrefix exposed name info
       isLemma := isLemma
       isInstanceDecl := isInstanceDecl
       deps := deps

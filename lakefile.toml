@@ -13,6 +13,10 @@ rev = "main"
 [[lean_lib]]
 name = "LeanExposition"
 
+[[lean_lib]]
+name = "Test"
+globs = ["Test", "Test.Collect"]
+
 [[lean_exe]]
 name = "exposition"
 root = "Main"
