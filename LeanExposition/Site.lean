@@ -550,6 +550,15 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   let imports := importRoots ws cfg.excludeLibs
   let env ← loadEnv cfg.projectDir ws imports
   let decls ← collectDecls cfg.projectDir rootPrefix ws.root env
+  let excludedNames :=
+    (projectConstants env rootPrefix).filterMap fun (name, _, info) =>
+      if shouldExpose env rootPrefix name info then none else some name
+  if let some out := cfg.outputDir then
+    let logPath := System.FilePath.mk out / "excluded-declarations.txt"
+    IO.FS.createDirAll out
+    IO.FS.writeFile logPath <|
+      String.intercalate "\n" (excludedNames.toList.map toString) ++ "\n"
+  IO.println s!"Hidden (auto-generated/internal) declarations: {excludedNames.size}"
   if decls.isEmpty then
     let namedCount :=
       env.constants.toList.foldl (fun n entry =>

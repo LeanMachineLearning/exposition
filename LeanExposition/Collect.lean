@@ -192,10 +192,19 @@ def parseArgs : List String → Except String Cli
   | flag :: _ =>
       .error s!"Unknown or incomplete option: {flag}\n\n{usage}"
 
+/-- True if `s` is `pfx` followed by a non-empty sequence of digits, the naming convention used
+by the compiler for auto-generated declarations like `match_1`, `eq_2`, `hcongr_11`. -/
+def isPrefixWithDigitSuffix (pfx s : String) : Bool :=
+  s.startsWith pfx &&
+    let rest := s.drop pfx.length
+    !rest.isEmpty && rest.toString.toList.all Char.isDigit
+
 /-- Checks whether AuxComponent. -/
 def isAuxComponent (s : String) : Bool :=
-  s.startsWith "_" || s.startsWith "match_" || s.startsWith "proof_" || s.startsWith "eq_"
-    || s.startsWith "hcongr_"
+  s.startsWith "_"
+    || isPrefixWithDigitSuffix "match_" s
+    || isPrefixWithDigitSuffix "eq_" s || s == "eq_def" || s == "eq_unfold"
+    || isPrefixWithDigitSuffix "hcongr_" s
 
 /-- Checks whether InternalName. -/
 partial def isInternalName : Name → Bool
