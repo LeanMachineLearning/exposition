@@ -75,6 +75,7 @@ structure DeclCardData where
   isLemma : Bool := false
   isInstanceDecl : Bool := false
   tags : Array String := #[]
+  detailsUrl? : Option String := none
 deriving Repr, ToJson, FromJson, Inhabited
 
 /-- Data container for DetailsData. -/
@@ -314,10 +315,9 @@ def codeListParagraph (label : String) (items : Array String) : Option (Block Ma
       joinInlines entries #[.text " · "]
 
 /-- Helper for mkLinkParagraph. -/
-def mkLinkParagraph (sourceUrl? issueUrl? detailsUrl? : Option String) : Option (Block Manual) :=
+def mkLinkParagraph (sourceUrl? issueUrl? : Option String) : Option (Block Manual) :=
   let items :=
-    ([detailsUrl?.map fun url => .link #[.text "Details"] url,
-      sourceUrl?.map fun url => .link #[.text "Source"] url,
+    ([sourceUrl?.map fun url => .link #[.text "Source"] url,
       issueUrl?.map fun url => .link #[.text "Open Issue"] url].filterMap id)
   if items.isEmpty then
     none

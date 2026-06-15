@@ -158,6 +158,11 @@ block_extension Block.declCard (_payload : DeclCardData) where
         .empty
       else
         {{<div class="decl-card-tags">{{tags}}</div>}}
+    let detailsHtml :=
+      if let some url := payload.detailsUrl? then
+        {{<a class="decl-card-action decl-card-details" href={{url}}>"Details"</a>}}
+      else
+        .empty
     let isMainTheorem := payload.kindLabel == "Theorem" && !payload.isLemma && !payload.isInstanceDecl
     let displayLabel :=
       if payload.isInstanceDecl then "Instance"
@@ -178,7 +183,7 @@ block_extension Block.declCard (_payload : DeclCardData) where
               <span class={{labelClass}}>{{displayLabel}}</span>
               <code class="decl-card-name">{{payload.fullName}}</code>
             </div>
-            <div class="decl-card-tagbar">{{tagsHtml}}</div>
+            <div class="decl-card-tagbar">{{detailsHtml}}{{tagsHtml}}</div>
           </div>
           <div class="decl-card-body">
             {{← contents.mapM goB}}
@@ -326,7 +331,7 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
       blocks := blocks.push <| .other (Block.details { summary := s!"Body uses ({proofDepLinks.size})" }) #[block]
     if let some block := depListBlock usedByLinks then
       blocks := blocks.push <| .other (Block.details { summary := s!"Used by ({usedByLinks.size})" }) #[block]
-    if let some block := mkLinkParagraph sourceUrl issueUrl detailsUrl then
+    if let some block := mkLinkParagraph sourceUrl issueUrl then
       blocks := blocks.push block
     if let some proof := decl.proofText? then
       blocks := blocks.push <| .other (Block.details { summary := "Proof" }) #[.code proof]
@@ -340,6 +345,7 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
       tags := #[
         if decl.dependsOnSorry then some "depends transitively on sorry" else none
       ].filterMap id
+      detailsUrl? := detailsUrl
     }
     .other (Block.declCard cardData) blocks
 

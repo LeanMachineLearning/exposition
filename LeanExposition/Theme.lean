@@ -126,6 +126,8 @@ body {
 .decl-card-tagbar {
   align-items: flex-start;
   display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
   flex: 0 0 auto;
 }
 
@@ -137,6 +139,16 @@ body {
   font-size: 0.82rem;
   padding: 0.35rem 0.75rem;
   text-decoration: none !important;
+}
+
+.decl-card-details {
+  background: var(--site-accent);
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(214, 93, 93, 0.35);
+}
+
+.decl-card-details:hover {
+  background: var(--site-ink);
 }
 
 .decl-card details {
