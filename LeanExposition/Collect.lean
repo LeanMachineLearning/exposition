@@ -894,17 +894,29 @@ where
               let deps := usedConstantsOf env n info true
               go (cache.insert n deps) visited acc (rest ++ deps.toList)
 
+/-- All constants belonging to modules whose name has `rootPrefix`, paired with their module
+name, gathered directly from `env.header.moduleData` so that the (typically much larger) set of
+constants from imported libraries is never iterated. -/
+def projectConstants (env : Environment) (rootPrefix : Name) : Array (Name × Name × ConstantInfo) :=
+  (Array.range env.header.modules.size).foldl (fun acc idx =>
+    let modName := env.header.modules[idx]!.module
+    if hasPrefixName modName rootPrefix then
+      let data := env.header.moduleData[idx]!
+      (Array.zip data.constNames data.constants).foldl
+        (fun acc2 (cname, cinfo) => acc2.push (cname, modName, cinfo)) acc
+    else acc) #[]
+
 /-- Collects all exposed declarations and computes their primary metadata. -/
 def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     (pkg : Lake.Package) (env : Environment) : IO (Array DeclInfo) := do
+  let projectConsts := projectConstants env rootPrefix
   let exposed : Std.HashSet Name :=
-    env.constants.toList.foldl (fun acc (name, info) =>
+    projectConsts.foldl (fun acc (name, _, info) =>
       if shouldExpose env rootPrefix name info then acc.insert name else acc) {}
   let mut cache : Std.HashMap Name (Array Name) := {}
   let mut fileLines : Std.HashMap System.FilePath (Array String) := {}
   let mut decls := #[]
-  for (name, info) in env.constants.toList do
-    let some moduleName := moduleNameOf env name | continue
+  for (name, moduleName, info) in projectConsts do
     if !shouldExpose env rootPrefix name info then
       continue
     let ranges? ← findRanges? env name
