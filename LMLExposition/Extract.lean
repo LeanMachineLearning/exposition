@@ -57,6 +57,10 @@ structure CommandEntry where
   /-- Extra commands to emit right after this one — used for `instance … := sorry` replacements of a
   definition's `deriving` clause (which can't be re-derived in the minimal file). -/
   appended : Array String := #[]
+  /-- For a declaration command, the exposed notation parsers whose syntax appears in its source. The
+  notation's expansion (not the parser) is what shows up in the elaborated term, so this syntactic
+  signal is the only way to know the verbatim source needs that notation command replayed. -/
+  usedNotations : Array Name := #[]
   deriving Inhabited
 
 /-! ## Syntax inspection -/
@@ -125,6 +129,19 @@ partial def findFirstOfKind? (root : Syntax) (kind : SyntaxNodeKind) : Option Sy
     for arg in stx.getArgs do
       worklist := worklist.push arg
   return none
+
+/-- Every `SyntaxNodeKind` occurring anywhere in `stx` (including `stx` itself). A notation use shows
+up here as a node whose kind is the notation parser's name. -/
+partial def collectSyntaxKinds (stx : Syntax) : Std.HashSet Name := Id.run do
+  let mut acc : Std.HashSet Name := {}
+  let mut worklist : Array Syntax := #[stx]
+  while !worklist.isEmpty do
+    let s := worklist.back!
+    worklist := worklist.pop
+    acc := acc.insert s.getKind
+    for arg in s.getArgs do
+      worklist := worklist.push arg
+  return acc
 
 /-- True for the notation/syntax-defining commands (needed to parse declarations that use them). -/
 def isNotationCmd (k : SyntaxNodeKind) : Bool :=
@@ -242,7 +259,8 @@ Elaboration errors (notably "declaration already exists", since `env` already co
 are expected and ignored — we only consume the parsed `Syntax` and source positions, which are
 produced regardless. -/
 def processFile (env : Environment) (source : String) (filePath : String)
-    (declPos : Std.HashMap Nat Name) : IO (Array CommandEntry) := do
+    (declPos : Std.HashMap Nat Name) (notationKinds : Std.HashSet Name) :
+    IO (Array CommandEntry) := do
   let inputCtx := Parser.mkInputContext source filePath
   let (_, parserState, messages) ← Parser.parseHeader inputCtx
   let cmdState := Command.mkState env messages {}
@@ -276,7 +294,9 @@ def processFile (env : Environment) (source : String) (filePath : String)
             | some v => collectByBlocks v
             | none => #[]
           spliceSorry source cmdStart declEnd byBlocks
-      entries := entries.push { cls := .decl, src, kind := stx.getKind, declNames := names, appended }
+      let usedNotations := notationKinds.toArray.filter (collectSyntaxKinds stx).contains
+      entries := entries.push
+        { cls := .decl, src, kind := stx.getKind, declNames := names, appended, usedNotations }
     else if isContextCmd stx then
       let kind := stx.getKind
       let nsName? := if kind == ``Parser.Command.namespace && stx.getArgs.size ≥ 2 then
@@ -533,6 +553,10 @@ def writeAllExtractions (env : Environment) (rootPrefix : Name)
     (decls : Array DeclInfo) (projectDir : System.FilePath)
     (dir : System.FilePath) : IO Nat := do
   let exposedNames : Std.HashSet Name := decls.foldl (·.insert ·.name) {}
+  -- Exposed notation parsers; a declaration's source uses one iff its parsed syntax contains a node
+  -- of that kind (the notation's name).
+  let notationKinds : Std.HashSet Name :=
+    decls.foldl (init := {}) fun s d => if isNotationKind env d.name then s.insert d.name else s
   -- Every project namespace, taken as the proper-prefix ancestors of the exposed declaration names.
   let projectNamespaces : Std.HashSet Name := decls.foldl (init := {}) fun s d =>
     (namespaceAncestors d.name.getPrefix).foldl (·.insert ·) s
@@ -550,14 +574,32 @@ def writeAllExtractions (env : Environment) (rootPrefix : Name)
     let some source ← (do try pure (some (← IO.FS.readFile path)) catch _ => pure none)
       | continue
     let declPos ← declPositions env source modDecls
-    let entries ← processFile env source path.toString declPos
+    let entries ← processFile env source path.toString declPos notationKinds
     cache := cache.insert modName entries
+  -- Map each declaration to the notation parsers its source uses (gathered syntactically above).
+  let mut declUsedNotations : Std.HashMap Name (Array Name) := {}
+  for (_, entries) in cache.toList do
+    for e in entries do
+      if e.cls == .decl && !e.usedNotations.isEmpty then
+        for nm in e.declNames do
+          declUsedNotations := declUsedNotations.insert nm e.usedNotations
   -- Phase 3: assemble and write one file per declaration.
   IO.FS.createDirAll dir
   for decl in decls do
-    let keep : Std.HashSet Name :=
+    let mut keep : Std.HashSet Name :=
       (decl.transDeps.filter exposedNames.contains).foldl (·.insert ·) ({} : Std.HashSet Name)
         |>.insert decl.name
+    -- Close under notation usage: a kept declaration whose source uses a notation needs that
+    -- notation's command replayed, and notations may themselves use further notations.
+    let mut frontier : Array Name := keep.toArray
+    while !frontier.isEmpty do
+      let mut next : Array Name := #[]
+      for n in frontier do
+        for nk in declUsedNotations.getD n #[] do
+          unless keep.contains nk do
+            keep := keep.insert nk
+            next := next.push nk
+      frontier := next
     let content := assembleTarget env rootPrefix cache moduleOrder exposedNames keep
       projectNamespaces decl.name
     IO.FS.writeFile (dir / s!"{anchorIdOf decl.name}.lean") content

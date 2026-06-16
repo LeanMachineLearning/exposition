@@ -83,6 +83,23 @@ namespace LMLExposition.Test
 
 #guard anchorIdOf `Foo.bar.baz == "Foo___bar___baz"
 #guard anchorIdOf `Foo == "Foo"
+-- Characters forbidden in filenames on some operating systems (Windows: `< > : " / \ | ? *`) are
+-- replaced by fullwidth lookalikes, so notation declarations like `«term𝓛[_|_;_]»` yield portable
+-- filenames. The component is `«…»`-escaped by `Name.toString`; we check the `|` is gone and the
+-- fullwidth `｜` is present, without pinning the exact escaping.
+#guard !(anchorIdOf (.str (.str .anonymous "N") "a|b")).any (· == '|')
+#guard (anchorIdOf (.str (.str .anonymous "N") "a|b")).any (· == '｜')
+#guard !(anchorIdOf (.str (.str .anonymous "N") "a?*b")).any (fun c => c == '?' || c == '*')
+
+-- `evalNameExpr?`: reconstruct the `Name` an `Expr` builds via `Name.anonymous`/`mkStr*`/`str`.
+#guard evalNameExpr? (mkConst ``Lean.Name.anonymous) == some Name.anonymous
+#guard evalNameExpr? (mkApp2 (mkConst ``Lean.Name.mkStr2) (mkStrLit "Foo") (mkStrLit "bar"))
+  == some `Foo.bar
+#guard evalNameExpr? (mkConst ``Nat.add) == none   -- not a name-building application
+-- `collectEmbeddedNames` finds such names anywhere in the expression tree.
+#guard (collectEmbeddedNames
+  (mkApp (mkConst ``id) (mkApp2 (mkConst ``Lean.Name.mkStr2) (mkStrLit "A") (mkStrLit "b")))).contains
+  `A.b
 
 #guard slugify "Foo Bar" == "foo-bar"
 #guard slugify "Hello, World" == "hello-world"

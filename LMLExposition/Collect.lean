@@ -1097,6 +1097,10 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     -- any project-local compiler-generated helpers (`_proof_N`, `match_..`, field defaults, ...)
     -- so that dependencies hidden behind those helpers are surfaced too.
     let typeUsedConstants := usedConstantsOf env name info false
+    -- When this declaration *is* a notation, also depend on the constants it expands to (which are
+    -- stored as `Name` data inside its macro and so invisible to `getUsedConstants`); see
+    -- `notationExpansionDeps`. The reverse direction (a declaration whose *source* uses a notation)
+    -- is handled syntactically during extraction, where the parsed syntax is available.
     let allUsedConstants := usedConstantsOf env name info true ++ notationDeps.getD name #[]
     let (typeExpanded, cache1) := expandThroughInternals env rootPrefix exposed cache typeUsedConstants
     let (allExpanded, cache2) := expandThroughInternals env rootPrefix exposed cache1 allUsedConstants
