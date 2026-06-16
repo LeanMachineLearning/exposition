@@ -1,4 +1,4 @@
-namespace LeanExposition
+namespace LMLExposition
 
 def customCss : String := "
 :root {
@@ -359,4 +359,4 @@ body.hide-theorems [data-decl-group=\"theorem\"] {
 }
 "
 
-end LeanExposition
+end LMLExposition

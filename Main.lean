@@ -1,6 +1,6 @@
-import LeanExposition
+import LMLExposition
 
-open LeanExposition
+open LMLExposition
 
 unsafe def main (args : List String) : IO UInt32 :=
   mainImpl args

@@ -1,7 +1,7 @@
-import LeanExposition.Collect
+import LMLExposition.Collect
 
 /-!
-# Tests for `LeanExposition.Collect`
+# Tests for `LMLExposition.Collect`
 
 This module audits the *pure* logic of `Collect.lean`, with an emphasis on the functions that
 build and propagate the dependency lists of a declaration:
@@ -21,9 +21,9 @@ here because constructing a synthetic `Environment` is impractical.
 -/
 
 open Lean Std
-open LeanExposition
+open LMLExposition
 
-namespace LeanExposition.Test
+namespace LMLExposition.Test
 
 /-! ## Name-classification helpers -/
 
@@ -254,4 +254,4 @@ private def sorryViaExternal : Array DeclInfo := #[
 ]
 #guard field (attachDependsOnSorry sorryViaExternal) `A (·.dependsOnSorry) == some false
 
-end LeanExposition.Test
+end LMLExposition.Test

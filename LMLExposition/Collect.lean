@@ -15,7 +15,7 @@ open Verso.Doc
 open Verso.Genre
 open Manual
 
-namespace LeanExposition
+namespace LMLExposition
 
 open Verso.Output Html
 
@@ -1126,4 +1126,4 @@ def attachDependsOnSorry (decls : Array DeclInfo) : Array DeclInfo :=
     return decls.map fun decl => { decl with dependsOnSorry := marked.contains decl.name }
 
 
-end LeanExposition
+end LMLExposition

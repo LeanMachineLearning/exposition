@@ -1,4 +1,4 @@
-namespace LeanExposition
+namespace LMLExposition
 
 /-- JS for the TOC sidebar. -/
 def tocJs : String :=
@@ -120,4 +120,4 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 "
 
-end LeanExposition
+end LMLExposition

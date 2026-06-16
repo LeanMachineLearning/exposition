@@ -7,11 +7,11 @@ import Lake.Load.Workspace
 import MD4Lean
 import VersoManual
 import VersoManual.Markdown
-import LeanExposition.Theme
-import LeanExposition.GraphJs
-import LeanExposition.TocJs
-import LeanExposition.Collect
-import LeanExposition.Extract
+import LMLExposition.Theme
+import LMLExposition.GraphJs
+import LMLExposition.TocJs
+import LMLExposition.Collect
+import LMLExposition.Extract
 
 open Lake
 open Lean
@@ -20,7 +20,7 @@ open Verso.Doc
 open Verso.Genre
 open Manual
 
-namespace LeanExposition
+namespace LMLExposition
 
 open Verso.Output Html
 
@@ -603,4 +603,4 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
     | none => []
   manualMain root (options := versoArgs) (config := renderConfig)
 
-end LeanExposition
+end LMLExposition

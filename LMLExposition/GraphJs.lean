@@ -1,4 +1,4 @@
-namespace LeanExposition
+namespace LMLExposition
 
 def graphJs : String := "
 document.addEventListener('DOMContentLoaded', () => {
@@ -323,4 +323,4 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 "
 
-end LeanExposition
+end LMLExposition
