@@ -306,6 +306,7 @@ private def mkReaderGuideBlocks (hasContext : Bool) : Array (Block Manual) :=
 /-- Shared lookup tables and configuration threaded through page-building helpers. -/
 private structure SiteContext where
   repoUrl? : Option String
+  siteUrl? : Option String
   declByName : Std.HashMap Name DeclInfo
   declHrefs : Std.HashMap Name String
   declPageHrefs : Std.HashMap Name String
@@ -386,7 +387,12 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   let typeDepCards := decl.typeDeps.filterMap mkCard
   let transDepCards := (decl.transDeps.filter (!decl.typeDeps.contains ·)).filterMap mkCard
   let pageDecls := #[decl] ++ (decl.transDeps.filterMap ctx.declByName.get?)
-  let extractedUrl := s!"extracted/{anchorIdOf decl.name}.lean"
+  -- Link the minimal file to the live Lean web editor (which fetches it from the deployed site) when
+  -- we know the deploy URL; otherwise fall back to the relative path to the extracted file.
+  let extractedUrl :=
+    match ctx.siteUrl? with
+    | some base => leanEditorUrl base decl.name
+    | none => s!"extracted/{anchorIdOf decl.name}.lean"
   let extractedLink : Block Manual :=
     .para #[.link #[.text "Minimal Lean file"] extractedUrl]
   let mut blocks : Array (Block Manual) := #[extractedLink, mkDeclBlock decl ctx]
@@ -585,6 +591,7 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   let groups := buildGroups order modules
   let ctx : SiteContext := {
     repoUrl? := cfg.repoUrl
+    siteUrl? := cfg.siteUrl
     declByName := declByName
     declHrefs := declHrefMap decls
     declPageHrefs := declPageHrefMap decls

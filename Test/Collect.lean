@@ -91,6 +91,20 @@ namespace LMLExposition.Test
 #guard (anchorIdOf (.str (.str .anonymous "N") "a|b")).any (· == '｜')
 #guard !(anchorIdOf (.str (.str .anonymous "N") "a?*b")).any (fun c => c == '?' || c == '*')
 
+-- `percentEncode`: RFC 3986 unreserved bytes pass through; everything else becomes `%XX` (uppercase,
+-- UTF-8). Used to make the extracted filename safe inside the editor `#url=` link.
+#guard percentEncode "abc" == "abc"
+#guard percentEncode "-_.~" == "-_.~"             -- unreserved set is preserved
+#guard percentEncode "a b" == "a%20b"
+#guard percentEncode "a/b?c" == "a%2Fb%3Fc"
+#guard percentEncode "é" == "%C3%A9"              -- multi-byte UTF-8
+
+-- `leanEditorUrl`: a live.lean-lang.org `#url=` link to the extracted file under the deploy base.
+#guard leanEditorUrl "https://x.io/LML" `Foo.bar
+  == "https://live.lean-lang.org/#url=https://x.io/LML/extracted/Foo___bar.lean"
+#guard leanEditorUrl "https://x.io/LML/" `Foo.bar   -- trailing slash on the base is not doubled
+  == "https://live.lean-lang.org/#url=https://x.io/LML/extracted/Foo___bar.lean"
+
 -- `evalNameExpr?`: reconstruct the `Name` an `Expr` builds via `Name.anonymous`/`mkStr*`/`str`.
 #guard evalNameExpr? (mkConst ``Lean.Name.anonymous) == some Name.anonymous
 #guard evalNameExpr? (mkApp2 (mkConst ``Lean.Name.mkStr2) (mkStrLit "Foo") (mkStrLit "bar"))

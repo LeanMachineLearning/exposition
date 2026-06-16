@@ -23,6 +23,7 @@ open Verso.Output Html
 structure Cli where
   rootPrefix : Option Name := none
   repoUrl : Option String := none
+  siteUrl : Option String := none
   siteTitle : Option String := none
   outputDir : Option String := none
   excludeLibs : Array Name := #[]
@@ -161,6 +162,8 @@ def usage : String :=
     "Options:",
     "  --root PREFIX        Root module prefix to expose (default: first root library)",
     "  --repo-url URL       GitHub repo URL used for issue/source links",
+    "  --site-url URL       Deployed site base URL, used to link the minimal Lean files into the",
+    "                       live.lean-lang.org web editor",
     "  --title TITLE        Site title override",
     "  --output DIR         Output directory passed to Verso",
     "  --exclude-lib NAME   Exclude a root library when importing the target project",
@@ -175,6 +178,9 @@ def parseArgs : List String → Except String Cli
   | "--repo-url" :: url :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with repoUrl := some url }
+  | "--site-url" :: url :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with siteUrl := some url }
   | "--title" :: title :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with siteTitle := some title }
@@ -285,6 +291,29 @@ def anchorIdOf (name : Name) : String :=
     | '\\' => '＼' | '|' => '｜' | '?' => '？' | '*' => '＊'
     | _ => c
   (String.intercalate "___" (name.toString.splitOn ".")).map safeChar
+
+/-- Percent-encodes `s` (as UTF-8) for use in a URL path, escaping every byte outside the RFC 3986
+unreserved set (`A-Za-z0-9` and `-_.~`). -/
+def percentEncode (s : String) : String := Id.run do
+  let hexDigit (n : Nat) : Char :=
+    if n < 10 then Char.ofNat (0x30 + n) else Char.ofNat (0x41 + (n - 10))
+  let unreserved (n : Nat) : Bool :=
+    (n ≥ 0x41 && n ≤ 0x5A) || (n ≥ 0x61 && n ≤ 0x7A) || (n ≥ 0x30 && n ≤ 0x39)
+      || n == 0x2D || n == 0x5F || n == 0x2E || n == 0x7E
+  let mut out : Array Char := #[]
+  for b in s.toUTF8.toList do
+    let n := b.toNat
+    if unreserved n then
+      out := out.push (Char.ofNat n)
+    else
+      out := ((out.push '%').push (hexDigit (n / 16))).push (hexDigit (n % 16))
+  return String.ofList out.toList
+
+/-- A link to the live Lean web editor (live.lean-lang.org), pre-loaded (via its `#url=` parameter)
+with the extracted standalone file for `name` served from the deployed site at `base`. -/
+def leanEditorUrl (base : String) (name : Name) : String :=
+  let sep := if base.endsWith "/" then "" else "/"
+  s!"https://live.lean-lang.org/#url={base}{sep}extracted/{percentEncode (anchorIdOf name)}.lean"
 
 /-- Helper for mkInlineText. -/
 def mkInlineText (s : String) : Inline Manual :=
