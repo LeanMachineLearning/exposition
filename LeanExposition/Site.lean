@@ -169,7 +169,11 @@ block_extension Block.declCard (_payload : DeclCardData) where
       if payload.isInstanceDecl then "Instance"
       else if payload.isLemma then "Lemma"
       else payload.kindLabel
-    let cardClass := if isMainTheorem then "decl-card decl-card--theorem" else "decl-card"
+    let isDefinition := declGroupOfFields payload.kindLabel payload.isLemma payload.isInstanceDecl == "definition"
+    let cardClass :=
+      if isMainTheorem then "decl-card decl-card--theorem"
+      else if isDefinition then "decl-card decl-card--definition"
+      else "decl-card"
     let labelClass := if isMainTheorem then "decl-card-label decl-card-label--theorem" else "decl-card-label"
     let declGroup := declGroupOfFields payload.kindLabel payload.isLemma payload.isInstanceDecl
     pure {{
@@ -382,7 +386,10 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   let typeDepCards := decl.typeDeps.filterMap mkCard
   let transDepCards := (decl.transDeps.filter (!decl.typeDeps.contains ·)).filterMap mkCard
   let pageDecls := #[decl] ++ (decl.transDeps.filterMap ctx.declByName.get?)
-  let mut blocks : Array (Block Manual) := #[mkDeclBlock decl ctx]
+  let extractedUrl := s!"extracted/{anchorIdOf decl.name}.lean"
+  let extractedLink : Block Manual :=
+    .para #[.link #[.text "Minimal Lean file"] extractedUrl]
+  let mut blocks : Array (Block Manual) := #[extractedLink, mkDeclBlock decl ctx]
   if pageDecls.size > 1 then
     blocks := blocks.push (.para #[.bold #[.text "Dependency graph"]])
     blocks := blocks.push (.other (Block.graph (mkGraphData pageDecls ctx.declHrefs)) #[])
@@ -584,7 +591,7 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   }
   if let some out := cfg.outputDir then
     let startMs ← IO.monoMsNow
-    let n ← writeAllExtractions env rootPrefix declByName decls (System.FilePath.mk out / "extracted")
+    let n ← writeAllExtractions env rootPrefix decls projectDir (System.FilePath.mk out / "html-multi" / "extracted")
     IO.println s!"Wrote {n} standalone extraction files in {(← IO.monoMsNow) - startMs}ms"
   let (introBlocks, extraParts) ← loadProjectContextParts projectDir cfg.repoUrl
   let hasContext := extraParts.any fun part => part.metadata.bind PartMetadata.file == some "context"

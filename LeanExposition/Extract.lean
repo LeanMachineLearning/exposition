@@ -1,228 +1,548 @@
 import LeanExposition.Collect
 
 /-!
-# Standalone Lean file extraction
+# Standalone Lean file extraction (verbatim-source variant)
 
-Given one exposed declaration, build a self-contained Lean file that contains every (project-local)
-declaration it transitively depends on, in topological order. **Theorem proofs are replaced by
-`sorry`**, and proof subterms inside definitions are replaced by `sorry` too, so the file never
-re-runs a proof.
+This is an adaptation of Matthew Ballard's `EmitStandalone.lean`
+(https://github.com/mattrobball/lean-informal/blob/main/Informal/EmitStandalone.lean).
 
-## Strategy: re-render from the elaborated environment
+This variant copies the **verbatim source text** of each declaration and replays the surrounding
+`namespace`/`open`/`variable`/`section` context commands. Notation is therefore preserved exactly as
+written, so the output is readable.
 
-Rather than copying source text (which needs the original file's `open`/`variable`/`namespace`
-context to make sense), each declaration is re-rendered from its elaborated `ConstantInfo` with the
-pretty-printer set to `pp.fullNames := true` and `pp.notation := false`. The elaborated type already
-contains exactly the section `variable`s the declaration uses (as binders), and fully-qualified,
-notation-free output resolves against the imports alone — so **no namespaces are opened and no
-`variable`/`section` context is replayed**. Every declaration is emitted at top level under its full
-name (`theorem A.B.c : … := sorry`).
+## Strategy
 
-* theorems → `theorem <fullName> : <type> := sorry`
-* definitions / instances → `def`/`instance <fullName> : <type> := <value>` with proof subterms in
-  the value replaced by `sorry`
-* axioms / opaques → `axiom`/`opaque <fullName> : <type>` (opaque bodies become `sorry`)
-* structures / classes / inductives → reconstructed from the environment (`extends`, fields, params,
-  constructors)
+1. Re-elaborate each project source file against the already-loaded environment
+   (`IO.processCommands`) to recover, per command, its `Syntax` and byte range.
+2. Classify each command as a *declaration* (it defines an exposed declaration), a *context* command
+   (`namespace`/`end`/`open`/`variable`/`section`/`set_option`/`universe`), or *skip*.
+3. Extract each command's source text by byte position. For theorems, the proof body (`declVal`) is
+   replaced by `:= sorry` surgically (the rest of the source is untouched).
+4. Per target, keep the context commands plus the declaration commands in the target's transitive
+   closure, drop now-empty sections, and assemble: external `import`s followed by the bodies in
+   module-dependency order.
 
-Only external (non-project) modules are `import`ed (the union of the dependencies' source files'
-imports); project declarations are emitted here instead.
+Each source file is processed **once** and cached; assembling a target then only filters and
+concatenates strings.
 -/
 
-open Lean Lean.Meta
+open Lean Lean.Elab Lean.Elab.Command Lean.Parser
 
 namespace LeanExposition
 
-/-! ## Selecting and ordering declarations -/
+/-! ## Classified commands -/
 
-/-- The selected declarations in topological order: the target's transitive (project-local)
-dependencies followed by the target itself. -/
-def emitOrder (declByName : Std.HashMap Name DeclInfo) (target : DeclInfo) : Array DeclInfo :=
-  (target.transDeps.filterMap declByName.get?).push target
+/-- How a source command relates to the set of exposed declarations. -/
+inductive CmdClass where
+  /-- Defines at least one exposed declaration. -/
+  | decl
+  /-- A `namespace`/`end`/`open`/`variable`/`section`/`set_option`/`universe` command. -/
+  | context
+  /-- Anything else (a non-exposed declaration, `#check`, an attribute command, …). -/
+  | skip
+  deriving Inhabited, BEq
 
-/-- The upstream library modules to `import`: the modules of every external (non-project) constant a
-selected declaration depends on. This is precise — it imports exactly what the fully-qualified
-rendered output references, including transitively-needed constants like `condDistrib` that the
-source file only imports indirectly. Project-local modules are excluded (their declarations are
-emitted here) and `Init` (auto-imported) is skipped. -/
-def importModules (env : Environment) (rootPrefix : Name)
-    (declByName : Std.HashMap Name DeclInfo) (emit : Array DeclInfo) : Array Name := Id.run do
-  let mut modules : Std.HashSet Name := {}
-  for decl in emit do
-    let depset := if decl.kind == .theorem then decl.typeDeps else decl.deps
-    for dep in depset do
-      if !declByName.contains dep then
-        if let some m := moduleNameOf env dep then
-          if !hasPrefixName m `Init && !hasPrefixName m rootPrefix then
-            modules := modules.insert m
-  return modules.toArray.qsort Name.lt
+/-- A classified source command: its source text (with proof already `sorry`-injected for theorems),
+its `Syntax` kind, and the exposed declarations it defines (if any). -/
+structure CommandEntry where
+  cls : CmdClass
+  src : String
+  kind : SyntaxNodeKind
+  declNames : Array Name := #[]
+  /-- For a `namespace` command, the namespace it opens (used to emit existence stubs). -/
+  nsName? : Option Name := none
+  /-- For a `variable` command, its binders decomposed as `(source text, identifiers referenced)`,
+  so that binders mentioning declarations outside a target's closure can be dropped. -/
+  binders : Array (String × Array String) := #[]
+  /-- Extra commands to emit right after this one — used for `instance … := sorry` replacements of a
+  definition's `deriving` clause (which can't be re-derived in the minimal file). -/
+  appended : Array String := #[]
+  deriving Inhabited
 
-/-! ## Rendering declarations from the elaborated environment -/
+/-! ## Syntax inspection -/
 
-/-- Pretty-prints an expression. The ambient `pp.fullNames` / `pp.notation` options (set in the
-`Core.Context`) make the result fully qualified and notation-free. -/
-def ppFull (e : Expr) : MetaM String := do
-  -- Render with a very large width so each declaration stays on one line (wrapped output breaks
-  -- `structure … where` field parsing and multi-line binders).
-  return (← ppExpr (← instantiateMVars e)).pretty (width := 100000)
+/-- The `declVal` syntax node of a declaration (`:= …`, `| … => …`, or `where …`), if present. -/
+partial def findDeclValStx? (root : Syntax) : Option Syntax := Id.run do
+  let mut worklist : Array Syntax := #[root]
+  while !worklist.isEmpty do
+    let stx := worklist.back!
+    worklist := worklist.pop
+    let k := stx.getKind
+    if k == ``Parser.Command.declValSimple || k == ``Parser.Command.declValEqns
+        || k == ``Parser.Command.whereStructInst then
+      return some stx
+    for arg in stx.getArgs do
+      worklist := worklist.push arg
+  return none
 
-/-- Strips `autoParam`/`optParam` wrappers (from `:= by tac` / `:= default` binders and fields)
-everywhere in `e`, leaving just the underlying type so it can be re-elaborated. -/
-def stripAutoParams (e : Expr) : Expr :=
-  e.replace fun node =>
-    if node.isAppOfArity ``autoParam 2 || node.isAppOfArity ``optParam 2 then
-      some node.appFn!.appArg!
+/-- The byte range of the *value*/proof part of a declaration, if present. -/
+def findDeclVal? (root : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := do
+  let v ← findDeclValStx? root
+  match v.getPos?, v.getTailPos? with
+  | some s, some e => some (s, e)
+  | _, _ => none
+
+/-- True if `stx` declares a `theorem` or `lemma` (whose proof we replace by `sorry`). `theorem`
+parses as `Command.declaration` with the keyword node `Command.theorem`; `lemma` (a Mathlib synonym)
+keeps its own `lemma` syntax kind until macro expansion. We search the whole tree so that wrapper
+commands like `omit … in <decl>` / `open … in <decl>` are seen through (a `def`'s syntax never
+contains a `theorem`/`lemma` *command* node, so this stays specific). -/
+partial def isTheoremDecl (stx : Syntax) : Bool := Id.run do
+  let mut worklist : Array Syntax := #[stx]
+  while !worklist.isEmpty do
+    let s := worklist.back!
+    worklist := worklist.pop
+    let k := s.getKind
+    if k == ``Parser.Command.theorem || k == `lemma then return true
+    for arg in s.getArgs do
+      worklist := worklist.push arg
+  return false
+
+/-- The byte ranges of the outermost `by …` tactic blocks inside `root` (not recursing into a block
+already collected). Used to replace embedded proofs in a *definition's* value with `sorry`. -/
+partial def collectByBlocks (root : Syntax) : Array (String.Pos.Raw × String.Pos.Raw) := Id.run do
+  let mut acc : Array (String.Pos.Raw × String.Pos.Raw) := #[]
+  let mut worklist : Array Syntax := #[root]
+  while !worklist.isEmpty do
+    let stx := worklist.back!
+    worklist := worklist.pop
+    if stx.getKind == ``Lean.Parser.Term.byTactic then
+      match stx.getPos?, stx.getTailPos? with
+      | some s, some e => acc := acc.push (s, e)   -- don't descend into a block we'll replace
+      | _, _ => for arg in stx.getArgs do worklist := worklist.push arg
     else
-      none
+      for arg in stx.getArgs do
+        worklist := worklist.push arg
+  return acc
 
-/-- Pretty-prints a *type*: strips auto/optional-parameter wrappers first. -/
-def ppType (e : Expr) : MetaM String := ppFull (stripAutoParams e)
+/-- The first descendant of `root` with the given syntax kind (breadth-first). -/
+partial def findFirstOfKind? (root : Syntax) (kind : SyntaxNodeKind) : Option Syntax := Id.run do
+  let mut worklist : Array Syntax := #[root]
+  while !worklist.isEmpty do
+    let stx := worklist.back!
+    worklist := worklist.pop
+    if stx.getKind == kind then return some stx
+    for arg in stx.getArgs do
+      worklist := worklist.push arg
+  return none
 
-/-- Replaces every maximal proof subterm (one whose type is a `Prop`) with `sorry`, so a definition's
-computational content is kept while the proofs it embeds are erased. -/
-partial def sorryProofs (e : Expr) : MetaM Expr :=
-  transform e (pre := fun node => do
-    if node.isSort || node.isBVar || node.isMVar || node.isFVar then
-      return .continue
-    let ok ← (do let t ← inferType node; isProp t) <|> pure false
-    if ok then
-      return .done (← mkSorry (← inferType node) (synthetic := false))
-    else
-      return .continue)
+/-- True for the notation/syntax-defining commands (needed to parse declarations that use them). -/
+def isNotationCmd (k : SyntaxNodeKind) : Bool :=
+  k == ``Parser.Command.«notation» || k == ``Parser.Command.«mixfix»
+    || k == ``Parser.Command.«macro» || k == ``Parser.Command.«macro_rules»
+    || k == ``Parser.Command.«syntax» || k == ``Parser.Command.«elab»
 
-/-- Renders a binder for `fvar` (a telescope variable) using its name, binder kind and type,
-faithfully preserving the original binder kind. -/
-def renderBinder (fvar : Expr) : MetaM String := do
-  let decl ← fvar.fvarId!.getDecl
-  let ty ← ppType decl.type
-  let nm := decl.userName.toString
-  match decl.binderInfo with
-  | .default => return "(" ++ nm ++ " : " ++ ty ++ ")"
-  | .implicit => return "{" ++ nm ++ " : " ++ ty ++ "}"
-  | .strictImplicit => return "⦃" ++ nm ++ " : " ++ ty ++ "⦄"
-  | .instImplicit => return "[" ++ ty ++ "]"
+/-- True for the context-management commands we replay verbatim: scoping commands plus the
+notation/syntax-defining commands needed to parse the declarations that use them. -/
+def isContextCmd (stx : Syntax) : Bool :=
+  let k := stx.getKind
+  k == ``Parser.Command.namespace || k == ``Parser.Command.«end» || k == ``Parser.Command.«open»
+    || k == ``Parser.Command.«variable» || k == ``Parser.Command.«section»
+    || k == ``Parser.Command.«set_option» || k == ``Parser.Command.«universe»
+    || isNotationCmd k
 
-/-- Reconstructs a `structure`/`class` declaration. The constructor's type is a telescope of the
-parameters followed by the fields, where each field binder references the previous fields *by their
-own name* — so pretty-printing those binder types yields valid field declarations (`policy n`, not
-`Algorithm.policy self n`). Subobject fields become the `extends` clause. -/
-def renderStructure (name : Name) (ii : InductiveVal) : MetaM String := do
-  let env ← getEnv
-  let ctorName := (getStructureCtor env name).name
-  let some ctorInfo := env.find? ctorName | return "-- (could not reconstruct " ++ name.toString ++ ")"
-  -- Parameters come from the inductive's own type (correct explicitness: `(𝓐 : Type*)`), while the
-  -- fields come from the constructor's type with the parameters instantiated, so each field's type
-  -- refers to the parameters and earlier fields by name.
-  forallBoundedTelescope ii.type ii.numParams fun params _ => do
-    let paramStrs ← params.mapM renderBinder
-    let fieldTele ← instantiateForall ctorInfo.type params
-    forallTelescopeReducing fieldTele fun fields _ => do
-      let mut exts : Array String := #[]
-      let mut flds : Array String := #[]
-      for fv in fields do
-        let decl ← fv.fvarId!.getDecl
-        let tyStr ← ppType decl.type
-        if (isSubobjectField? env name decl.userName).isSome then
-          exts := exts.push tyStr
+/-- The substring of `source` between two byte positions. -/
+def slice (source : String) (s e : String.Pos.Raw) : String :=
+  ({ str := source, startPos := s, stopPos := e } : Substring.Raw).toString
+
+/-- The source `[cmdStart, cmdEnd)` with each `replace` byte range substituted by `sorry`. -/
+def spliceSorry (source : String) (cmdStart cmdEnd : String.Pos.Raw)
+    (replace : Array (String.Pos.Raw × String.Pos.Raw)) : String := Id.run do
+  if replace.isEmpty then return slice source cmdStart cmdEnd
+  let sorted := replace.qsort (fun a b => a.1.byteIdx < b.1.byteIdx)
+  let mut out := ""
+  let mut cursor := cmdStart
+  for (s, e) in sorted do
+    out := out ++ slice source cursor s ++ "sorry"
+    cursor := e
+  return out ++ slice source cursor cmdEnd
+
+/-- Information needed to replace a definition's `deriving …` clause with `sorry` instances:
+the byte position where the `deriving` keyword starts (everything from here is dropped), and the
+generated `instance … := sorry` commands (one per derived class). Returns `none` if the command has
+no `deriving` clause or its shape can't be reconstructed (in which case it is left verbatim). -/
+def derivingReplacement? (source : String) (stx : Syntax) (cmdEnd : String.Pos.Raw) :
+    Option (String.Pos.Raw × Array String) := Id.run do
+  -- Only `def` deriving causes the delta-derivation failures; structures derive fine.
+  let some defNode := findFirstOfKind? stx ``Parser.Command.definition | return none
+  -- The `deriving` keyword atom inside the definition.
+  let some derivingAtom := Id.run (do
+    let mut wl : Array Syntax := #[defNode]
+    while !wl.isEmpty do
+      let s := wl.back!; wl := wl.pop
+      match s with
+      | .atom _ "deriving" => return some s
+      | _ => for a in s.getArgs do wl := wl.push a
+    return none) | return none
+  let some dpos := derivingAtom.getPos? | return none
+  let some dtail := derivingAtom.getTailPos? | return none
+  -- Class names: the text after `deriving`, comma-separated.
+  let classes := (slice source dtail cmdEnd).splitOn "," |>.filterMap (fun c =>
+    let c := c.trimAscii.toString
+    if c.isEmpty then none else some c)
+  if classes.isEmpty then return none
+  -- The declaration name and its binders.
+  let some declId := findFirstOfKind? defNode ``Parser.Command.declId | return none
+  let some idPos := declId.getPos? | return none
+  let some idTail := declId.getTailPos? | return none
+  let defName := slice source idPos idTail
+  let some sig := findFirstOfKind? defNode ``Parser.Command.optDeclSig | return none
+  let binderNodes := if sig.getArgs.size ≥ 1 then sig[0].getArgs else #[]
+  let mut bindersText := ""
+  let mut applyNames : Array String := #[]
+  for b in binderNodes do
+    match b.getPos?, b.getTailPos? with
+    | some s, some e =>
+      let btxt := slice source s e
+      bindersText := if bindersText.isEmpty then btxt else bindersText ++ " " ++ btxt
+      -- Explicit binders (and bare `binderIdent`s) are applied positionally; the rest are inferred.
+      if b.getKind == ``Lean.Parser.Term.explicitBinder then
+        let before := ((btxt.splitOn ":").headD btxt).replace "(" " " |>.replace ")" " "
+        for nm in before.splitOn " " do
+          let nm := nm.trimAscii.toString
+          unless nm.isEmpty do applyNames := applyNames.push nm
+      else if b.isIdent then
+        applyNames := applyNames.push b.getId.toString
+    | _, _ => return none
+  let app := " ".intercalate (defName :: applyNames.toList)
+  let bindersClause := if bindersText.isEmpty then "" else " " ++ bindersText
+  let instances := classes.map fun c => s!"instance{bindersClause} : {c} ({app}) := sorry"
+  return some (dpos, instances.toArray)
+
+/-- Every identifier appearing anywhere in `stx`, as strings. -/
+partial def collectIdents (stx : Syntax) : Array String := Id.run do
+  let mut acc : Array String := #[]
+  let mut worklist : Array Syntax := #[stx]
+  while !worklist.isEmpty do
+    let s := worklist.back!
+    worklist := worklist.pop
+    if s.isIdent then acc := acc.push s.getId.toString
+    for a in s.getArgs do
+      worklist := worklist.push a
+  return acc
+
+/-- Decomposes a `variable` command into its individual binders, each as `(source text, identifiers
+referenced)`. The binders are the children of the `many1` node following the `variable` keyword. -/
+def decomposeVariable (source : String) (stx : Syntax) : Array (String × Array String) := Id.run do
+  let binderNodes := if stx.getArgs.size ≥ 2 then stx[1].getArgs else #[]
+  let mut res : Array (String × Array String) := #[]
+  for b in binderNodes do
+    match b.getPos?, b.getTailPos? with
+    | some s, some e => res := res.push (slice source s e, collectIdents b)
+    | _, _ => pure ()
+  return res
+
+/-! ## Phase 1: process one source file -/
+
+/-- Re-elaborates `source` against `env` and classifies every command. `declPos` maps the byte index
+of each exposed declaration's range start to its name (so a command is a declaration command iff some
+such position falls inside it).
+
+Elaboration errors (notably "declaration already exists", since `env` already contains everything)
+are expected and ignored — we only consume the parsed `Syntax` and source positions, which are
+produced regardless. -/
+def processFile (env : Environment) (source : String) (filePath : String)
+    (declPos : Std.HashMap Nat Name) : IO (Array CommandEntry) := do
+  let inputCtx := Parser.mkInputContext source filePath
+  let (_, parserState, messages) ← Parser.parseHeader inputCtx
+  let cmdState := Command.mkState env messages {}
+  let s ← IO.processCommands inputCtx parserState cmdState
+  let mut entries : Array CommandEntry := #[]
+  for stx in s.commands do
+    if stx.getKind == ``Parser.Module.header then continue
+    let some cmdStart := stx.getPos? | continue
+    let some cmdEnd := stx.getTailPos? | continue
+    -- Which exposed declarations does this command define?
+    let mut names : Array Name := #[]
+    for (pos, name) in declPos do
+      if pos ≥ cmdStart.byteIdx && pos < cmdEnd.byteIdx then
+        names := names.push name
+    if !names.isEmpty then
+      -- Theorems/lemmas: replace the whole proof with `sorry`. Definitions: keep the value verbatim
+      -- but replace any embedded `by …` tactic proofs in it with `sorry`, and turn a `deriving`
+      -- clause into standalone `instance … := sorry` (it can't be delta-derived in the minimal file).
+      let (declEnd, appended) :=
+        if isTheoremDecl stx then (cmdEnd, #[])
+        else match derivingReplacement? source stx cmdEnd with
+          | some (dpos, instances) => (dpos, instances)
+          | none => (cmdEnd, #[])
+      let src :=
+        if isTheoremDecl stx then
+          match findDeclVal? stx with
+          | some (valStart, _) => slice source cmdStart valStart ++ ":= sorry"
+          | none => slice source cmdStart cmdEnd
         else
-          flds := flds.push ("  " ++ decl.userName.toString ++ " : " ++ tyStr)
-      let kw := if isClass env name then "class" else "structure"
-      let paramClause := if paramStrs.isEmpty then "" else " " ++ " ".intercalate paramStrs.toList
-      let extClause := if exts.isEmpty then "" else " extends " ++ ", ".intercalate exts.toList
-      let head := kw ++ " " ++ name.toString ++ paramClause ++ extClause ++ " where"
-      return head ++ "\n" ++ "\n".intercalate flds.toList
+          let byBlocks := match findDeclValStx? stx with
+            | some v => collectByBlocks v
+            | none => #[]
+          spliceSorry source cmdStart declEnd byBlocks
+      entries := entries.push { cls := .decl, src, kind := stx.getKind, declNames := names, appended }
+    else if isContextCmd stx then
+      let kind := stx.getKind
+      let nsName? := if kind == ``Parser.Command.namespace && stx.getArgs.size ≥ 2 then
+        some stx[1].getId else none
+      let binders := if kind == ``Parser.Command.«variable» then
+        decomposeVariable source stx else #[]
+      entries := entries.push
+        { cls := .context, src := slice source cmdStart cmdEnd, kind, nsName?, binders }
+    else
+      entries := entries.push { cls := .skip, src := slice source cmdStart cmdEnd, kind := stx.getKind }
+  return entries
 
-/-- Reconstructs an `inductive` declaration: parameters and each constructor's (fully qualified)
-type. -/
-def renderInductive (name : Name) (ii : InductiveVal) : MetaM String := do
-  let env ← getEnv
-  forallBoundedTelescope ii.type ii.numParams fun params _ => do
-    let paramStrs ← params.mapM renderBinder
-    let mut ctors : Array String := #[]
-    for ctorName in ii.ctors do
-      if let some (.ctorInfo ci) := env.find? ctorName then
-        let ty ← instantiateForall ci.type params
-        ctors := ctors.push ("  | " ++ ctorName.getString! ++ " : " ++ (← ppType ty))
-    let paramClause := if paramStrs.isEmpty then "" else " " ++ " ".intercalate paramStrs.toList
-    return "inductive " ++ name.toString ++ paramClause ++ " where\n" ++ "\n".intercalate ctors.toList
+/-! ## Phase 2: per-target filtering and section stripping -/
 
-/-- Renders a single declaration as a self-contained, fully-qualified Lean command, or `none` if its
-shape is unsupported. -/
-def renderDecl (name : Name) : MetaM (Option String) := do
-  let env ← getEnv
-  let some info := env.find? name | return none
-  match info with
-  | .thmInfo ti => return some ("theorem " ++ name.toString ++ " : " ++ (← ppType ti.type) ++ " := sorry")
-  | .axiomInfo ai => return some ("axiom " ++ name.toString ++ " : " ++ (← ppType ai.type))
-  | .opaqueInfo oi => return some ("opaque " ++ name.toString ++ " : " ++ (← ppType oi.type) ++ " := sorry")
-  | .defnInfo di =>
-      let safety := match di.safety with
-        | .unsafe => "unsafe " | .partial => "partial " | .safe => ""
-      let nonComp := if isNoncomputable env name then "noncomputable " else ""
-      let kw := nonComp ++ safety ++ (if isInstanceCore env name then "instance" else "def")
-      let val ← ppFull (← sorryProofs di.value)
-      return some (kw ++ " " ++ name.toString ++ " : " ++ (← ppType di.type) ++ " :=\n  " ++ val)
-  | .inductInfo ii =>
-      if (getStructureInfo? env name).isSome then
-        return some (← renderStructure name ii)
+/-- Restricts declaration entries to those defining a declaration in `keep`; the rest become `skip`.
+Context entries are preserved. -/
+def restrictToTarget (entries : Array CommandEntry) (keep : Std.HashSet Name) : Array CommandEntry :=
+  entries.map fun e =>
+    match e.cls with
+    | .decl => if e.declNames.any keep.contains then e else { e with cls := .skip }
+    | _ => e
+
+/-! ## Phase 3: assembly -/
+
+/-- The external (non-project) modules to `import` for `modules`. Because project modules are emitted
+inline rather than imported, an external (e.g. Mathlib) dependency may only be reachable *through* a
+project module. So we walk the import graph transitively through project modules, collecting the
+external "frontier" — every external module directly imported by any project module reachable from
+`modules`. `public import`ing those covers their transitive dependencies. -/
+partial def externalImports (env : Environment) (rootPrefix : Name) (modules : Array Name) :
+    Array Name := Id.run do
+  let directImports (modName : Name) : Array Name := Id.run do
+    let some idx := env.getModuleIdx? modName | return #[]
+    if h : idx.toNat < env.header.moduleData.size then
+      return env.header.moduleData[idx.toNat].imports.map (·.module)
+    return #[]
+  let mut visited : Std.HashSet Name := {}     -- project modules already walked
+  let mut seenExt : Std.HashSet Name := {}     -- external modules already collected
+  let mut result : Array Name := #[]
+  let mut stack := modules.toList
+  while !stack.isEmpty do
+    let modName := stack.head!
+    stack := stack.tail!
+    if visited.contains modName then continue
+    visited := visited.insert modName
+    for m in directImports modName do
+      if m == `Init then continue
+      if hasPrefixName m rootPrefix then
+        stack := m :: stack            -- project module: recurse into its imports
+      else if !seenExt.contains m then
+        seenExt := seenExt.insert m    -- external module: part of the import frontier
+        result := result.push m
+  return result
+
+/-- Re-renders a `variable` command keeping only the binders that don't mention an excluded
+declaration (`excludedShort` = short names of exposed declarations outside the target's closure).
+Returns `none` if no binder survives. -/
+def pruneVariable (e : CommandEntry) (excludedShort : Std.HashSet String) : Option String :=
+  if e.binders.isEmpty then
+    some e.src   -- couldn't decompose; keep verbatim
+  else
+    let kept := e.binders.filter fun (_, idents) => !idents.any excludedShort.contains
+    if kept.isEmpty then none
+    else some ("variable " ++ " ".intercalate (kept.map (·.1)).toList)
+
+/-- Role of a pre-rendered output chunk for scope balancing in `stripEmptyScopes`. -/
+inductive ScopeTag where
+  /-- Opens a strippable scope: `section`. Dropped if it ends up empty / `variable`-only. -/
+  | openSection
+  /-- Opens an always-kept scope: `namespace X`. Retained even when empty, so the namespace
+  reliably exists for later references. -/
+  | openNamespace
+  /-- Closes a scope: `end` or `end X`. -/
+  | close
+  /-- A `variable` line: content that does *not*, on its own, justify keeping its scope. -/
+  | soft
+  /-- A declaration or any other context command: forces the enclosing scope to be kept. -/
+  | hard
+  deriving BEq, Inhabited
+
+/-- Drops `section` scopes that contain no declarations and no context beyond `variable` lines (which
+are scoped to the dropped block, hence safe to remove with it). `namespace` scopes are always kept —
+even when empty — so the namespace reliably exists for later references. `items` pairs each
+pre-rendered output chunk with a `ScopeTag` describing its role. A `section` is kept iff it
+(transitively) contains a `hard` chunk; otherwise the whole `section … end` block — `variable` lines
+included — is dropped. Because matching opens/closes are tracked on a stack, nesting stays balanced
+regardless of how deep an empty block is. -/
+def stripEmptyScopes (items : Array (ScopeTag × String)) : String := Id.run do
+  -- Stack of open scopes: (rendered open chunk, accumulated inner chunks, must be kept?).
+  let mut stack : Array (String × Array String × Bool) := #[]
+  let mut top : Array String := #[]   -- chunks already committed at the current outermost level
+  for (tag, s) in items do
+    match tag with
+    | .openSection => stack := stack.push (s, #[], false)
+    | .openNamespace => stack := stack.push (s, #[], true)
+    | .close =>
+      if stack.isEmpty then
+        top := top.push s   -- unbalanced (shouldn't happen): emit verbatim
       else
-        return some (← renderInductive name ii)
-  | _ => return none
+        let (openLine, lines, hasContent) := stack.back!
+        stack := stack.pop
+        if hasContent then
+          let rendered := (#[openLine] ++ lines).push s
+          if stack.isEmpty then
+            top := top ++ rendered
+          else
+            let (po, pl, _) := stack.back!
+            stack := stack.set! (stack.size - 1) (po, pl ++ rendered, true)
+        -- else: drop the scope (open chunk, inner `variable` lines, and close chunk) entirely.
+    | .soft =>
+      if stack.isEmpty then
+        top := top.push s
+      else
+        let (o, l, h) := stack.back!
+        stack := stack.set! (stack.size - 1) (o, l.push s, h)
+    | .hard =>
+      if stack.isEmpty then
+        top := top.push s
+      else
+        let (o, l, _) := stack.back!
+        stack := stack.set! (stack.size - 1) (o, l.push s, true)
+  -- Flush any unclosed scopes verbatim (shouldn't happen with well-formed sources).
+  for (openLine, lines, _) in stack do
+    top := (top.push openLine) ++ lines
+  return String.join top.toList
 
-/-- Renders every declaration in `decls` once, returning a map from name to its standalone source.
-Runs in a single `MetaM` pass with the pretty-printer configured for fully-qualified, notation-free
-output (see `mkDocstringBlock?` in `Collect` for the same `CoreM`-to-`IO` pattern). -/
-def renderAllDecls (env : Environment) (decls : Array DeclInfo) : IO (Std.HashMap Name String) := do
-  let options := (Options.empty.setBool `pp.fullNames true).setBool `pp.notation false
-    |>.setBool `pp.fieldNotation false
-    -- Insert the annotations (named/explicit args) needed for the output to re-elaborate to the same
-    -- term, e.g. `Encodable.encode (α := α)` rather than a bare `Encodable.encode` with an
-    -- undetermined implicit.
-    |>.setBool `pp.analyze true
-    -- Show proofs (our `sorry`s, after `sorryProofs`) instead of eliding them as `⋯`.
-    |>.setBool `pp.proofs true
-    -- One declaration per line: avoid wrapping that would break `structure … where` field parsing.
-    |>.insert `format.width (.ofNat 100000)
-  let coreCtx : Core.Context := { fileName := "<exposition>", fileMap := default, options }
-  let act : MetaM (Std.HashMap Name String) := do
-    let mut m : Std.HashMap Name String := {}
-    for decl in decls do
-      try
-        if let some s ← renderDecl decl.name then
-          m := m.insert decl.name s
-      catch _ => pure ()
-    return m
-  (act.run' {}).toIO' coreCtx { env := env }
+/-- Assembles the standalone file for `target`. `cache` holds the processed entries per module;
+`moduleOrder` lists the project modules in dependency-first order; `keep` is the target's transitive
+closure (declarations to emit); `exposedNames` is every exposed declaration (to recognise references
+to declarations *outside* `keep`). -/
+def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap Name (Array CommandEntry))
+    (moduleOrder : Array Name) (exposedNames keep projectNamespaces : Std.HashSet Name)
+    (target : Name) : String := Id.run do
+  -- Modules contributing at least one kept declaration, in dependency order, with their filtered
+  -- (and section-stripped) entries.
+  let mut involved : Array (Name × Array CommandEntry) := #[]
+  for modName in moduleOrder do
+    if let some entries := cache.get? modName then
+      -- Keep every context command (so `namespace`/`section`/`end` nesting stays balanced) and the
+      -- declarations in the closure; other declarations become `skip`.
+      let filtered := restrictToTarget entries keep
+      if filtered.any (·.cls == .decl) then
+        involved := involved.push (modName, filtered)
+  -- Short names of exposed declarations *not* emitted in this file: a `variable` binder mentioning
+  -- one of these would reference an undefined name, so such binders are dropped.
+  let excludedShort : Std.HashSet String := exposedNames.fold (init := {}) fun s n =>
+    if keep.contains n then s else s.insert n.getString!
+  -- Project namespaces entered (`namespace Foo`) or opened (`open … Foo …`) across the involved
+  -- modules. We emit existence stubs for them up front, since an `open Foo` may precede the
+  -- `namespace Foo` that (re)creates `Foo` here — and may even refer to a namespace no kept
+  -- declaration re-enters.
+  let nsStubs : Array Name := Id.run do
+    let mut seen : Std.HashSet Name := {}
+    let mut acc : Array Name := #[]
+    let add (ns : Name) (seen : Std.HashSet Name) (acc : Array Name) :=
+      if seen.contains ns then (seen, acc) else (seen.insert ns, acc.push ns)
+    for (_, entries) in involved do
+      for e in entries do
+        if let some ns := e.nsName? then
+          (seen, acc) := add ns seen acc
+        else if e.kind == ``Parser.Command.«open» then
+          -- Tokens after `open`/`scoped` that name a project namespace.
+          for tok in (e.src.replace "\n" " ").splitOn " " do
+            let nm := tok.trimAscii.toString.toName
+            if projectNamespaces.contains nm then
+              (seen, acc) := add nm seen acc
+    return acc
+  let imports := externalImports env rootPrefix (involved.map (·.1))
+  -- The extracted files are terminal and self-contained (nothing imports them), so the source's
+  -- module-system scaffolding (`module` header, `public import`, `@[expose] public section`) is
+  -- unnecessary: plain `import`s suffice, and the `@[expose] public section` wrappers are dropped
+  -- below.
+  let importBlock := if imports.isEmpty then "import Mathlib\n" else
+    String.join (imports.toList.map (fun i => s!"import {i}\n"))
+  let mut out := importBlock
+  out := out ++ s!"\n/-! # Standalone extraction for `{target}`\n"
+    ++ "Definitions are copied verbatim; theorem proofs are replaced by `sorry`.\n"
+    ++ "Auto-generated by LeanExposition. -/\n"
+  -- Replayed `notation`/`macro` commands may mention declarations that appear later in the file;
+  -- defer identifier resolution in their right-hand sides to use sites.
+  out := out ++ "\nset_option quotPrecheck false\n"
+  unless nsStubs.isEmpty do
+    out := out ++ "\n-- Namespace stubs (so later `open`s resolve).\n"
+    for ns in nsStubs do
+      out := out ++ s!"namespace {ns}\nend {ns}\n"
+  -- Build the per-module body as tagged chunks, then drop empty/`variable`-only scopes.
+  let mut items : Array (ScopeTag × String) := #[]
+  for (modName, entries) in involved do
+    let shortName :=
+      if hasPrefixName modName rootPrefix then
+        modName.toString.drop (rootPrefix.toString.length + 1)
+      else modName.toString
+    items := items.push (.hard, s!"\n-- ═══ {shortName} ═══\n")
+    for e in entries do
+      match e.cls with
+      | .context =>
+        let trimmedSrc := e.src.trimAsciiStart.toString
+        if trimmedSrc.startsWith "@[expose]" || (trimmedSrc.splitOn "public section").length > 1 then
+          pure ()   -- drop the module-system `@[expose] public section` wrapper
+        else if e.kind == ``Parser.Command.«variable» then
+          if let some v := pruneVariable e excludedShort then
+            items := items.push (.soft, v ++ "\n")
+        else if e.kind == ``Parser.Command.namespace then
+          items := items.push (.openNamespace, e.src ++ "\n")
+        else if e.kind == ``Parser.Command.«section» then
+          items := items.push (.openSection, e.src ++ "\n")
+        else if e.kind == ``Parser.Command.«end» then
+          items := items.push (.close, e.src ++ "\n")
+        else
+          items := items.push (.hard, e.src ++ "\n")
+      | .decl =>
+        let mut s := "\n" ++ e.src ++ "\n"
+        for extra in e.appended do
+          s := s ++ extra ++ "\n"
+        items := items.push (.hard, s)
+      | .skip => pure ()
+  out := out ++ stripEmptyScopes items
+  return (out.trimAsciiEnd).toString ++ "\n"
 
-/-! ## Assembling a file -/
+/-! ## Driver -/
 
-/-- Builds the full standalone Lean file for `target` from the pre-rendered declarations. -/
-def extractStandalone (env : Environment) (rootPrefix : Name)
-    (declByName : Std.HashMap Name DeclInfo) (rendered : Std.HashMap Name String)
-    (target : DeclInfo) : String := Id.run do
-  let emit := emitOrder declByName target
-  let imports := importModules env rootPrefix declByName emit
-  let importBlock := if imports.isEmpty then #["import Mathlib"] else imports.map (s!"import {·}")
-  let header := #[
-    "",
-    s!"/- Standalone extraction for `{target.name}`.",
-    "   Definitions are kept in full; all proofs are replaced by `sorry`.",
-    "   Auto-generated by LeanExposition. -/",
-    ""]
-  let body := emit.filterMap (fun d => rendered.get? d.name)
-  let parts := importBlock.toList ++ header.toList ++ (body.toList.intersperse "") ++ [""]
-  return "\n".intercalate parts
+/-- Computes the byte index (in `source`) of the start of each exposed declaration's range, for the
+declarations in `modDecls`. -/
+def declPositions (env : Environment) (source : String) (modDecls : Array DeclInfo) :
+    IO (Std.HashMap Nat Name) := do
+  let fileMap := FileMap.ofString source
+  let mut m : Std.HashMap Nat Name := {}
+  for decl in modDecls do
+    if let some ranges ← findRanges? env decl.name then
+      m := m.insert (fileMap.ofPosition ranges.range.pos).byteIdx decl.name
+  return m
 
-/-- Writes a standalone `<anchorId>.lean` file for every declaration into `dir` (the file name
-matches `anchorIdOf` so it can be linked from a declaration's page). Declarations are rendered once
-up front and shared across all files. Returns the number of files written. -/
+/-- Writes a verbatim standalone `<anchorId>.lean` file for every declaration in `decls` into `dir`.
+Each project source file is processed once; targets are then assembled by filtering. Returns the
+number of files written. -/
 def writeAllExtractions (env : Environment) (rootPrefix : Name)
-    (declByName : Std.HashMap Name DeclInfo) (decls : Array DeclInfo) (dir : System.FilePath) :
-    IO Nat := do
-  let rendered ← renderAllDecls env decls
+    (decls : Array DeclInfo) (projectDir : System.FilePath)
+    (dir : System.FilePath) : IO Nat := do
+  let exposedNames : Std.HashSet Name := decls.foldl (·.insert ·.name) {}
+  -- Every project namespace, taken as the proper-prefix ancestors of the exposed declaration names.
+  let projectNamespaces : Std.HashSet Name := decls.foldl (init := {}) fun s d =>
+    (namespaceAncestors d.name.getPrefix).foldl (·.insert ·) s
+  -- Group exposed declarations by module.
+  let declsByModule : Std.HashMap Name (Array DeclInfo) :=
+    decls.foldl (fun m d => m.insert d.moduleName ((m.getD d.moduleName #[]).push d)) {}
+  -- Project modules in dependency-first order (the order of `env.header.moduleNames`), restricted to
+  -- those that contain an exposed declaration.
+  let moduleOrder : Array Name := env.header.moduleNames.filter declsByModule.contains
+  -- Phase 1: process each contributing source file once.
+  let mut cache : Std.HashMap Name (Array CommandEntry) := {}
+  for modName in moduleOrder do
+    let modDecls := declsByModule.getD modName #[]
+    let path := moduleSourcePath projectDir modName
+    let some source ← (do try pure (some (← IO.FS.readFile path)) catch _ => pure none)
+      | continue
+    let declPos ← declPositions env source modDecls
+    let entries ← processFile env source path.toString declPos
+    cache := cache.insert modName entries
+  -- Phase 3: assemble and write one file per declaration.
   IO.FS.createDirAll dir
   for decl in decls do
-    let content := extractStandalone env rootPrefix declByName rendered decl
+    let keep : Std.HashSet Name :=
+      (decl.transDeps.filter exposedNames.contains).foldl (·.insert ·) ({} : Std.HashSet Name)
+        |>.insert decl.name
+    let content := assembleTarget env rootPrefix cache moduleOrder exposedNames keep
+      projectNamespaces decl.name
     IO.FS.writeFile (dir / s!"{anchorIdOf decl.name}.lean") content
   return decls.size
 

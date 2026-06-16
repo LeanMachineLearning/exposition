@@ -87,6 +87,12 @@ body {
   box-shadow: 0 12px 32px rgba(214, 93, 93, 0.14);
 }
 
+.decl-card--definition {
+  background: linear-gradient(135deg, #eef5f7 0%, var(--site-card) 55%);
+  border-left-color: #4a8a9e;
+  box-shadow: 0 10px 28px rgba(74, 138, 158, 0.10);
+}
+
 .decl-card-label--theorem {
   background: var(--site-accent);
   border-radius: 6px;

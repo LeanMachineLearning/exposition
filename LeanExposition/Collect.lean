@@ -632,6 +632,12 @@ def moduleNameOf (env : Environment) (name : Name) : Option Name := do
   let idx ← env.getModuleIdxFor? name
   env.header.moduleNames[idx.toNat]?
 
+/-- True if `name` is defined in a project module (one whose name has `rootPrefix` as a prefix).
+This is keyed on the declaration's *module*, not its name: a project's declaration names need not
+share the root module prefix (e.g. module `LeanMachineLearning.…` declaring `Bandits.foo`). -/
+def isProjectLocalConst (env : Environment) (rootPrefix : Name) (name : Name) : Bool :=
+  (moduleNameOf env name).any (hasPrefixName · rootPrefix)
+
 /-- Infers the display kind for a declaration from environment metadata. -/
 def declKindOf (env : Environment) (info : ConstantInfo) (name : Name) : DeclKind :=
   if Lean.Meta.isInstanceCore env name then
@@ -913,7 +919,7 @@ where
         go cache visited acc rest
       else
         let visited := visited.insert n
-        let isInternalHelper := !exposed.contains n && hasPrefixName n rootPrefix
+        let isInternalHelper := !exposed.contains n && isProjectLocalConst env rootPrefix n
         if !isInternalHelper then
           go cache visited (acc.push n) rest
         else
@@ -946,7 +952,7 @@ where
         go visited rest
       else
         let visited := visited.insert n
-        let isInternalHelper := !exposed.contains n && hasPrefixName n rootPrefix
+        let isInternalHelper := !exposed.contains n && isProjectLocalConst env rootPrefix n
         if !isInternalHelper then
           go visited rest
         else match env.find? n with
