@@ -273,9 +273,18 @@ def modulePathOf (rootPrefix moduleName : Name) : String :=
   | [] => moduleName.toString
   | _ => String.intercalate "." tail
 
-/-- Computes anchor IdOf. -/
+/-- Maps a declaration name to an identifier safe to use as a filename, URL, and HTML anchor:
+namespace dots become `___`, and the characters forbidden in filenames on some operating systems
+(Windows: `< > : " / \ | ? *`) are replaced by fullwidth Unicode lookalikes that are legal
+everywhere. Notation declarations such as `«term𝓛[_|_;_]»` would otherwise produce a `|` in the
+filename, which is illegal on Windows and rejected by Lean's module-name portability check. -/
 def anchorIdOf (name : Name) : String :=
-  String.intercalate "___" (name.toString.splitOn ".")
+  let safeChar : Char → Char := fun c =>
+    match c with
+    | '<' => '＜' | '>' => '＞' | ':' => '：' | '"' => '＂' | '/' => '／'
+    | '\\' => '＼' | '|' => '｜' | '?' => '？' | '*' => '＊'
+    | _ => c
+  (String.intercalate "___" (name.toString.splitOn ".")).map safeChar
 
 /-- Helper for mkInlineText. -/
 def mkInlineText (s : String) : Inline Manual :=
@@ -975,6 +984,68 @@ def projectConstants (env : Environment) (rootPrefix : Name) : Array (Name × Na
         (fun acc2 (cname, cinfo) => acc2.push (cname, modName, cinfo)) acc
     else acc) #[]
 
+/-- The `String` a string-literal `Expr` holds, if `e` is one. -/
+private def exprStrLit? (e : Expr) : Option String :=
+  match e with
+  | .lit (.strVal s) => some s
+  | _ => none
+
+/-- Reconstructs the `Name` value that `e` builds, if `e` is a `Name.anonymous`/`Name.str`/
+`Name.mkStr1..4` application. Notation and macro definitions store the constants they expand to as
+pre-resolved `Name` *data* built this way (inside the embedded `Syntax`), so these references are
+invisible to `Expr.getUsedConstants`; reconstructing them is how we recover the dependency. -/
+partial def evalNameExpr? (e : Expr) : Option Name := do
+  match e.getAppFnArgs with
+  | (``Lean.Name.anonymous, _) => some .anonymous
+  | (``Lean.Name.mkStr1, #[a]) => some (.str .anonymous (← exprStrLit? a))
+  | (``Lean.Name.mkStr2, #[a, b]) =>
+    some (.str (.str .anonymous (← exprStrLit? a)) (← exprStrLit? b))
+  | (``Lean.Name.mkStr3, #[a, b, c]) =>
+    some (.str (.str (.str .anonymous (← exprStrLit? a)) (← exprStrLit? b)) (← exprStrLit? c))
+  | (``Lean.Name.mkStr4, #[a, b, c, d]) =>
+    some (.str (.str (.str (.str .anonymous (← exprStrLit? a)) (← exprStrLit? b)) (← exprStrLit? c))
+      (← exprStrLit? d))
+  | (``Lean.Name.str, #[p, s]) => some (.str (← evalNameExpr? p) (← exprStrLit? s))
+  | _ => none
+
+/-- Every `Name` value embedded anywhere in `e` (reconstructed via `evalNameExpr?`). -/
+partial def collectEmbeddedNames (e : Expr) : Array Name := Id.run do
+  let mut acc : Array Name := #[]
+  if let some n := evalNameExpr? e then acc := acc.push n
+  match e with
+  | .app f a => return acc ++ collectEmbeddedNames f ++ collectEmbeddedNames a
+  | .lam _ t b _ => return acc ++ collectEmbeddedNames t ++ collectEmbeddedNames b
+  | .forallE _ t b _ => return acc ++ collectEmbeddedNames t ++ collectEmbeddedNames b
+  | .letE _ t v b _ =>
+    return acc ++ collectEmbeddedNames t ++ collectEmbeddedNames v ++ collectEmbeddedNames b
+  | .mdata _ b => return acc ++ collectEmbeddedNames b
+  | .proj _ _ b => return acc ++ collectEmbeddedNames b
+  | _ => return acc
+
+/-- True if `n` names a notation/syntax parser (its type is `Lean.ParserDescr`/`TrailingParserDescr`). -/
+def isNotationKind (env : Environment) (n : Name) : Bool :=
+  match env.find? n with
+  | some info => info.type.isConstOf ``Lean.ParserDescr || info.type.isConstOf ``Lean.TrailingParserDescr
+  | none => false
+
+/-- Maps each notation parser to the constants its expansion references. A notation's macro definition
+embeds both its own parser kind and the constant(s) it abbreviates as pre-resolved `Name` data (see
+`evalNameExpr?`). Scanning the project's definitions, any whose body embeds a notation kind `K`
+contributes its other embedded (real) constants as dependencies of `K` — so `K`'s standalone
+extraction inlines what it stands for instead of failing with `unknown constant`. -/
+def notationExpansionDeps (env : Environment) (projectConsts : Array (Name × Name × ConstantInfo)) :
+    Std.HashMap Name (Array Name) := Id.run do
+  let mut m : Std.HashMap Name (Array Name) := {}
+  for (_, _, cinfo) in projectConsts do
+    if let .defnInfo v := cinfo then
+      let names := (collectEmbeddedNames v.value).filter (env.contains ·)
+      let kinds := names.filter (isNotationKind env ·)
+      unless kinds.isEmpty do
+        let realDeps := names.filter (!isNotationKind env ·)
+        for k in kinds do
+          m := m.insert k ((m.getD k #[]) ++ realDeps)
+  return m
+
 /-- Collects all exposed declarations and computes their primary metadata. -/
 def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     (pkg : Lake.Package) (env : Environment) : IO (Array DeclInfo) := do
@@ -988,6 +1059,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       match origin with
       | .decl declName .. => acc.insert declName
       | _ => acc) {}
+  let notationDeps := notationExpansionDeps env projectConsts
   let mut cache : Std.HashMap Name (Array Name) := {}
   let mut fileLines : Std.HashMap System.FilePath (Array String) := {}
   let mut decls := #[]
@@ -1025,7 +1097,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     -- any project-local compiler-generated helpers (`_proof_N`, `match_..`, field defaults, ...)
     -- so that dependencies hidden behind those helpers are surfaced too.
     let typeUsedConstants := usedConstantsOf env name info false
-    let allUsedConstants := usedConstantsOf env name info true
+    let allUsedConstants := usedConstantsOf env name info true ++ notationDeps.getD name #[]
     let (typeExpanded, cache1) := expandThroughInternals env rootPrefix exposed cache typeUsedConstants
     let (allExpanded, cache2) := expandThroughInternals env rootPrefix exposed cache1 allUsedConstants
     cache := cache2

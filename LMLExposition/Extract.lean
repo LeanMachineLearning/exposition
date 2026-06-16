@@ -357,13 +357,23 @@ inductive ScopeTag where
   | hard
   deriving BEq, Inhabited
 
-/-- Drops `section` scopes that contain no declarations and no context beyond `variable` lines (which
-are scoped to the dropped block, hence safe to remove with it). `namespace` scopes are always kept —
-even when empty — so the namespace reliably exists for later references. `items` pairs each
-pre-rendered output chunk with a `ScopeTag` describing its role. A `section` is kept iff it
-(transitively) contains a `hard` chunk; otherwise the whole `section … end` block — `variable` lines
-included — is dropped. Because matching opens/closes are tracked on a stack, nesting stays balanced
-regardless of how deep an empty block is. -/
+/-- Collapses runs of two or more consecutive blank lines into a single blank line. -/
+def collapseBlankRuns (s : String) : String :=
+  let isBlank (l : String) : Bool := l.all Char.isWhitespace
+  let collapsed := s.splitOn "\n" |>.foldl (init := ([] : List String)) fun acc line =>
+    match acc with
+    | prev :: _ => if isBlank line && isBlank prev then acc else line :: acc
+    | [] => [line]
+  "\n".intercalate collapsed.reverse
+
+/-- Drops `section` and `namespace` scopes that contain no declarations and no context beyond
+`variable` lines (which are scoped to the dropped block, hence safe to remove with it). An empty or
+`variable`-only `namespace … end` block is useless here because the namespace stubs emitted at the
+top of the file already declare it for later references. `items` pairs each pre-rendered output chunk
+with a `ScopeTag` describing its role. A scope is kept iff it (transitively) contains a `hard` chunk;
+otherwise the whole `… end` block — `variable` lines included — is dropped. Because matching
+opens/closes are tracked on a stack, nesting stays balanced regardless of how deep an empty block
+is. -/
 def stripEmptyScopes (items : Array (ScopeTag × String)) : String := Id.run do
   -- Stack of open scopes: (rendered open chunk, accumulated inner chunks, must be kept?).
   let mut stack : Array (String × Array String × Bool) := #[]
@@ -371,7 +381,9 @@ def stripEmptyScopes (items : Array (ScopeTag × String)) : String := Id.run do
   for (tag, s) in items do
     match tag with
     | .openSection => stack := stack.push (s, #[], false)
-    | .openNamespace => stack := stack.push (s, #[], true)
+    -- Namespaces start as "droppable" too: an empty or `variable`-only `namespace … end` later in
+    -- the file is useless, since the namespace stubs at the top already declare it for `open`s.
+    | .openNamespace => stack := stack.push (s, #[], false)
     | .close =>
       if stack.isEmpty then
         top := top.push s   -- unbalanced (shouldn't happen): emit verbatim
@@ -485,16 +497,21 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
           items := items.push (.openSection, e.src ++ "\n")
         else if e.kind == ``Parser.Command.«end» then
           items := items.push (.close, e.src ++ "\n")
+        else if e.kind == ``Parser.Command.«open» then
+          -- Like `variable`: emitted if its scope survives, but doesn't on its own keep an otherwise
+          -- empty `section`/`namespace` alive.
+          items := items.push (.soft, e.src ++ "\n")
         else
           items := items.push (.hard, e.src ++ "\n")
       | .decl =>
         let mut s := "\n" ++ e.src ++ "\n"
         for extra in e.appended do
           s := s ++ extra ++ "\n"
+        s := s ++ "\n"
         items := items.push (.hard, s)
       | .skip => pure ()
   out := out ++ stripEmptyScopes items
-  return (out.trimAsciiEnd).toString ++ "\n"
+  return (collapseBlankRuns out).trimAsciiEnd.toString ++ "\n"
 
 /-! ## Driver -/
 
