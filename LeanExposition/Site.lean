@@ -11,6 +11,7 @@ import LeanExposition.Theme
 import LeanExposition.GraphJs
 import LeanExposition.TocJs
 import LeanExposition.Collect
+import LeanExposition.Extract
 
 open Lake
 open Lean
@@ -372,8 +373,8 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
   { nodes, edges }
 
 /-- Builds a dedicated detail page for one declaration: its own card, followed by cards for its
-type dependencies, followed by cards for the rest of its transitive dependencies (closest
-first). -/
+type dependencies, followed by cards for the rest of its transitive dependencies in topological
+order (each dependency before the declarations that use it). -/
 private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   Id.run do
   let mkCard (dep : Name) : Option (Block Manual) :=
@@ -553,6 +554,8 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   let imports := importRoots ws cfg.excludeLibs
   let env ← loadEnv projectDir ws imports
   let decls ← collectDecls projectDir rootPrefix ws.root env
+  let decls := decls |> attachReverseDeps |> attachTransitiveDeps |> attachDependsOnSorry
+  let declByName := declByNameMap decls
   let excludedNames :=
     (projectConstants env rootPrefix).filterMap fun (name, _, info) =>
       if shouldExpose env rootPrefix name info then none else some name
@@ -570,16 +573,19 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
     IO.eprintln s!"No declarations exposed under module filtering. Declarations with matching name prefix: {namedCount}"
   else
     IO.println s!"Collected {decls.size} declarations under {rootPrefix}"
-  let decls := decls |> attachReverseDeps |> attachTransitiveDeps |> attachDependsOnSorry
   let order ← moduleOrderMap projectDir rootPrefix
   let modules := buildModules env rootPrefix order decls
   let groups := buildGroups order modules
   let ctx : SiteContext := {
     repoUrl? := cfg.repoUrl
-    declByName := declByNameMap decls
+    declByName := declByName
     declHrefs := declHrefMap decls
     declPageHrefs := declPageHrefMap decls
   }
+  if let some out := cfg.outputDir then
+    let startMs ← IO.monoMsNow
+    let n ← writeAllExtractions env rootPrefix declByName decls (System.FilePath.mk out / "extracted")
+    IO.println s!"Wrote {n} standalone extraction files in {(← IO.monoMsNow) - startMs}ms"
   let (introBlocks, extraParts) ← loadProjectContextParts projectDir cfg.repoUrl
   let hasContext := extraParts.any fun part => part.metadata.bind PartMetadata.file == some "context"
   let readerGuideBlocks := mkReaderGuideBlocks hasContext

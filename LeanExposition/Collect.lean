@@ -1064,32 +1064,42 @@ def attachReverseDeps (decls : Array DeclInfo) : Array DeclInfo :=
     {}
   decls.map fun decl => { decl with usedBy := (rev.getD decl.name #[]).qsort Name.lt }
 
-/-- Computes the declarations reachable from `start` via `depsMap`, in breadth-first order
-(closest dependencies first). -/
-partial def transitiveClosure (depsMap : Std.HashMap Name (Array Name)) (start : Array Name) :
-    Array Name :=
-  (go {} #[] start.toList).2
-where
-  go (visited : Std.HashSet Name) (order : Array Name) :
-      List Name → Std.HashSet Name × Array Name
-    | [] => (visited, order)
-    | n :: rest =>
-      if visited.contains n then
-        go visited order rest
-      else
-        go (visited.insert n) (order.push n) (rest ++ (depsMap.getD n #[]).toList)
+/-- Computes the declarations reachable from `start` via `depsMap`, in *topological* order: every
+declaration appears after all of the declarations it depends on (a depth-first post-order). This is
+the order in which the declarations could be emitted into a single self-contained Lean file, with
+each definition preceding its first use.
 
-/-- Adds the transitive closure of `deps` (all declarations reachable, recursively, ordered with
-the closest dependencies first) to each declaration as `transDeps`. Expansion follows only
-`typeDeps` for theorems (their proofs are not part of what a reader must trust further) and
-`deps` (type + body) for everything else. -/
+Cycles (e.g. mutual recursion) are tolerated: a node is marked visited on entry, so the walk
+terminates, and the members of a cycle come out in some arbitrary but otherwise dependency-respecting
+order. -/
+partial def topologicalClosure (depsMap : Std.HashMap Name (Array Name)) (start : Array Name) :
+    Array Name :=
+  (start.foldl (fun (acc : Std.HashSet Name × Array Name) n => visit acc.1 acc.2 n) ({}, #[])).2
+where
+  visit (visited : Std.HashSet Name) (order : Array Name) (n : Name) :
+      Std.HashSet Name × Array Name :=
+    if visited.contains n then
+      (visited, order)
+    else
+      -- Mark `n` before recursing so a dependency cycle cannot loop forever.
+      let visited := visited.insert n
+      let (visited, order) :=
+        (depsMap.getD n #[]).foldl
+          (fun (acc : Std.HashSet Name × Array Name) d => visit acc.1 acc.2 d) (visited, order)
+      -- Emit `n` only after all of its dependencies have been emitted.
+      (visited, order.push n)
+
+/-- Adds the transitive closure of `deps` to each declaration as `transDeps`, topologically ordered
+so that every dependency precedes the declarations that use it (suitable for emitting a minimal
+standalone Lean file). Expansion follows only `typeDeps` for theorems (their proofs are not part of
+what a reader must trust further) and `deps` (type + body) for everything else. -/
 def attachTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
   let depsMap : Std.HashMap Name (Array Name) :=
     decls.foldl (fun acc decl =>
       acc.insert decl.name (if decl.kind == .theorem then decl.typeDeps else decl.deps)) {}
   decls.map fun decl =>
     let start := if decl.kind == .theorem then decl.typeDeps else decl.deps
-    let closure := transitiveClosure depsMap start
+    let closure := topologicalClosure depsMap start
     { decl with transDeps := closure.filter (· != decl.name) }
 
 /-- Marks declarations that transitively depend on any `sorry`. -/

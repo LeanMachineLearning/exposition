@@ -15,7 +15,7 @@ name = "LeanExposition"
 
 [[lean_lib]]
 name = "Test"
-globs = ["Test", "Test.Collect"]
+globs = ["Test", "Test.Collect", "Test.Extract"]
 
 [[lean_exe]]
 name = "exposition"

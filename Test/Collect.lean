@@ -9,7 +9,7 @@ build and propagate the dependency lists of a declaration:
 * name classification feeding `shouldExpose` / dependency expansion
   (`isPrefixWithDigitSuffix`, `isAuxComponent`, `isInternalName`, `hasPrefixName`);
 * the dependency-graph passes that run on the collected `DeclInfo` array
-  (`transitiveClosure`, `attachReverseDeps`, `attachTransitiveDeps`, `attachDependsOnSorry`);
+  (`topologicalClosure`, `attachReverseDeps`, `attachTransitiveDeps`, `attachDependsOnSorry`);
 * the small name/string helpers used to build hrefs and signatures.
 
 Each check is a `#guard`, so any regression turns into a build error. Run with
@@ -132,24 +132,31 @@ private def mkDecl (name : Name) (deps : Array Name := #[]) (typeDeps : Array Na
 private def field {α : Type} (decls : Array DeclInfo) (name : Name) (f : DeclInfo → α) : Option α :=
   (decls.find? (·.name == name)).map f
 
-/-! ### `transitiveClosure` (breadth-first, closest dependencies first) -/
+/-! ### `topologicalClosure` (depth-first post-order: every dependency before its users) -/
 
 private def diamond : HashMap Name (Array Name) :=
   .ofList [(`A, #[`B, `C]), (`B, #[`D]), (`C, #[`D]), (`D, #[`E]), (`E, #[])]
 
--- Starting from a node includes that node, then BFS levels in order, each node once.
-#guard transitiveClosure diamond #[`A] == #[`A, `B, `C, `D, `E]
-#guard transitiveClosure diamond #[`B, `C] == #[`B, `C, `D, `E]
-#guard transitiveClosure diamond #[`E] == #[`E]
-#guard transitiveClosure diamond #[] == (#[] : Array Name)
+-- Dependencies come out before the declarations that use them: `E` (deepest) first, the start
+-- node `A` last. Each node appears exactly once.
+#guard topologicalClosure diamond #[`A] == #[`E, `D, `B, `C, `A]
+#guard topologicalClosure diamond #[`B, `C] == #[`E, `D, `B, `C]
+#guard topologicalClosure diamond #[`E] == #[`E]
+#guard topologicalClosure diamond #[] == (#[] : Array Name)
 
 -- A cycle must terminate and visit each node exactly once.
 private def cyclic : HashMap Name (Array Name) :=
   .ofList [(`A, #[`B]), (`B, #[`A])]
-#guard transitiveClosure cyclic #[`A] == #[`A, `B]
+#guard topologicalClosure cyclic #[`A] == #[`B, `A]
 
 -- Unknown nodes are treated as leaves (no entry ⇒ no further deps).
-#guard transitiveClosure diamond #[`Z] == #[`Z]
+#guard topologicalClosure diamond #[`Z] == #[`Z]
+
+-- The defining property: for the full ordering, every node precedes all nodes that depend on it.
+-- Here `lib → util → core`, with an extra `app → lib`, so the order must be core, util, lib, app.
+private def layered : HashMap Name (Array Name) :=
+  .ofList [(`app, #[`lib]), (`lib, #[`util]), (`util, #[`core]), (`core, #[])]
+#guard topologicalClosure layered #[`app] == #[`core, `util, `lib, `app]
 
 /-! ### `attachReverseDeps` (`usedBy` = reverse of `deps`, restricted to exposed decls, sorted) -/
 
@@ -170,16 +177,17 @@ private def revGraph : Array DeclInfo := #[
 /-! ### `attachTransitiveDeps`
 
 `transDeps` follows `typeDeps` for theorems and `deps` for everything else, *per visited node*,
-and never contains the declaration itself.
+is topologically ordered (every dependency before its users), and never contains the declaration
+itself.
 -/
 
--- Plain chain of definitions: full transitive closure of `deps`.
+-- Plain chain of definitions: full transitive closure of `deps`, leaf (`C`) first.
 private def chain : Array DeclInfo := #[
   mkDecl `A (deps := #[`B]),
   mkDecl `B (deps := #[`C]),
   mkDecl `C (deps := #[])
 ]
-#guard field (attachTransitiveDeps chain) `A (·.transDeps) == some #[`B, `C]
+#guard field (attachTransitiveDeps chain) `A (·.transDeps) == some #[`C, `B]
 
 -- A theorem expands only its `typeDeps`, dropping body-only dependencies from the closure.
 -- Here theorem `T` has `B` in its statement and `Hidden` only in its proof body.
@@ -189,8 +197,8 @@ private def thmGraph : Array DeclInfo := #[
   mkDecl `C,
   mkDecl `Hidden (deps := #[`Leak])
 ]
--- `Hidden` (and therefore `Leak`) must NOT be part of the theorem's transitive deps.
-#guard field (attachTransitiveDeps thmGraph) `T (·.transDeps) == some #[`B, `C]
+-- `Hidden` (and therefore `Leak`) must NOT be part of the theorem's transitive deps; `C` precedes `B`.
+#guard field (attachTransitiveDeps thmGraph) `T (·.transDeps) == some #[`C, `B]
 
 -- When a *definition* depends on a theorem, traversal into the theorem switches to the theorem's
 -- `typeDeps`, so the theorem's proof-body deps stay out of the definition's closure too.
@@ -200,7 +208,8 @@ private def defUsesThm : Array DeclInfo := #[
   mkDecl `B,
   mkDecl `Hidden
 ]
-#guard field (attachTransitiveDeps defUsesThm) `D (·.transDeps) == some #[`T, `B]
+-- `B` (the theorem's type dep) precedes `T`.
+#guard field (attachTransitiveDeps defUsesThm) `D (·.transDeps) == some #[`B, `T]
 
 -- Self-reference (e.g. mutual/recursive) is filtered out of `transDeps`.
 private def mutualGraph : Array DeclInfo := #[
