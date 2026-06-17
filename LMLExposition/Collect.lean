@@ -211,19 +211,62 @@ def isAuxComponent (s : String) : Bool :=
     || isPrefixWithDigitSuffix "eq_" s || s == "eq_def" || s == "eq_unfold"
     || isPrefixWithDigitSuffix "hcongr_" s
 
-/-- Checks whether InternalName. Note that `mk` is intentionally *not* listed: a name ending in `mk`
-is the auto-generated structure constructor only when the environment says so (a `ctorInfo`), which
-`shouldExpose` checks separately. A user declaration named `Foo.mk` (e.g. when a structure's real
-constructor was renamed to free up `mk`) must not be hidden. -/
+/-- Auto-generated companion names that Lean exposes *no* dedicated environment predicate for, so
+they can only be recognized by their (stable) spelling. A name *any* of whose components matches is
+treated as internal, matched at every component (not just the last) so helpers nested under an
+already-internal name (e.g. `Foo.match_1.eq_1`) are caught too.
+
+This list is deliberately the residual left after `shouldExpose` first consults everything Lean
+*does* know directly:
+* the recursor family (`rec`, `recOn`, `casesOn`, `brecOn`, `below`, `binductionOn`, ...) →
+  `ConstantInfo.recInfo` and `isAuxRecursor`;
+* `noConfusion` → `isNoConfusion` (note: its `noConfusionType` sibling is *not* covered by that
+  predicate, hence it remains here);
+* constructor companions (`mk.inj`, `mk.injEq`, `mk.sizeOf_spec`, ...) → `hasConstructorPrefix`,
+  which keys on `ctorInfo` rather than on the string `mk`, so a user declaration named `Foo.mk`
+  (a structure whose real constructor was renamed to free up `mk`) or a legitimate theorem such as
+  `Kernel.prodMkLeft_inj` is never mistaken for compiler output.
+
+What is left here are companions Lean attaches to *ordinary* declarations (not just constructors)
+or to types without flagging them: `congr_simp` (added to defs and inductives alike), the `@[ext]`
+lemma `ext_iff`, the induction principle `ind`, the constructor-index helper `ctorIdx`, and
+`noConfusionType`.
+
+`noConfusionType`, `ctorIdx`, and `congr_simp` were each observed leaking on the LML test project
+when removed. `ind` and `ext_iff` were *not* exercised by that project (no Prop inductive's `.ind`
+nor any `@[ext]` structure surfaced one), but they are standard generated companions and are kept
+here so the tool stays correct on projects that do use them. -/
+def internalComponentNames : List String :=
+  ["noConfusionType", "ind", "ctorIdx", "ext_iff", "congr_simp"]
+
+/-- True if any component of `name` is an auxiliary component (`isAuxComponent`) or one of the
+compiler's auto-generated companion names (`internalComponentNames`). -/
 partial def isInternalName : Name → Bool
   | .anonymous => false
   | .num p _ => isInternalName p
   | .str p s =>
       isAuxComponent s
-      || s ∈ ["brecOn", "below", "casesOn", "noConfusion", "noConfusionType",
-              "recOn", "rec", "ind", "sizeOf_spec", "inject", "injEq",
-              "ctorIdx", "ext_iff", "congr_simp"]
+      || s ∈ internalComponentNames
       || isInternalName p
+
+/-- True when some strict prefix of `name` is the name of a constructor in `env`, i.e. `name` lives
+inside a constructor's namespace. Everything Lean places there (`S.mk.inj`, `S.mk.injEq`,
+`S.mk.sizeOf_spec`, ...) is auto-generated and should be hidden.
+
+This keys on the environment's `ctorInfo` rather than on the spelling of the prefix, so it hides
+these companions for *any* constructor name (`mk`, a custom `intro`, ...) while leaving a user
+declaration that merely happens to be named like a constructor (its prefix is not a `ctorInfo`)
+untouched. -/
+partial def hasConstructorPrefix (env : Environment) (name : Name) : Bool :=
+  go name.getPrefix
+where
+  go : Name → Bool
+    | .anonymous => false
+    | n =>
+      (match env.find? n with
+       | some (.ctorInfo _) => true
+       | _ => false)
+      || go n.getPrefix
 
 /-- Checks whether PrefixName. -/
 def hasPrefixName (n prefixName : Name) : Bool :=
@@ -718,6 +761,8 @@ def shouldExpose (env : Environment) (rootPrefix : Name) (name : Name) (info : C
     else if isInternalName name || name.isInternal || name.isImplementationDetail then
       false
     else if isAuxRecursor env name || isNoConfusion env name then
+      false
+    else if hasConstructorPrefix env name then
       false
     else match info with
       | .ctorInfo _ | .recInfo _ | .quotInfo _ => false
