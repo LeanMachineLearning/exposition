@@ -162,15 +162,16 @@ def isContextCmd (stx : Syntax) : Bool :=
 def slice (source : String) (s e : String.Pos.Raw) : String :=
   ({ str := source, startPos := s, stopPos := e } : Substring.Raw).toString
 
-/-- The source `[cmdStart, cmdEnd)` with each `replace` byte range substituted by `sorry`. -/
-def spliceSorry (source : String) (cmdStart cmdEnd : String.Pos.Raw)
-    (replace : Array (String.Pos.Raw × String.Pos.Raw)) : String := Id.run do
-  if replace.isEmpty then return slice source cmdStart cmdEnd
-  let sorted := replace.qsort (fun a b => a.1.byteIdx < b.1.byteIdx)
+/-- The source `[cmdStart, cmdEnd)` with each edit applied: `(s, e, repl)` replaces the byte range
+`[s, e)` with `repl`; a zero-width range (`s == e`) is an insertion. Edits must be non-overlapping. -/
+def applyEdits (source : String) (cmdStart cmdEnd : String.Pos.Raw)
+    (edits : Array (String.Pos.Raw × String.Pos.Raw × String)) : String := Id.run do
+  if edits.isEmpty then return slice source cmdStart cmdEnd
+  let sorted := edits.qsort (fun a b => a.1.byteIdx < b.1.byteIdx)
   let mut out := ""
   let mut cursor := cmdStart
-  for (s, e) in sorted do
-    out := out ++ slice source cursor s ++ "sorry"
+  for (s, e, repl) in sorted do
+    out := out ++ slice source cursor s ++ repl
     cursor := e
   return out ++ slice source cursor cmdEnd
 
@@ -313,7 +314,7 @@ def processFile (env : Environment) (source : String) (filePath : String)
           let byBlocks := match findDeclValStx? stx with
             | some v => collectByBlocks v
             | none => #[]
-          spliceSorry source cmdStart declEnd byBlocks
+          applyEdits source cmdStart declEnd (byBlocks.map fun (bs, be) => (bs, be, "sorry"))
       let usedNotations := notationKinds.toArray.filter (collectSyntaxKinds stx).contains
       entries := entries.push
         { cls := .decl, src, kind := stx.getKind, declNames := names, appended, usedNotations }

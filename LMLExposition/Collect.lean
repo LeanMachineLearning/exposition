@@ -125,6 +125,10 @@ structure DeclInfo where
   /-- True if the declaration was written with the `instance` keyword but was not classified as
   `.instance` by `declKindOf`. -/
   isInstanceDecl : Bool := false
+  /-- True if the declaration comes from an `alias` command. Unlike a real theorem, its body is kept
+  verbatim during extraction (`alias … := target`) rather than replaced by `sorry`, so its transitive
+  closure must follow value dependencies (the alias target), not just type dependencies. -/
+  isAlias : Bool := false
   dependsOnSorry : Bool := false
   deps : Array Name
   typeDeps : Array Name := #[]
@@ -595,6 +599,13 @@ def isInstanceFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : A
   else match src? with
     | none => false
     | some src => (cleanDeclSnippet (sliceSourceSnippet lines src)).startsWith "instance "
+
+/-- True if the declaration's source snippet starts with the `alias` keyword. Such declarations are
+emitted verbatim (`alias … := target`), so their dependency closure must follow value dependencies. -/
+def isAliasFromSource (src? : Option SourceInfo) (lines : Array String) : Bool :=
+  match src? with
+  | none => false
+  | some src => (cleanDeclSnippet (sliceSourceSnippet lines src)).startsWith "alias "
 
 /-- True if `name`'s last component follows the standard naming convention for
 compiler-generated instances (e.g. `instDecidableEqFoo` from a `deriving` clause), namely
@@ -1078,6 +1089,35 @@ def notationExpansionDeps (env : Environment) (projectConsts : Array (Name × Na
           m := m.insert k ((m.getD k #[]) ++ realDeps)
   return m
 
+/-- Coercion type classes whose instances Lean unfolds at use sites: an elaborated term keeps only
+the underlying `@[coe]` function, never the instance, so a coercion's dependency on its instance is
+invisible to `getUsedConstants`. The instance must still be replayed for the source's `↑`/`⇑` to
+elaborate. -/
+def coercionClasses : List Name :=
+  [``CoeFun, ``CoeSort, ``Coe, ``CoeTC, ``CoeHead, ``CoeTail, ``CoeHTCT, ``CoeOut, ``CoeDep]
+
+/-- If `type` is, under its binders, a coercion-class application `Cls Src …`, the head constant of
+`Src` (the type coerced *from*). -/
+partial def coercionSourceType? (type : Expr) : Option Name :=
+  match type with
+  | .forallE _ _ b _ => coercionSourceType? b
+  | _ =>
+    let (fn, args) := type.getAppFnArgs
+    if coercionClasses.contains fn && args.size ≥ 1 then args[0]!.getAppFn.constName?
+    else none
+
+/-- Maps a type's head constant to the exposed coercion instances coercing *from* it. A declaration
+mentioning such a type needs these instances replayed so its source coercions still elaborate (the
+instances themselves never appear in the elaborated term; see `coercionClasses`). -/
+def coercionInstancesByType (env : Environment) (exposed : Std.HashSet Name)
+    (projectConsts : Array (Name × Name × ConstantInfo)) : Std.HashMap Name (Array Name) := Id.run do
+  let mut m : Std.HashMap Name (Array Name) := {}
+  for (cname, _, cinfo) in projectConsts do
+    if exposed.contains cname && Lean.Meta.isInstanceCore env cname then
+      if let some src := coercionSourceType? cinfo.type then
+        m := m.insert src ((m.getD src #[]).push cname)
+  return m
+
 /-- Collects all exposed declarations and computes their primary metadata. -/
 def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     (pkg : Lake.Package) (env : Environment) : IO (Array DeclInfo) := do
@@ -1092,6 +1132,10 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       | .decl declName .. => acc.insert declName
       | _ => acc) {}
   let notationDeps := notationExpansionDeps env projectConsts
+  let coercionInsts := coercionInstancesByType env exposed projectConsts
+  -- Adds, for every referenced type with coercion instances, those instances (see `coercionClasses`).
+  let addCoercionInsts (cs : Array Name) : Array Name :=
+    cs ++ cs.foldl (fun acc c => acc ++ coercionInsts.getD c #[]) #[]
   let mut cache : Std.HashMap Name (Array Name) := {}
   let mut fileLines : Std.HashMap System.FilePath (Array String) := {}
   let mut decls := #[]
@@ -1128,12 +1172,14 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     -- One-level constants from the type (and, separately, type+value), then expanded through
     -- any project-local compiler-generated helpers (`_proof_N`, `match_..`, field defaults, ...)
     -- so that dependencies hidden behind those helpers are surfaced too.
-    let typeUsedConstants := usedConstantsOf env name info false
+    let typeUsedConstants := addCoercionInsts (usedConstantsOf env name info false)
     -- When this declaration *is* a notation, also depend on the constants it expands to (which are
     -- stored as `Name` data inside its macro and so invisible to `getUsedConstants`); see
     -- `notationExpansionDeps`. The reverse direction (a declaration whose *source* uses a notation)
     -- is handled syntactically during extraction, where the parsed syntax is available.
-    let allUsedConstants := usedConstantsOf env name info true ++ notationDeps.getD name #[]
+    -- `addCoercionInsts` similarly recovers coercion instances unfolded out of the elaborated term.
+    let allUsedConstants :=
+      addCoercionInsts (usedConstantsOf env name info true ++ notationDeps.getD name #[])
     let (typeExpanded, cache1) := expandThroughInternals env rootPrefix exposed cache typeUsedConstants
     let (allExpanded, cache2) := expandThroughInternals env rootPrefix exposed cache1 allUsedConstants
     cache := cache2
@@ -1156,6 +1202,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       hasSorry := usesSorryThroughInternals env rootPrefix exposed name info
       isLemma := isLemma
       isInstanceDecl := isInstanceDecl
+      isAlias := isAliasFromSource source? lines
       deps := deps
       typeDeps := typeDeps
       docstringBlock? := docstringBlock?
@@ -1206,14 +1253,15 @@ where
 /-- Adds the transitive closure of `deps` to each declaration as `transDeps`, topologically ordered
 so that every dependency precedes the declarations that use it (suitable for emitting a minimal
 standalone Lean file). Expansion follows only `typeDeps` for theorems (their proofs are not part of
-what a reader must trust further) and `deps` (type + body) for everything else. -/
+what a reader must trust further) and `deps` (type + body) for everything else. An `alias`, though a
+theorem, keeps its body verbatim during extraction, so it follows `deps` too. -/
 def attachTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
+  let startDeps (decl : DeclInfo) : Array Name :=
+    if decl.kind == .theorem && !decl.isAlias then decl.typeDeps else decl.deps
   let depsMap : Std.HashMap Name (Array Name) :=
-    decls.foldl (fun acc decl =>
-      acc.insert decl.name (if decl.kind == .theorem then decl.typeDeps else decl.deps)) {}
+    decls.foldl (fun acc decl => acc.insert decl.name (startDeps decl)) {}
   decls.map fun decl =>
-    let start := if decl.kind == .theorem then decl.typeDeps else decl.deps
-    let closure := topologicalClosure depsMap start
+    let closure := topologicalClosure depsMap (startDeps decl)
     { decl with transDeps := closure.filter (· != decl.name) }
 
 /-- Marks declarations that transitively depend on any `sorry`. -/

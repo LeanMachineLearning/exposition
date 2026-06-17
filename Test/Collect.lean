@@ -107,6 +107,13 @@ namespace LMLExposition.Test
 #guard leanEditorUrl "https://x.io/LML/" `Foo.bar   -- trailing slash on the base is not doubled
   == "https://live.lean-lang.org/#url=https://x.io/LML/extracted/Foo___bar.lean"
 
+-- `coercionSourceType?`: the type coerced *from* in a coercion-class application, seen through binders.
+#guard coercionSourceType? (mkApp2 (mkConst ``CoeFun) (mkConst ``Nat) (mkConst ``Nat)) == some `Nat
+#guard coercionSourceType?
+  (.forallE `x (mkConst ``Nat) (mkApp2 (mkConst ``CoeOut) (mkConst ``Int) (mkConst ``Int)) .default)
+  == some `Int
+#guard coercionSourceType? (mkConst ``Nat) == none   -- not a coercion-class application
+
 -- `evalNameExpr?`: reconstruct the `Name` an `Expr` builds via `Name.anonymous`/`mkStr*`/`str`.
 #guard evalNameExpr? (mkConst ``Lean.Name.anonymous) == some Name.anonymous
 #guard evalNameExpr? (mkApp2 (mkConst ``Lean.Name.mkStr2) (mkStrLit "Foo") (mkStrLit "bar"))
