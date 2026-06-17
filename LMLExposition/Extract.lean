@@ -249,6 +249,26 @@ def decomposeVariable (source : String) (stx : Syntax) : Array (String × Array 
     | _, _ => pure ()
   return res
 
+/-- The local names a `variable` binder introduces, parsed from its source text: the identifiers
+before the first `:` (so `(a b : T)` / `{a b : T}` / `[inst : T]` give `a b` / `inst`), or — when
+there is no `:` and it is not an instance binder — every identifier (so `{a b}` gives `a b`). These
+names are locally bound; they must not be mistaken for global declarations that happen to share them
+(e.g. a binder `{Ω : Type*}` when the project also defines a top-level `abbrev Ω`). -/
+def binderBoundNames (binderSrc : String) : Array String :=
+  let s := binderSrc.trimAsciiStart.toString
+  let isInst := s.startsWith "["
+  let beforeColon :=
+    match s.splitOn ":" with
+    | [whole] => if isInst then "" else whole   -- no `:` separator
+    | head :: _ => head
+    | [] => ""
+  let isSep (c : Char) : Bool :=
+    c == ' ' || c == '(' || c == ')' || c == '{' || c == '}' || c == '[' || c == ']'
+      || c == '⦃' || c == '⦄' || c == ','
+  (beforeColon.split isSep).toArray.filterMap fun w =>
+    let w := w.trimAscii.toString
+    if w.isEmpty then none else some w
+
 /-! ## Phase 1: process one source file -/
 
 /-- Re-elaborates `source` against `env` and classifies every command. `declPos` maps the byte index
@@ -351,14 +371,30 @@ partial def externalImports (env : Environment) (rootPrefix : Name) (modules : A
         result := result.push m
   return result
 
-/-- Re-renders a `variable` command keeping only the binders that don't mention an excluded
-declaration (`excludedShort` = short names of exposed declarations outside the target's closure).
+/-- Re-renders a `variable` command, dropping only the binders that reference an *excluded* exposed
+declaration — one outside the target's closure, hence not emitted here, so a reference to it would be
+an undefined name. `excludedNames` holds those declarations' full names.
+
+An identifier is treated as such a reference only if some in-scope namespace prefix (`activePrefixes`,
+the open/entered namespaces) turns it into an excluded name, *and* it does not already denote an
+external (non-project) constant. The latter guard is essential: otherwise a Mathlib type or class that
+merely shares its last name component with a project declaration (e.g. `IndexedPartition`) would be
+mistaken for the project one and its binder wrongly dropped, taking the binders it scopes with it.
 Returns `none` if no binder survives. -/
-def pruneVariable (e : CommandEntry) (excludedShort : Std.HashSet String) : Option String :=
+def pruneVariable (env : Environment) (rootPrefix : Name) (excludedNames : Std.HashSet Name)
+    (activePrefixes : Array Name) (boundVars : Std.HashSet Name) (e : CommandEntry) : Option String :=
   if e.binders.isEmpty then
     some e.src   -- couldn't decompose; keep verbatim
   else
-    let kept := e.binders.filter fun (_, idents) => !idents.any excludedShort.contains
+    let refsExcluded (id : String) : Bool :=
+      let n := id.toName
+      if boundVars.contains n then
+        false   -- a locally-bound `variable` name, not a global reference
+      else if env.contains n && !isProjectLocalConst env rootPrefix n then
+        false   -- an external (e.g. Mathlib) constant, not a project reference
+      else
+        activePrefixes.any fun pfx => excludedNames.contains (pfx ++ n)
+    let kept := e.binders.filter fun (_, idents) => !idents.any refsExcluded
     if kept.isEmpty then none
     else some ("variable " ++ " ".intercalate (kept.map (·.1)).toList)
 
@@ -452,10 +488,21 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
       let filtered := restrictToTarget entries keep
       if filtered.any (·.cls == .decl) then
         involved := involved.push (modName, filtered)
-  -- Short names of exposed declarations *not* emitted in this file: a `variable` binder mentioning
-  -- one of these would reference an undefined name, so such binders are dropped.
-  let excludedShort : Std.HashSet String := exposedNames.fold (init := {}) fun s n =>
-    if keep.contains n then s else s.insert n.getString!
+  -- Exposed declarations *not* emitted in this file: a `variable` binder referencing one of these
+  -- would reference an undefined name, so such binders are dropped (see `pruneVariable`).
+  let excludedNames : Std.HashSet Name := exposedNames.fold (init := {}) fun s n =>
+    if keep.contains n then s else s.insert n
+  -- All names bound by `variable` commands in this file: these are local, so an identifier matching
+  -- one is not a reference to a same-named global declaration (e.g. the project's top-level `Ω`).
+  let boundVars : Std.HashSet Name := Id.run do
+    let mut s : Std.HashSet Name := {}
+    for (_, entries) in involved do
+      for e in entries do
+        if e.kind == ``Parser.Command.«variable» then
+          for (bsrc, _) in e.binders do
+            for nm in binderBoundNames bsrc do
+              s := s.insert nm.toName
+    return s
   -- Project namespaces entered (`namespace Foo`) or opened (`open … Foo …`) across the involved
   -- modules. We emit existence stubs for them up front, since an `open Foo` may precede the
   -- `namespace Foo` that (re)creates `Foo` here — and may even refer to a namespace no kept
@@ -496,6 +543,10 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
       out := out ++ s!"namespace {ns}\nend {ns}\n"
   -- Build the per-module body as tagged chunks, then drop empty/`variable`-only scopes.
   let mut items : Array (ScopeTag × String) := #[]
+  -- Namespace prefixes in scope when resolving `variable` binder identifiers: the root plus every
+  -- entered (`namespace`) or opened (`open`) namespace. Accumulated (never popped) as an
+  -- over-approximation of scope; `pruneVariable` only matches exact excluded names against it.
+  let mut activePrefixes : Array Name := #[Name.anonymous]
   for (modName, entries) in involved do
     let shortName :=
       if hasPrefixName modName rootPrefix then
@@ -509,15 +560,21 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
         if trimmedSrc.startsWith "@[expose]" || (trimmedSrc.splitOn "public section").length > 1 then
           pure ()   -- drop the module-system `@[expose] public section` wrapper
         else if e.kind == ``Parser.Command.«variable» then
-          if let some v := pruneVariable e excludedShort then
+          if let some v := pruneVariable env rootPrefix excludedNames activePrefixes boundVars e then
             items := items.push (.soft, v ++ "\n")
         else if e.kind == ``Parser.Command.namespace then
+          if let some ns := e.nsName? then
+            activePrefixes := activePrefixes.push ns
           items := items.push (.openNamespace, e.src ++ "\n")
         else if e.kind == ``Parser.Command.«section» then
           items := items.push (.openSection, e.src ++ "\n")
         else if e.kind == ``Parser.Command.«end» then
           items := items.push (.close, e.src ++ "\n")
         else if e.kind == ``Parser.Command.«open» then
+          -- Tokens after `open`/`scoped` name namespaces brought into scope.
+          for tok in (e.src.replace "\n" " ").splitOn " " do
+            let nm := tok.trimAscii.toString.toName
+            unless nm.isAnonymous do activePrefixes := activePrefixes.push nm
           -- Like `variable`: emitted if its scope survives, but doesn't on its own keep an otherwise
           -- empty `section`/`namespace` alive.
           items := items.push (.soft, e.src ++ "\n")
