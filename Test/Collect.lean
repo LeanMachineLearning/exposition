@@ -54,9 +54,11 @@ namespace LMLExposition.Test
 #guard isInternalName `Foo._proof_2
 #guard isInternalName `Foo.bar._hyg        -- internal in a non-leaf position
 #guard isInternalName `List.rec
-#guard isInternalName `Foo.mk
 #guard isInternalName `Foo.casesOn
 #guard isInternalName `Foo.injEq
+-- `mk` is *not* flagged syntactically: the real constructor is excluded via the environment
+-- (`ctorInfo`) in `shouldExpose`, while a user `def Foo.mk` must remain exposed.
+#guard !isInternalName `Foo.mk
 #guard !isInternalName `Nat.add
 #guard !isInternalName `Foo.bar
 #guard !isInternalName `Foo.barRec        -- `rec` only matches as a whole component

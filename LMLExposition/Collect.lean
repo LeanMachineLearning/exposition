@@ -207,14 +207,17 @@ def isAuxComponent (s : String) : Bool :=
     || isPrefixWithDigitSuffix "eq_" s || s == "eq_def" || s == "eq_unfold"
     || isPrefixWithDigitSuffix "hcongr_" s
 
-/-- Checks whether InternalName. -/
+/-- Checks whether InternalName. Note that `mk` is intentionally *not* listed: a name ending in `mk`
+is the auto-generated structure constructor only when the environment says so (a `ctorInfo`), which
+`shouldExpose` checks separately. A user declaration named `Foo.mk` (e.g. when a structure's real
+constructor was renamed to free up `mk`) must not be hidden. -/
 partial def isInternalName : Name → Bool
   | .anonymous => false
   | .num p _ => isInternalName p
   | .str p s =>
       isAuxComponent s
       || s ∈ ["brecOn", "below", "casesOn", "noConfusion", "noConfusionType",
-              "recOn", "rec", "ind", "mk", "sizeOf_spec", "inject", "injEq",
+              "recOn", "rec", "ind", "sizeOf_spec", "inject", "injEq",
               "ctorIdx", "ext_iff", "congr_simp"]
       || isInternalName p
 
