@@ -1295,18 +1295,22 @@ where
       -- Emit `n` only after all of its dependencies have been emitted.
       (visited, order.push n)
 
+/-- The dependency set a declaration "counts" for graph/closure purposes: only `typeDeps` for
+theorems (their proofs are not part of what a reader must trust further) and `deps` (type + body)
+for everything else. An `alias`, though a theorem, keeps its body verbatim during extraction, so it
+follows `deps` too. Shared by `attachTransitiveDeps` (the declaration detail page) and the
+dependency graph, so both agree on what counts as a dependency. -/
+def graphDeps (decl : DeclInfo) : Array Name :=
+  if decl.kind == .theorem && !decl.isAlias then decl.typeDeps else decl.deps
+
 /-- Adds the transitive closure of `deps` to each declaration as `transDeps`, topologically ordered
 so that every dependency precedes the declarations that use it (suitable for emitting a minimal
-standalone Lean file). Expansion follows only `typeDeps` for theorems (their proofs are not part of
-what a reader must trust further) and `deps` (type + body) for everything else. An `alias`, though a
-theorem, keeps its body verbatim during extraction, so it follows `deps` too. -/
+standalone Lean file). See `graphDeps` for which dependencies are followed. -/
 def attachTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
-  let startDeps (decl : DeclInfo) : Array Name :=
-    if decl.kind == .theorem && !decl.isAlias then decl.typeDeps else decl.deps
   let depsMap : Std.HashMap Name (Array Name) :=
-    decls.foldl (fun acc decl => acc.insert decl.name (startDeps decl)) {}
+    decls.foldl (fun acc decl => acc.insert decl.name (graphDeps decl)) {}
   decls.map fun decl =>
-    let closure := topologicalClosure depsMap (startDeps decl)
+    let closure := topologicalClosure depsMap (graphDeps decl)
     { decl with transDeps := closure.filter (· != decl.name) }
 
 /-- Marks declarations that transitively depend on any `sorry`. -/

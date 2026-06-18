@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <button id=\"graph-clear\" type=\"button\">Clear focus</button>
     </div>
     <p class=\"graph-hint\">Scroll to zoom, drag the background to pan, click a node to focus its neighborhood, and double-click a node to open its page. Arrows point from a declaration to the declarations that depend on it.</p>
-    <p class=\"graph-legend\">Node fill colors mark chapters. Green outlines are kernel-checked; rust outlines contain sorry.</p>
+    <p class=\"graph-legend\">Node fill colors mark chapters. Green outlines are kernel-checked; rust outlines contain sorry. Dashed boxes group declarations from the same file.</p>
     <div class=\"graph-layout\">
       <svg id=\"graph-svg\" width=\"100%\" height=\"720\"></svg>
       <aside id=\"graph-panel\" class=\"graph-panel\">
@@ -90,12 +90,76 @@ document.addEventListener('DOMContentLoaded', () => {
   // (declarations with more dependencies) are placed below.
   const yForDepth = depth => layerMargin + depth * layerSpacing;
 
+  // Groups (by source file) with more than one node get pulled together horizontally and
+  // get a dashed bounding box drawn around them; depth (vertical position) still wins, since
+  // declarations from one file can sit at different depths in the dependency order.
+  const fileGroups = [...d3.group(nodes, n => n.moduleName)].filter(([, members]) => members.length > 1);
+
+  const forceFileCluster = strength => {
+    let force = alpha => {
+      for (const [, members] of fileGroups) {
+        let cx = 0;
+        for (const n of members) cx += n.x;
+        cx /= members.length;
+        for (const n of members) n.vx += (cx - n.x) * strength * alpha;
+      }
+    };
+    return force;
+  };
+
+  // Pushes apart the bounding boxes of different files when they overlap, so the dashed file
+  // boxes don't crowd into each other. Each overlapping pair is separated along whichever axis
+  // (x or y) needs the smaller nudge to clear the overlap, the usual AABB-separation approach,
+  // so the push can point in any direction rather than just horizontally.
+  const fileGroupBounds = members => {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const n of members) {
+      minX = Math.min(minX, n.x - n.rx);
+      maxX = Math.max(maxX, n.x + n.rx);
+      minY = Math.min(minY, n.y - n.ry);
+      maxY = Math.max(maxY, n.y + n.ry);
+    }
+    return {
+      cx: (minX + maxX) / 2, cy: (minY + maxY) / 2,
+      halfWidth: (maxX - minX) / 2, halfHeight: (maxY - minY) / 2,
+    };
+  };
+
+  const forceFileRepel = (strength, margin) => {
+    let force = alpha => {
+      const bounds = fileGroups.map(([, members]) => fileGroupBounds(members));
+      for (let i = 0; i < fileGroups.length; i++) {
+        for (let j = i + 1; j < fileGroups.length; j++) {
+          const a = bounds[i], b = bounds[j];
+          const dx = b.cx - a.cx;
+          const dy = b.cy - a.cy;
+          const overlapX = a.halfWidth + b.halfWidth + margin - Math.abs(dx);
+          const overlapY = a.halfHeight + b.halfHeight + margin - Math.abs(dy);
+          if (overlapX <= 0 || overlapY <= 0) continue;
+          let pushX = 0, pushY = 0;
+          if (overlapX < overlapY) {
+            pushX = (dx === 0 ? 1 : Math.sign(dx)) * overlapX;
+          } else {
+            pushY = (dy === 0 ? 1 : Math.sign(dy)) * overlapY;
+          }
+          pushX *= strength * alpha;
+          pushY *= strength * alpha;
+          for (const n of fileGroups[i][1]) { n.vx -= pushX / 2; n.vy -= pushY / 2; }
+          for (const n of fileGroups[j][1]) { n.vx += pushX / 2; n.vy += pushY / 2; }
+        }
+      }
+    };
+    return force;
+  };
+
   const simulation = d3.forceSimulation(nodes)
     .force('link', d3.forceLink(edges).id(d => d.id).distance(80).strength(0.15))
     .force('charge', d3.forceManyBody().strength(-150))
     .force('x', d3.forceX(width / 2).strength(0.03))
     .force('y', d3.forceY(d => yForDepth(d.depth)).strength(1))
-    .force('collision', d3.forceCollide(d => Math.max(d.rx, d.ry) + 6));
+    .force('collision', d3.forceCollide(d => Math.max(d.rx, d.ry) + 6))
+    .force('fileCluster', forceFileCluster(0.12))
+    .force('fileRepel', forceFileRepel(0.4, 30));
 
   const zoom = d3.zoom()
     .scaleExtent([0.25, 4])
@@ -120,6 +184,19 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   arrowMarker('graph-arrow-default', '#1a1a1a');
   arrowMarker('graph-arrow-highlight', '#a14d2a');
+
+  const fileBoxes = canvas.append('g')
+    .attr('class', 'graph-file-boxes')
+    .selectAll('rect')
+    .data(fileGroups)
+    .join('rect')
+    .attr('fill', 'none')
+    .attr('stroke', '#6b5041')
+    .attr('stroke-width', 1.2)
+    .attr('stroke-dasharray', '6 4')
+    .attr('rx', 12)
+    .attr('ry', 12)
+    .style('pointer-events', 'none');
 
   const link = canvas.append('g')
     .attr('stroke-opacity', 0.8)
@@ -259,6 +336,13 @@ document.addEventListener('DOMContentLoaded', () => {
     shapes
       .attr('stroke-width', d => d.id === selectedId ? 4 : 2.2);
 
+    fileBoxes
+      .style('display', ([, members]) => members.some(n => visible.has(n.id)) ? null : 'none')
+      .style('opacity', ([, members]) => {
+        if (!neighborhood) return 1;
+        return members.some(n => neighborhood.has(n.id)) ? 0.9 : 0.1;
+      });
+
     link
       .style('display', d => {
         const source = typeof d.source === 'object' ? d.source.id : d.source;
@@ -333,6 +417,18 @@ document.addEventListener('DOMContentLoaded', () => {
     return { x: d.target.x - ux * gap, y: d.target.y - uy * gap };
   };
 
+  const fileBoxPadding = 16;
+  const fileBoxBounds = () => fileGroups.map(([, members]) => {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const n of members) {
+      minX = Math.min(minX, n.x - n.rx);
+      maxX = Math.max(maxX, n.x + n.rx);
+      minY = Math.min(minY, n.y - n.ry);
+      maxY = Math.max(maxY, n.y + n.ry);
+    }
+    return { minX, maxX, minY, maxY };
+  });
+
   simulation.on('tick', () => {
     link
       .attr('x1', d => d.source.x)
@@ -341,6 +437,13 @@ document.addEventListener('DOMContentLoaded', () => {
       .attr('y2', d => targetEndpoint(d).y);
 
     node.attr('transform', d => `translate(${d.x},${d.y})`);
+
+    const bounds = fileBoxBounds();
+    fileBoxes
+      .attr('x', (d, i) => bounds[i].minX - fileBoxPadding)
+      .attr('y', (d, i) => bounds[i].minY - fileBoxPadding)
+      .attr('width', (d, i) => bounds[i].maxX - bounds[i].minX + fileBoxPadding * 2)
+      .attr('height', (d, i) => bounds[i].maxY - bounds[i].minY + fileBoxPadding * 2);
   });
 
   filterInput.addEventListener('input', event => {

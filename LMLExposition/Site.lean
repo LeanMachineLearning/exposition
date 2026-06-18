@@ -358,7 +358,9 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
 /-- Builds graph nodes/edges for `decls`, with edges only between declarations that are
 themselves in `decls`. Each edge points from a dependency (the "parent") to the declaration
 that depends on it (the "child"), so the arrow direction follows the order in which the
-declarations must be established. -/
+declarations must be established. Follows `graphDeps`, i.e. only type dependencies for
+theorems (matching the declaration detail page's transitive closure), and type + body
+dependencies for everything else. -/
 private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String) :
     GraphData :=
   let names : Std.HashSet Name := decls.foldl (fun acc d => acc.insert d.name) {}
@@ -372,7 +374,7 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
     href := declHrefs.getD decl.name (pathForPart decl.groupKey decl.modulePath decl.name)
   }
   let edges := decls.foldl (fun acc decl =>
-    acc ++ decl.deps.filterMap (fun dep =>
+    acc ++ (graphDeps decl).filterMap (fun dep =>
       if names.contains dep then
         some { source := dep.toString, target := decl.name.toString }
       else
