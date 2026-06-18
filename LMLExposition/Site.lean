@@ -633,7 +633,7 @@ show today, and writes `excluded-declarations.txt` under `cfg.outputDir` when gi
 private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Workspace)
     (rootPrefix : Name) (env : Environment) : IO CollectedData := do
   let decls ← collectDecls projectDir rootPrefix ws.root env
-  let decls := decls |> attachReverseDeps |> attachTransitiveDeps |> attachDependsOnSorry
+  let decls := decls |> dropUnsafeDeps |> attachReverseDeps |> attachTransitiveDeps |> attachDependsOnSorry
   let excludedNames :=
     (projectConstants env rootPrefix).filterMap fun (name, _, info) =>
       if shouldExpose env rootPrefix name info then none else some name
@@ -668,9 +668,9 @@ private def loadCollectedData (path : String) : IO CollectedData := do
   let text ← IO.FS.readFile path
   let .ok json := Json.parse text
     | throw <| IO.userError s!"Failed to parse JSON from {path}"
-  let .ok (data : CollectedData) := FromJson.fromJson? json
-    | throw <| IO.userError s!"Failed to decode collected data from {path}"
-  pure data
+  match FromJson.fromJson? json with
+  | .ok (data : CollectedData) => pure data
+  | .error err => throw <| IO.userError s!"Failed to decode collected data from {path}: {err}"
 
 /-- Builds and renders the Verso site from already-collected data. Needs no Lean environment
 and no access to the target project's source tree: `data` and `cfg`'s render-time flags

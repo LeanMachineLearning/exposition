@@ -49,11 +49,30 @@ structure CommandEntry where
   src : String
   kind : SyntaxNodeKind
   declNames : Array Name := #[]
-  /-- For a `namespace` command, the namespace it opens (used to emit existence stubs). -/
+  /-- For a `namespace` command, the namespace it opens exactly as spelled in the source (used by
+  `activePrefixes` for `variable`-pruning; kept relative/possibly-unqualified on purpose, since
+  that pruning logic is unaffected by whether a namespace was entered via its full dotted path or
+  a name relative to an already-open ancestor). -/
   nsName? : Option Name := none
+  /-- For a `namespace` command, the namespace it opens as a *fully qualified* name (i.e.
+  including any enclosing `namespace`s it was nested inside), used only to emit existence stubs
+  (`nsStubs` in `assembleTarget`). Two `namespace` commands for the same actual namespace, one
+  spelled relative to an open ancestor and the other fully dotted, must be recognized as the same
+  namespace here — otherwise the assembled file ends up with an extra empty stub for the relative
+  spelling that is a distinct (and so ambiguous, once both are in scope) namespace from the real,
+  populated one. -/
+  qualifiedNsName? : Option Name := none
   /-- For a `variable` command, its binders decomposed as `(source text, identifiers referenced)`,
   so that binders mentioning declarations outside a target's closure can be dropped. -/
   binders : Array (String × Array String) := #[]
+  /-- For an `open NS (a b c)` command (the explicit-list form, as opposed to a bare `open NS`),
+  `NS` exactly as spelled in the source, and the listed identifiers (`a b c`). Used to drop names
+  from the list (or the whole command, if none survive) that aren't part of a target's closure —
+  keeping all of them unconditionally would otherwise reference a declaration that was dropped
+  (or even `NS` itself, in a target where nothing causes `NS`, or a stub for it, to exist at all).
+  `openOnlyIdents` is empty for every other form of `open` (and for every other command kind). -/
+  openOnlyNamespace? : Option String := none
+  openOnlyIdents : Array String := #[]
   /-- Extra commands to emit right after this one — used for `instance … := sorry` replacements of a
   definition's `deriving` clause (which can't be re-derived in the minimal file). -/
   appended : Array String := #[]
@@ -287,6 +306,16 @@ def processFile (env : Environment) (source : String) (filePath : String)
   let cmdState := Command.mkState env messages {}
   let s ← IO.processCommands inputCtx parserState cmdState
   let mut entries : Array CommandEntry := #[]
+  -- Stack of the fully-qualified namespace prefix in effect *after* each currently-open
+  -- `namespace`/`section` frame, so a `namespace` command nested inside another (rather than
+  -- spelled with the full dotted path) still gets its true fully-qualified name as `nsName?`
+  -- below — e.g. `namespace Learning` then later `namespace IsBayesAlgEnvSeq` must record
+  -- `Learning.IsBayesAlgEnvSeq`, the same name a single `namespace Learning.IsBayesAlgEnvSeq`
+  -- command would record, since both spellings denote the same namespace. Without this, the two
+  -- spellings are treated as unrelated namespaces, and the assembled file ends up with both an
+  -- empty stub for the bare name and the real (populated) one for the qualified name, which can
+  -- make an unqualified reference to a member of the real one ambiguous.
+  let mut nsPrefixStack : Array Name := #[Name.anonymous]
   for stx in s.commands do
     if stx.getKind == ``Parser.Module.header then continue
     let some cmdStart := stx.getPos? | continue
@@ -322,10 +351,28 @@ def processFile (env : Environment) (source : String) (filePath : String)
       let kind := stx.getKind
       let nsName? := if kind == ``Parser.Command.namespace && stx.getArgs.size ≥ 2 then
         some stx[1].getId else none
+      let qualifiedNsName? := nsName?.map (nsPrefixStack.back! ++ ·)
+      if let some ns := qualifiedNsName? then
+        nsPrefixStack := nsPrefixStack.push ns
+      else if kind == ``Parser.Command.«section» then
+        nsPrefixStack := nsPrefixStack.push nsPrefixStack.back!
+      else if kind == ``Parser.Command.«end» && nsPrefixStack.size > 1 then
+        nsPrefixStack := nsPrefixStack.pop
       let binders := if kind == ``Parser.Command.«variable» then
         decomposeVariable source stx else #[]
+      -- `openOnly` is `open NS (a b c)`, parsed as 4 children: the `NS` ident, the `(` token, a
+      -- node wrapping the `a b c` idents, and the `)` token. Reading `NS` and the list from their
+      -- own (3rd and 1st) children, rather than from a walk of the whole `openOnly` node, avoids
+      -- needing to separate them by position — `collectIdents`'s stack-based walk doesn't visit
+      -- children left-to-right, so naming isn't reliable from a whole-node walk.
+      let (openOnlyNamespace?, openOnlyIdents) :=
+        if kind == ``Parser.Command.«open» && stx.getArgs.size ≥ 2
+            && stx[1].getKind == ``Parser.Command.openOnly && stx[1].getArgs.size ≥ 3 then
+          (some stx[1][0].getId.toString, collectIdents stx[1][2])
+        else (none, #[])
       entries := entries.push
-        { cls := .context, src := slice source cmdStart cmdEnd, kind, nsName?, binders }
+        { cls := .context, src := slice source cmdStart cmdEnd, kind, nsName?, qualifiedNsName?,
+          binders, openOnlyNamespace?, openOnlyIdents }
     else
       entries := entries.push { cls := .skip, src := slice source cmdStart cmdEnd, kind := stx.getKind }
   return entries
@@ -333,12 +380,27 @@ def processFile (env : Environment) (source : String) (filePath : String)
 /-! ## Phase 2: per-target filtering and section stripping -/
 
 /-- Restricts declaration entries to those defining a declaration in `keep`; the rest become `skip`.
-Context entries are preserved. -/
+Context entries are preserved, except an `open NS (a b c)` is trimmed to just the listed
+identifiers that are the short name of something in `keep` (or dropped entirely if none are) —
+keeping a name unconditionally would otherwise reference a declaration this target dropped, or
+even `NS` itself, in a target where nothing causes `NS` (or a stub for it) to exist at all.
+Identifiers are matched by short name only (not full path), so this can only under-drop (never
+wrongly drop a name that is actually needed), since a false-positive match just means a harmless
+extra name is kept in the list rather than the more precise outcome of dropping it. -/
 def restrictToTarget (entries : Array CommandEntry) (keep : Std.HashSet Name) : Array CommandEntry :=
+  let keepShortNames : Std.HashSet String := keep.fold (init := {}) fun s n => s.insert n.getString!
   entries.map fun e =>
     match e.cls with
     | .decl => if e.declNames.any keep.contains then e else { e with cls := .skip }
-    | _ => e
+    | .context =>
+        match e.openOnlyNamespace? with
+        | none => e
+        | some ns =>
+            let kept := e.openOnlyIdents.filter keepShortNames.contains
+            if kept.isEmpty then { e with cls := .skip }
+            else if kept.size == e.openOnlyIdents.size then e
+            else { e with src := s!"open {ns} ({String.intercalate " " kept.toList})" }
+    | .skip => e
 
 /-! ## Phase 3: assembly -/
 
@@ -515,7 +577,7 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
       if seen.contains ns then (seen, acc) else (seen.insert ns, acc.push ns)
     for (_, entries) in involved do
       for e in entries do
-        if let some ns := e.nsName? then
+        if let some ns := e.qualifiedNsName? then
           (seen, acc) := add ns seen acc
         else if e.kind == ``Parser.Command.«open» then
           -- Tokens after `open`/`scoped` that name a project namespace.
@@ -554,6 +616,14 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
         modName.toString.drop (rootPrefix.toString.length + 1)
       else modName.toString
     items := items.push (.hard, s!"\n-- ═══ {shortName} ═══\n")
+    -- Wraps each module's replayed content in its own `section … end`, so its `open` commands
+    -- (which, unlike `notation`/`def`/etc., are scoped by `section`) don't leak into later
+    -- modules. Without this, each contributing module's `open`s pile up across the whole
+    -- assembled file instead of each being local to its own file as in the original project,
+    -- and repeating the same `open Foo` several times can make an unqualified name reachable
+    -- through several redundant open-paths to the same declaration, which Lean then reports as
+    -- ambiguous even though every path resolves to the exact same constant.
+    items := items.push (.openSection, "section\n")
     for e in entries do
       match e.cls with
       | .context =>
@@ -588,6 +658,7 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
         s := s ++ "\n"
         items := items.push (.hard, s)
       | .skip => pure ()
+    items := items.push (.close, "end\n")
   out := out ++ stripEmptyScopes items
   return (collapseBlankRuns out).trimAsciiEnd.toString ++ "\n"
 

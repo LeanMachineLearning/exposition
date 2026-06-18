@@ -949,6 +949,25 @@ def declPageHrefMap (decls : Array DeclInfo) : Std.HashMap Name String :=
 def declByNameMap (decls : Array DeclInfo) : Std.HashMap Name DeclInfo :=
   decls.foldl (fun acc decl => acc.insert decl.name decl) {}
 
+/-- True if `n` survives a round trip through `Name`'s JSON codec (`toString` then `toName`).
+This is lossy for names containing characters outside a normal identifier — notably auto-generated
+helper names from *external* libraries, which can embed hygiene markers like `_@.Mathlib.Foo.123`
+that aren't valid surface syntax and so don't parse back to the original name. -/
+def isJsonSafeName (n : Name) : Bool :=
+  n.toString.toName == n
+
+/-- Drops names that don't round-trip through JSON (see `isJsonSafeName`) from `deps`/`typeDeps`,
+so that serializing `decls` for the `collect` subcommand can't fail. Safe to do unconditionally:
+every consumer of `deps`/`typeDeps` (graph edges, "Type/Body uses" links, the extraction closure)
+already discards anything that isn't itself an exposed project declaration, and a name needing
+this escape hatch is never one (`shouldExpose` already excludes internal/auto-generated names from
+being exposed), so this can only drop names that were already inert. -/
+def dropUnsafeDeps (decls : Array DeclInfo) : Array DeclInfo :=
+  decls.map fun d => { d with
+    deps := d.deps.filter isJsonSafeName
+    typeDeps := d.typeDeps.filter isJsonSafeName
+  }
+
 /-- Helper for runCoreIO. -/
 def runCoreIO {α : Type} (env : Environment) (x : CoreM α) : IO α := do
   x.toIO'
