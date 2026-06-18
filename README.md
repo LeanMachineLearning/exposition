@@ -34,11 +34,41 @@ lake build exposition
 
 The target repo must already have current `.olean` files for the modules you want to expose.
 
+The tool has four subcommands: `collect`, `extract`, `build-site`, and `all`. `collect`
+imports the target project and writes its analysis (declarations, dependency graph,
+docstrings, ...) to a JSON file; `extract` and `build-site` both read that JSON instead of
+redoing the analysis. Only `collect` and `extract` need to run inside the target project's
+`lake env` (they need its compiled `.olean`s); `build-site` only ever touches the JSON file
+and can be re-run as many times as you like — e.g. while iterating on page layout or CSS —
+without re-importing the target project.
+
 ```bash
 cd /path/to/target-repo
 lake exe cache get
 lake build MyLibrary
-lake env /path/to/lml-exposition/.lake/build/bin/exposition \
+
+EXPOSITION=/path/to/lml-exposition/.lake/build/bin/exposition
+
+lake env "$EXPOSITION" collect --root MyLibrary --data data.json
+
+lake env "$EXPOSITION" extract --data data.json --output /path/to/site-out
+
+"$EXPOSITION" build-site --data data.json --output /path/to/site-out \
+  --repo-url https://github.com/owner/repo \
+  --site-url https://owner.github.io/repo
+```
+
+`build-site` is the only one of the three that doesn't need `lake env` (it has no
+environment or project dependency at all). `--repo-url`/`--site-url`/`--title` only affect
+`build-site`'s output, so the same `data.json` can be rendered with different values for
+those without re-running `collect`.
+
+For the previous one-shot behavior (no JSON round-trip, equivalent to running all three back
+to back in one process), use `all`, or omit the subcommand entirely — a bare invocation
+defaults to `all` for backward compatibility:
+
+```bash
+lake env "$EXPOSITION" all \
   --root MyLibrary \
   --repo-url https://github.com/owner/repo \
   --site-url https://owner.github.io/repo \
@@ -46,6 +76,21 @@ lake env /path/to/lml-exposition/.lake/build/bin/exposition \
 ```
 
 Verso writes the site into the chosen output directory, typically under `html-multi/`.
+
+## Verifying Extracted Files Compile
+
+Each file under `extracted/` is self-contained (it inlines its transitive dependencies and
+replaces theorem proofs with `sorry`), but nothing checks that it actually compiles until
+something tries to. `scripts/check-extracted-compile.sh` does that check: it runs `lake env
+lean` on every extracted `.lean` file from inside the target project (so imports like Mathlib
+resolve), in parallel, and reports which files fail with their error output.
+
+```bash
+scripts/check-extracted-compile.sh /path/to/target-repo /path/to/site-out/html-multi/extracted
+```
+
+The third, optional argument caps how many files are checked in parallel (defaults to the
+number of CPUs). The script exits non-zero if any file fails to compile.
 
 ## Options
 
@@ -60,6 +105,8 @@ Verso writes the site into the chosen output directory, typically under `html-mu
 - `--title TITLE`: override the site title
 - `--output DIR`: output directory passed through to Verso
 - `--exclude-lib NAME`: root library to skip when importing the target project
+- `--data PATH`: collected-data JSON file; written by `collect`, read by `extract` and
+  `build-site`
 
 ## CI: Prebuilt Binaries
 

@@ -298,4 +298,49 @@ private def sorryViaExternal : Array DeclInfo := #[
 ]
 #guard field (attachDependsOnSorry sorryViaExternal) `A (·.dependsOnSorry) == some false
 
+/-! ## JSON round-trip for collected data
+
+`DeclInfo`/`ModuleInfo`/`GroupInfo`/`MarkdownSection`/`CollectedData` derive `ToJson`/`FromJson`
+so `collect` can persist them and `extract`/`build-site` can read them back without
+re-importing the target project. The main risk is the `Block Manual` fields (Verso's
+docstring/markdown AST, populated via `docBlocks`/`docstringBlock?`): these checks exercise
+that round-trip, plus the `Array (Name × Nat)`/`Array (Name × Array (Block Manual))` flattened
+maps `CollectedData` uses in place of `Std.HashMap`. Compared via `Json.compress` rather than
+`BEq DeclInfo` (no such instance exists, and isn't needed for anything else). -/
+
+private def roundTrips {α : Type} [ToJson α] [FromJson α] (a : α) : Bool :=
+  match FromJson.fromJson? (ToJson.toJson a) with
+  | .ok (b : α) => (ToJson.toJson b).compress == (ToJson.toJson a).compress
+  | .error _ => false
+
+private def sampleDeclForJson : DeclInfo := {
+  name := `Foo.bar
+  moduleName := `Foo
+  modulePath := "Foo.lean"
+  groupKey := "Foo"
+  kind := .theorem
+  displaySignature := "theorem bar : True"
+  expandedSignature := "theorem bar : True"
+  docBlocks := #[.para #[.text "docs"]]
+  proofText? := some "trivial"
+  source? := some { relPath := "Foo.lean", absPath := "/tmp/Foo.lean", line := 1, endLine := 2 }
+  hasSorry := false
+  isLemma := true
+  deps := #[`Nat.add]
+  typeDeps := #[`Nat.add]
+  usedBy := #[`Foo.baz]
+  transDeps := #[`Nat.add]
+  docstringBlock? := some (.para #[.code "bar"])
+}
+
+#guard roundTrips sampleDeclForJson
+#guard roundTrips ({ title := "Section", body := "Some *markdown* body." } : MarkdownSection)
+#guard roundTrips ({
+  rootPrefix := `Foo
+  decls := #[sampleDeclForJson]
+  moduleOrder := #[(`Foo, 0), (`Foo.Bar, 1)]
+  moduleDocs := #[(`Foo, #[.para #[.text "module doc"]])]
+  readmeText := some "# Title\n\nBody"
+} : CollectedData)
+
 end LMLExposition.Test

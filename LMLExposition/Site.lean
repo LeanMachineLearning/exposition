@@ -55,15 +55,17 @@ private def moduleDocBlocks (env : Environment) (name : Name) : Array (Block Man
   | none => #[]
   | some docs => docs.foldl (fun acc doc => acc ++ markdownToBlocks doc.doc) #[]
 
-/-- Builds module summaries from declarations and applies stable ordering. -/
-private def buildModules (env : Environment) (rootPrefix : Name) (order : Std.HashMap Name Nat)
-    (decls : Array DeclInfo) : Array ModuleInfo :=
+/-- Builds module summaries from declarations and applies stable ordering. `moduleDocs` is the
+per-module doc-comment blocks computed once (with the live environment) during `collect`. -/
+private def buildModules (rootPrefix : Name) (order : Std.HashMap Name Nat)
+    (moduleDocs : Std.HashMap Name (Array (Block Manual))) (decls : Array DeclInfo) :
+    Array ModuleInfo :=
   let mods := moduleIndexMap decls |>.toArray.map fun (name, ds) => {
     name := name
     path := modulePathOf rootPrefix name
     groupKey := groupKeyOfModule rootPrefix name
     decls := ds
-    docBlocks := moduleDocBlocks env name
+    docBlocks := moduleDocs.getD name #[]
   }
   sortDeclsInModules <| sortModules order mods
 
@@ -102,14 +104,15 @@ private def mkMarkdownPart (title : String) (fileSlug : String) (body : String)
     subParts := subParts
   }
 
-/-- Loads overview/context pages from the project README when present. -/
-private def loadProjectContextParts (projectDir : System.FilePath) (repoUrl? : Option String)
-    : IO (Array (Block Manual) × Array (Part Manual)) := do
-  let readmePath := projectDir / "README.md"
+/-- Builds overview/context pages from the project README text when present. Pure (the README
+text is read once during `collect` and threaded through `CollectedData`), so `build-site` needs
+no access to the project directory. -/
+private def mkProjectContextParts (readmeText : Option String) (repoUrl? : Option String) :
+    Array (Block Manual) × Array (Part Manual) := Id.run do
   let mut rootBlocks : Array (Block Manual) := #[]
   let mut parts : Array (Part Manual) := #[]
 
-  if let some readme ← readFileIfExists readmePath then
+  if let some readme := readmeText then
     let sections := parseMarkdownSections readme
     let sections :=
       sections.takeWhile fun sec => sec.title != "Selected References"
@@ -607,26 +610,30 @@ private unsafe def loadEnv (projectDir : System.FilePath) (ws : Lake.Workspace) 
   -- data and renders raw constants (e.g. `LE.le`/`Eq` instead of `≤`/`=`).
   withCurrentDir projectDir <| Lean.importModules imports {} (loadExts := true)
 
-/-- Main entry point: collects data, builds pages, and runs the renderer. -/
-unsafe def mainImpl (args : List String) : IO UInt32 := do
-  let cfg ←
-    match parseArgs args with
-    | .ok cfg => pure cfg
-    | .error err =>
-        IO.eprintln err
-        return 1
-  -- The exposition tool always runs inside the target project's own Lake environment (via
-  -- `lake env …/exposition`), so the project to expose is the current working directory.
+/-- Imports the target project (the current working directory, since the exposition tool
+always runs inside the target project's own Lake environment via `lake env …/exposition`)
+and resolves the root module prefix. Shared by `collect`/`all` (`extract` re-imports
+separately, since it only needs `env`, not a fresh root-prefix resolution: it trusts
+`CollectedData.rootPrefix` instead). -/
+private unsafe def loadProject (cfg : Cli) :
+    IO (System.FilePath × Lake.Workspace × Name × Environment) := do
   let projectDir : System.FilePath := "."
   let ws ← loadWorkspaceAt projectDir
   let some rootPrefix := cfg.rootPrefix <|> firstRootPrefix ws cfg.excludeLibs
-    | IO.eprintln "Could not determine a root module prefix. Pass --root PREFIX."
-      return 1
+    | throw <| IO.userError "Could not determine a root module prefix. Pass --root PREFIX."
   let imports := importRoots ws cfg.excludeLibs
   let env ← loadEnv projectDir ws imports
+  return (projectDir, ws, rootPrefix, env)
+
+/-- Runs the data-gathering analysis against an already-imported project (see `loadProject`):
+collects exposed declarations and their dependency/doc metadata, and reads the ancillary
+project-level data (module import order, module-level doc comments, README text) needed to
+build pages later without re-importing the project. Also prints the diagnostics `collect`/`all`
+show today, and writes `excluded-declarations.txt` under `cfg.outputDir` when given. -/
+private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Workspace)
+    (rootPrefix : Name) (env : Environment) : IO CollectedData := do
   let decls ← collectDecls projectDir rootPrefix ws.root env
   let decls := decls |> attachReverseDeps |> attachTransitiveDeps |> attachDependsOnSorry
-  let declByName := declByNameMap decls
   let excludedNames :=
     (projectConstants env rootPrefix).filterMap fun (name, _, info) =>
       if shouldExpose env rootPrefix name info then none else some name
@@ -645,27 +652,128 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   else
     IO.println s!"Collected {decls.size} declarations under {rootPrefix}"
   let order ← moduleOrderMap projectDir rootPrefix
-  let modules := buildModules env rootPrefix order decls
+  let moduleNames := moduleIndexMap decls |>.toArray.map Prod.fst
+  let moduleDocs := moduleNames.map fun name => (name, moduleDocBlocks env name)
+  let readmeText ← readFileIfExists (projectDir / "README.md")
+  return {
+    rootPrefix
+    decls
+    moduleOrder := order.toArray
+    moduleDocs
+    readmeText
+  }
+
+/-- Reads and decodes a `CollectedData` JSON file written by `collect`. -/
+private def loadCollectedData (path : String) : IO CollectedData := do
+  let text ← IO.FS.readFile path
+  let .ok json := Json.parse text
+    | throw <| IO.userError s!"Failed to parse JSON from {path}"
+  let .ok (data : CollectedData) := FromJson.fromJson? json
+    | throw <| IO.userError s!"Failed to decode collected data from {path}"
+  pure data
+
+/-- Builds and renders the Verso site from already-collected data. Needs no Lean environment
+and no access to the target project's source tree: `data` and `cfg`'s render-time flags
+(`--repo-url`/`--site-url`/`--title`/`--output`) are all it consults. -/
+private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
+  let order : Std.HashMap Name Nat := data.moduleOrder.foldl (fun m (n, r) => m.insert n r) {}
+  let moduleDocs : Std.HashMap Name (Array (Block Manual)) :=
+    data.moduleDocs.foldl (fun m (n, bs) => m.insert n bs) {}
+  let modules := buildModules data.rootPrefix order moduleDocs data.decls
   let groups := buildGroups order modules
   let ctx : SiteContext := {
     repoUrl? := cfg.repoUrl
     siteUrl? := cfg.siteUrl
-    declByName := declByName
-    declHrefs := declHrefMap decls
-    declPageHrefs := declPageHrefMap decls
+    declByName := declByNameMap data.decls
+    declHrefs := declHrefMap data.decls
+    declPageHrefs := declPageHrefMap data.decls
   }
-  if let some out := cfg.outputDir then
-    let startMs ← IO.monoMsNow
-    let n ← writeAllExtractions env rootPrefix decls projectDir (System.FilePath.mk out / "html-multi" / "extracted")
-    IO.println s!"Wrote {n} standalone extraction files in {(← IO.monoMsNow) - startMs}ms"
-  let (introBlocks, extraParts) ← loadProjectContextParts projectDir cfg.repoUrl
+  let (introBlocks, extraParts) := mkProjectContextParts data.readmeText cfg.repoUrl
   let hasContext := extraParts.any fun part => part.metadata.bind PartMetadata.file == some "context"
   let readerGuideBlocks := mkReaderGuideBlocks hasContext
-  let root := mkRootPart cfg rootPrefix groups decls ctx introBlocks readerGuideBlocks extraParts
+  let root := mkRootPart cfg data.rootPrefix groups data.decls ctx introBlocks readerGuideBlocks extraParts
   let versoArgs :=
     match cfg.outputDir with
     | some out => ["--output", out]
     | none => []
   manualMain root (options := versoArgs) (config := renderConfig)
+
+/-- `collect`: imports the target project, runs the analysis, and writes the result as JSON
+to `cfg.dataPath`. -/
+private unsafe def runCollect (cfg : Cli) : IO UInt32 := do
+  let some dataPath := cfg.dataPath
+    | IO.eprintln "collect requires --data PATH"
+      return 1
+  let (projectDir, ws, rootPrefix, env) ← loadProject cfg
+  let data ← collectData cfg projectDir ws rootPrefix env
+  IO.FS.writeFile dataPath (ToJson.toJson data).compress
+  IO.println s!"Wrote collected data for {data.decls.size} declarations to {dataPath}"
+  return 0
+
+/-- `extract`: reads collected data from `cfg.dataPath` and writes the standalone
+per-declaration `.lean` files. Still re-imports the target project (cheap: the project's
+`.olean`s are already built), since extraction needs the live environment to parse source
+files notation-aware, but skips redoing the `collect` analysis. -/
+private unsafe def runExtract (cfg : Cli) : IO UInt32 := do
+  let some dataPath := cfg.dataPath
+    | IO.eprintln "extract requires --data PATH"
+      return 1
+  let some out := cfg.outputDir
+    | IO.eprintln "extract requires --output DIR"
+      return 1
+  let data ← loadCollectedData dataPath
+  let projectDir : System.FilePath := "."
+  let ws ← loadWorkspaceAt projectDir
+  let imports := importRoots ws cfg.excludeLibs
+  let env ← loadEnv projectDir ws imports
+  let startMs ← IO.monoMsNow
+  let n ← writeAllExtractions env data.rootPrefix data.decls projectDir
+    (System.FilePath.mk out / "html-multi" / "extracted")
+  IO.println s!"Wrote {n} standalone extraction files in {(← IO.monoMsNow) - startMs}ms"
+  return 0
+
+/-- `build-site`: reads collected data from `cfg.dataPath` and renders the Verso site. No Lean
+environment or project access at all. -/
+private def runBuildSite (cfg : Cli) : IO UInt32 := do
+  let some dataPath := cfg.dataPath
+    | IO.eprintln "build-site requires --data PATH"
+      return 1
+  let data ← loadCollectedData dataPath
+  buildSiteFrom cfg data
+
+/-- `all` (also the default when no subcommand is given): runs the full pipeline in one
+process, without a JSON round-trip, matching the tool's original one-shot behavior. -/
+private unsafe def runAll (cfg : Cli) : IO UInt32 := do
+  let (projectDir, ws, rootPrefix, env) ← loadProject cfg
+  let data ← collectData cfg projectDir ws rootPrefix env
+  if let some out := cfg.outputDir then
+    let startMs ← IO.monoMsNow
+    let n ← writeAllExtractions env data.rootPrefix data.decls projectDir
+      (System.FilePath.mk out / "html-multi" / "extracted")
+    IO.println s!"Wrote {n} standalone extraction files in {(← IO.monoMsNow) - startMs}ms"
+  buildSiteFrom cfg data
+
+/-- Main entry point: dispatches to the `collect`/`extract`/`build-site`/`all` subcommands. A
+missing or unrecognized leading token defaults to `all`, so invocations from before this
+split (bare flags, no subcommand) keep working unchanged. -/
+unsafe def mainImpl (args : List String) : IO UInt32 := do
+  let (subcommand, rest) :=
+    match args with
+    | "collect" :: rest => ("collect", rest)
+    | "extract" :: rest => ("extract", rest)
+    | "build-site" :: rest => ("build-site", rest)
+    | "all" :: rest => ("all", rest)
+    | rest => ("all", rest)
+  let cfg ←
+    match parseArgs rest with
+    | .ok cfg => pure cfg
+    | .error err =>
+        IO.eprintln err
+        return 1
+  match subcommand with
+  | "collect" => runCollect cfg
+  | "extract" => runExtract cfg
+  | "build-site" => runBuildSite cfg
+  | _ => runAll cfg
 
 end LMLExposition

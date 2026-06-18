@@ -19,7 +19,9 @@ namespace LMLExposition
 
 open Verso.Output Html
 
-/-- CLI options used to configure exposition generation. -/
+/-- CLI options used to configure exposition generation. Shared across the `collect`,
+`extract`, `build-site`, and `all` subcommands; each one only consults the fields relevant
+to it. -/
 structure Cli where
   rootPrefix : Option Name := none
   repoUrl : Option String := none
@@ -27,6 +29,9 @@ structure Cli where
   siteTitle : Option String := none
   outputDir : Option String := none
   excludeLibs : Array Name := #[]
+  /-- Path to the collected-data JSON file: written by `collect`, read by `extract` and
+  `build-site`. -/
+  dataPath : Option String := none
 deriving Repr
 
 /-- Classification of exposed Lean declarations. -/
@@ -135,7 +140,7 @@ structure DeclInfo where
   usedBy : Array Name := #[]
   transDeps : Array Name := #[]
   docstringBlock? : Option (Block Manual) := none
-deriving Repr
+deriving Repr, ToJson, FromJson
 
 /-- Exposed declarations grouped by Lean module. -/
 structure ModuleInfo where
@@ -144,24 +149,44 @@ structure ModuleInfo where
   groupKey : String
   decls : Array DeclInfo
   docBlocks : Array (Block Manual) := #[]
-deriving Repr
+deriving Repr, ToJson, FromJson
 
 /-- Modules grouped by top-level chapter key. -/
 structure GroupInfo where
   key : String
   modules : Array ModuleInfo
-deriving Repr
+deriving Repr, ToJson, FromJson
 
 /-- Data container for MarkdownSection. -/
 structure MarkdownSection where
   title : String
   body : String
-deriving Repr
+deriving Repr, ToJson, FromJson
+
+/-- The full result of the `collect` subcommand's analysis, persisted as JSON so `extract`
+and `build-site` can run without re-importing the target project. `moduleOrder` and
+`moduleDocs` are flattened to arrays (rather than `Std.HashMap`) purely for JSON-friendliness;
+reconstruct the map at the consuming end. -/
+structure CollectedData where
+  version : Nat := 1
+  rootPrefix : Name
+  decls : Array DeclInfo
+  moduleOrder : Array (Name × Nat)
+  moduleDocs : Array (Name × Array (Block Manual))
+  readmeText : Option String
+deriving ToJson, FromJson
 
 /-- Command-line usage text shown for invalid arguments. -/
 def usage : String :=
   String.intercalate "\n" [
-    "Usage: lake exe exposition [options]",
+    "Usage: lake exe exposition [collect|extract|build-site|all] [options]",
+    "",
+    "Subcommands:",
+    "  collect       Import the target project and write collected declaration data as JSON.",
+    "  extract       Read collected data and write standalone per-declaration .lean files.",
+    "  build-site    Read collected data and render the Verso HTML site (no Lean env needed).",
+    "  all           Run all of the above in one process, without a JSON round-trip",
+    "                (default when no subcommand is given, for backward compatibility).",
     "",
     "Options:",
     "  --root PREFIX        Root module prefix to expose (default: first root library)",
@@ -171,6 +196,8 @@ def usage : String :=
     "  --title TITLE        Site title override",
     "  --output DIR         Output directory passed to Verso",
     "  --exclude-lib NAME   Exclude a root library when importing the target project",
+    "  --data PATH          Collected-data JSON file: written by `collect`, read by `extract`",
+    "                       and `build-site`",
   ]
 
 /-- Parses CLI arguments into `Cli`, or returns a usage error. -/
@@ -194,6 +221,9 @@ def parseArgs : List String → Except String Cli
   | "--exclude-lib" :: lib :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with excludeLibs := cfg.excludeLibs.push lib.toName }
+  | "--data" :: path :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with dataPath := some path }
   | flag :: _ =>
       .error s!"Unknown or incomplete option: {flag}\n\n{usage}"
 
