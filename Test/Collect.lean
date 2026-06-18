@@ -53,9 +53,13 @@ namespace LMLExposition.Test
 #guard isInternalName `Foo.match_1
 #guard isInternalName `Foo._proof_2
 #guard isInternalName `Foo.bar._hyg        -- internal in a non-leaf position
-#guard isInternalName `List.rec
-#guard isInternalName `Foo.casesOn
-#guard isInternalName `Foo.injEq
+-- The recursor family, `casesOn`, and constructor companions like `injEq` are deliberately
+-- *not* caught here: `shouldExpose` excludes them via environment metadata instead
+-- (`isAuxRecursor`, `hasConstructorPrefix`, `ConstantInfo.recInfo`), since string-matching alone
+-- can't distinguish them from a user declaration that happens to share the name.
+#guard !isInternalName `List.rec
+#guard !isInternalName `Foo.casesOn
+#guard !isInternalName `Foo.injEq
 -- `mk` is *not* flagged syntactically: the real constructor is excluded via the environment
 -- (`ctorInfo`) in `shouldExpose`, while a user `def Foo.mk` must remain exposed.
 #guard !isInternalName `Foo.mk

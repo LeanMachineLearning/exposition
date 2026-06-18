@@ -19,7 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <button id=\"graph-fit\" type=\"button\">Fit view</button>
       <button id=\"graph-clear\" type=\"button\">Clear focus</button>
     </div>
-    <p class=\"graph-hint\">Scroll to zoom, drag the background to pan, click a node to focus its neighborhood, and double-click a node to open its page.</p>
+    <p class=\"graph-hint\">Scroll to zoom, drag the background to pan, click a node to focus its neighborhood, and double-click a node to open its page. Arrows point from a declaration to the declarations that depend on it.</p>
     <p class=\"graph-legend\">Node fill colors mark chapters. Green outlines are kernel-checked; rust outlines contain sorry.</p>
     <div class=\"graph-layout\">
       <svg id=\"graph-svg\" width=\"100%\" height=\"720\"></svg>
@@ -56,24 +56,46 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const palette = ['#3d6b59', '#b96d2d', '#7a4e7a', '#2f5f87', '#8a3b3b', '#5f6f2e', '#9a5b8f', '#6b5041'];
   const color = d3.scaleOrdinal(groups, groups.map((_, index) => palette[index % palette.length]));
-  const cols = Math.max(1, Math.ceil(Math.sqrt(groups.length)));
-  const rows = Math.max(1, Math.ceil(groups.length / cols));
-  const groupCenters = new Map(groups.map((group, index) => {
-    const col = index % cols;
-    const row = Math.floor(index / cols);
-    return [group, {
-      x: width * ((col + 0.5) / cols),
-      y: height * ((row + 0.5) / rows)
-    }];
-  }));
+
+  // Size each node's oval to fit its label, so the short declaration name can sit inside it.
+  const labelFont = '600 11px sans-serif';
+  const measureCtx = document.createElement('canvas').getContext('2d');
+  measureCtx.font = labelFont;
+  for (const n of nodes) {
+    n.rx = Math.max(28, measureCtx.measureText(n.label).width / 2 + 14);
+    n.ry = 17;
+  }
+
+  // Edges point from a dependency (\"parent\") to the declaration that depends on it (\"child\"),
+  // so a node's depth is one more than the deepest of its parents (its incoming neighbors).
+  // Nodes with no parents (depth 0) are the most foundational declarations in the graph.
+  const depthCache = new Map();
+  const computeDepth = (id, stack) => {
+    if (depthCache.has(id)) return depthCache.get(id);
+    if (stack.has(id)) return 0;
+    stack.add(id);
+    let depth = 0;
+    for (const parent of incoming.get(id) || []) {
+      depth = Math.max(depth, computeDepth(parent, stack) + 1);
+    }
+    stack.delete(id);
+    depthCache.set(id, depth);
+    return depth;
+  };
+  for (const n of nodes) n.depth = computeDepth(n.id, new Set());
+
+  const layerSpacing = 110;
+  const layerMargin = 70;
+  // Depth 0 (parents, the most foundational declarations) sits at the top; deeper nodes
+  // (declarations with more dependencies) are placed below.
+  const yForDepth = depth => layerMargin + depth * layerSpacing;
 
   const simulation = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(edges).id(d => d.id).distance(80).strength(0.2))
-    .force('charge', d3.forceManyBody().strength(-210))
-    .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('x', d3.forceX(d => groupCenters.get(d.groupKey)?.x || width / 2).strength(0.08))
-    .force('y', d3.forceY(d => groupCenters.get(d.groupKey)?.y || height / 2).strength(0.08))
-    .force('collision', d3.forceCollide(22));
+    .force('link', d3.forceLink(edges).id(d => d.id).distance(80).strength(0.15))
+    .force('charge', d3.forceManyBody().strength(-150))
+    .force('x', d3.forceX(width / 2).strength(0.03))
+    .force('y', d3.forceY(d => yForDepth(d.depth)).strength(1))
+    .force('collision', d3.forceCollide(d => Math.max(d.rx, d.ry) + 6));
 
   const zoom = d3.zoom()
     .scaleExtent([0.25, 4])
@@ -82,13 +104,31 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   svg.call(zoom);
 
+  const defs = svg.append('defs');
+  const arrowMarker = (id, fill) => {
+    defs.append('marker')
+      .attr('id', id)
+      .attr('viewBox', '0 0 10 10')
+      .attr('refX', 8)
+      .attr('refY', 5)
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
+      .attr('orient', 'auto-start-reverse')
+      .append('path')
+      .attr('d', 'M0,0 L10,5 L0,10 Z')
+      .attr('fill', fill);
+  };
+  arrowMarker('graph-arrow-default', '#1a1a1a');
+  arrowMarker('graph-arrow-highlight', '#a14d2a');
+
   const link = canvas.append('g')
-    .attr('stroke', '#b8b0a4')
-    .attr('stroke-opacity', 0.6)
+    .attr('stroke-opacity', 0.8)
     .selectAll('line')
     .data(edges)
     .join('line')
-    .attr('stroke-width', 1.2);
+    .attr('stroke', '#1a1a1a')
+    .attr('stroke-width', 1.6)
+    .attr('marker-end', 'url(#graph-arrow-default)');
 
   const node = canvas.append('g')
     .selectAll('g')
@@ -97,9 +137,9 @@ document.addEventListener('DOMContentLoaded', () => {
     .attr('class', 'graph-node')
     .style('cursor', 'pointer');
 
-  const radius = d => 8 + Math.min(6, Math.floor((degree.get(d.id) || 0) / 3));
-  const circles = node.append('circle')
-    .attr('r', radius)
+  const shapes = node.append('ellipse')
+    .attr('rx', d => d.rx)
+    .attr('ry', d => d.ry)
     .attr('fill', d => color(d.groupKey))
     .attr('stroke', d => d.status === 'sorry' ? '#a14d2a' : '#1f6b4b')
     .attr('stroke-width', 2.2);
@@ -110,11 +150,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const labels = node.append('text')
     .attr('class', 'graph-label')
     .text(d => d.label)
-    .attr('x', 14)
+    .attr('text-anchor', 'middle')
+    .attr('dominant-baseline', 'middle')
     .attr('y', 4)
-    .attr('font-size', 10)
-    .attr('fill', '#193428')
-    .style('display', 'none');
+    .attr('font', labelFont)
+    .attr('fill', '#f7f3ea')
+    .style('pointer-events', 'none');
 
   const formatNeighborList = (title, ids) => {
     if (!ids || ids.length === 0) {
@@ -181,8 +222,8 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     const selected = nodeById.get(selectedId);
-    const deps = outgoing.get(selectedId) || [];
-    const usedBy = incoming.get(selectedId) || [];
+    const deps = incoming.get(selectedId) || [];
+    const usedBy = outgoing.get(selectedId) || [];
     panel.innerHTML = `
       <h2>${selected.label}</h2>
       <p><strong>Kind:</strong> ${selected.kind}</p>
@@ -212,12 +253,11 @@ document.addEventListener('DOMContentLoaded', () => {
       .style('display', d => {
         if (!visible.has(d.id)) return 'none';
         if (neighborhood) return neighborhood.has(d.id) ? null : 'none';
-        return activeQuery === '' ? 'none' : null;
+        return null;
       });
 
-    circles
-      .attr('stroke-width', d => d.id === selectedId ? 4 : 2.2)
-      .attr('r', d => d.id === selectedId ? radius(d) + 2 : radius(d));
+    shapes
+      .attr('stroke-width', d => d.id === selectedId ? 4 : 2.2);
 
     link
       .style('display', d => {
@@ -229,13 +269,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const source = typeof d.source === 'object' ? d.source.id : d.source;
         const target = typeof d.target === 'object' ? d.target.id : d.target;
         if (!visible.has(source) || !visible.has(target)) return 0;
-        if (!neighborhood) return 0.45;
+        if (!neighborhood) return 0.65;
         return neighborhood.has(source) && neighborhood.has(target) ? 0.9 : 0.05;
       })
       .attr('stroke', d => {
         const source = typeof d.source === 'object' ? d.source.id : d.source;
         const target = typeof d.target === 'object' ? d.target.id : d.target;
-        return selectedId && (source === selectedId || target === selectedId) ? '#a14d2a' : '#b8b0a4';
+        return selectedId && (source === selectedId || target === selectedId) ? '#a14d2a' : '#1a1a1a';
+      })
+      .attr('marker-end', d => {
+        const source = typeof d.source === 'object' ? d.source.id : d.source;
+        const target = typeof d.target === 'object' ? d.target.id : d.target;
+        return selectedId && (source === selectedId || target === selectedId)
+          ? 'url(#graph-arrow-highlight)'
+          : 'url(#graph-arrow-default)';
       });
 
     updatePanel(visible);
@@ -275,12 +322,23 @@ document.addEventListener('DOMContentLoaded', () => {
     window.location.href = d.href;
   });
 
+  const targetEndpoint = d => {
+    const dx = d.target.x - d.source.x;
+    const dy = d.target.y - d.source.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    const ux = dx / dist, uy = dy / dist;
+    // Distance from the target's center to its ellipse boundary along the (ux, uy) direction.
+    const boundary = 1 / Math.sqrt((ux / d.target.rx) ** 2 + (uy / d.target.ry) ** 2);
+    const gap = boundary + 4;
+    return { x: d.target.x - ux * gap, y: d.target.y - uy * gap };
+  };
+
   simulation.on('tick', () => {
     link
       .attr('x1', d => d.source.x)
       .attr('y1', d => d.source.y)
-      .attr('x2', d => d.target.x)
-      .attr('y2', d => d.target.y);
+      .attr('x2', d => targetEndpoint(d).x)
+      .attr('y2', d => targetEndpoint(d).y);
 
     node.attr('transform', d => `translate(${d.x},${d.y})`);
   });

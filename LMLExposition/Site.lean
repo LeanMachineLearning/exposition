@@ -356,7 +356,9 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
     .other (Block.declCard cardData) blocks
 
 /-- Builds graph nodes/edges for `decls`, with edges only between declarations that are
-themselves in `decls`. -/
+themselves in `decls`. Each edge points from a dependency (the "parent") to the declaration
+that depends on it (the "child"), so the arrow direction follows the order in which the
+declarations must be established. -/
 private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String) :
     GraphData :=
   let names : Std.HashSet Name := decls.foldl (fun acc d => acc.insert d.name) {}
@@ -372,7 +374,7 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
   let edges := decls.foldl (fun acc decl =>
     acc ++ decl.deps.filterMap (fun dep =>
       if names.contains dep then
-        some { source := decl.name.toString, target := dep.toString }
+        some { source := dep.toString, target := decl.name.toString }
       else
         none)) #[]
   { nodes, edges }
