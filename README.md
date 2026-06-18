@@ -80,10 +80,3 @@ gh run download "$RUN_ID" -R "$REPO" \
 tar -xzf "./exposition-artifact/exposition-linux-x86_64-$SOURCE_SHA/exposition-linux-x86_64-$SOURCE_SHA.tar.gz" \
   -C ./exposition-artifact
 ```
-
-## Current Limitations
-
-- relies on plain text code blocks and source-file snippets, not SubVerso highlighting
-- undocumented declarations render without prose
-- dependency links and graph edges are only emitted for exposed declarations
-- issue URLs are generated from `--repo-url` and assume a standard `main` branch layout
