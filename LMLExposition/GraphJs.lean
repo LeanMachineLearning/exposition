@@ -191,9 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
     .data(fileGroups)
     .join('rect')
     .attr('fill', 'none')
-    .attr('stroke', '#6b5041')
-    .attr('stroke-width', 1.2)
-    .attr('stroke-dasharray', '6 4')
+    .attr('stroke', 'none')
     .attr('rx', 12)
     .attr('ry', 12)
     .style('pointer-events', 'none');

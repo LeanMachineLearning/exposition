@@ -381,6 +381,43 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
         none)) #[]
   { nodes, edges }
 
+/-- All nodes reachable from `start` via one or more edges of `adj`, tolerant of cycles (a node
+already on the current path contributes nothing further rather than looping forever). Threads a
+`cache` of already-computed results so repeated queries for the same node (common when many edges
+share a source) are O(1) after the first. -/
+private partial def reachableFrom (adj : Std.HashMap String (Array String))
+    (cache : Std.HashMap String (Std.HashSet String)) (onPath : Std.HashSet String) (n : String) :
+    Std.HashSet String × Std.HashMap String (Std.HashSet String) :=
+  match cache.get? n with
+  | some reached => (reached, cache)
+  | none =>
+    if onPath.contains n then
+      ({}, cache)
+    else
+      let onPath := onPath.insert n
+      let (reached, cache) := (adj.getD n #[]).foldl
+        (init := (({} : Std.HashSet String), cache))
+        (fun (reached, cache) m =>
+          let reached := reached.insert m
+          let (sub, cache) := reachableFrom adj cache onPath m
+          (sub.fold (init := reached) (·.insert ·), cache))
+      (reached, cache.insert n reached)
+
+/-- Drops every edge that is implied by a longer path through other edges, the standard
+transitive reduction of a DAG (tolerant of the rare dependency cycle). Meant for the full
+dependency-graph page only: per-declaration graphs are already small, and keeping every direct
+edge there makes each one exact (`A → B` always means `A` is a *direct* dependency of `B`). -/
+private def transitiveReduce (data : GraphData) : GraphData :=
+  let adj : Std.HashMap String (Array String) :=
+    data.edges.foldl (fun acc e => acc.insert e.source ((acc.getD e.source #[]).push e.target)) {}
+  let cache := data.nodes.foldl
+    (fun cache n => (reachableFrom adj cache {} n.id).2)
+    ({} : Std.HashMap String (Std.HashSet String))
+  let edges := data.edges.filter fun e =>
+    let siblings := adj.getD e.source #[]
+    !siblings.any fun w => w != e.target && (cache.getD w {}).contains e.target
+  { data with edges := edges }
+
 /-- Builds a dedicated detail page for one declaration: its own card, followed by cards for its
 type dependencies, followed by cards for the rest of its transitive dependencies in topological
 order (each dependency before the declarations that use it). -/
@@ -399,7 +436,17 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
     | none => s!"extracted/{anchorIdOf decl.name}.lean"
   let extractedLink : Block Manual :=
     .para #[.link #[.text "Minimal Lean file"] extractedUrl]
-  let mut blocks : Array (Block Manual) := #[extractedLink, mkDeclBlock decl ctx]
+  let mut blocks : Array (Block Manual) := #[]
+  if pageDecls.size > 1 then
+    blocks := blocks.push (.para #[.text (String.join [
+      "This page has the declaration's own card below, then its dependency graph, then a card ",
+      "for each dependency (type dependencies first, then the rest of the transitive closure). ",
+      "For a theorem, the graph and the dependency cards only follow its statement's ",
+      "dependencies (its proof is replaced by sorry, so what it proves doesn't depend on how); ",
+      "for everything else, both the type and the body/value are followed, since their content ",
+      "is part of what later declarations build on."
+    ])])
+  blocks := blocks ++ #[extractedLink, mkDeclBlock decl ctx]
   if pageDecls.size > 1 then
     blocks := blocks.push (.para #[.bold #[.text "Dependency graph"]])
     blocks := blocks.push (.other (Block.graph (mkGraphData pageDecls ctx.declHrefs)) #[])
@@ -460,7 +507,7 @@ private def mkGroupPart (group : GroupInfo) (ctx : SiteContext) : Part Manual :=
 
 /-- Builds the interactive dependency graph page and graph payload. -/
 private def mkGraphPart (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String) : Part Manual :=
-  let graphData := mkGraphData decls declHrefs
+  let graphData := transitiveReduce (mkGraphData decls declHrefs)
   {
     title := #[.text "Dependency Graph"]
     titleString := "Dependency Graph"
@@ -471,6 +518,16 @@ private def mkGraphPart (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
     }
     content := #[
       .para #[.text "Interactive dependency view for exposed declarations."],
+      .para #[.text (String.join [
+        "An edge points from a dependency to the declaration that depends on it. For a ",
+        "theorem, only its statement's dependencies are shown (its proof is replaced by ",
+        "sorry in the extracted files, so what it proves doesn't depend on how); for ",
+        "everything else (definitions, structures, ...), both the type and the body/value ",
+        "are followed, since their content is part of what later declarations build on. ",
+        "Edges implied by a longer path through other edges are pruned (e.g. if A uses B ",
+        "and B uses C, the direct A → C edge is dropped when A also uses C only because B ",
+        "does), so only the most direct dependency relationships are drawn."
+      ])],
       .other (Block.graph graphData) #[]
     ]
     subParts := #[]
