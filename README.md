@@ -8,6 +8,9 @@ Features:
 - grouping by the first path component after the root module, with chapter/module order derived from the import graph
 - declaration cards with docstrings, source-first Lean statements, collapsible `Uses` / `Used by`, and collapsible proof bodies
 - dependency graph page backed by inline JSON + D3, with chapter filtering and neighborhood focus
+- per-declaration standalone Lean files (under `extracted/`), each self-contained with its transitive
+  dependencies inlined and theorem proofs replaced by `sorry`, optionally linked into the
+  [live.lean-lang.org](https://live.lean-lang.org) web editor (see `--site-url`)
 - multi-page HTML output through Verso's `manualMain`
 
 ## Status
@@ -38,6 +41,7 @@ lake build MyLibrary
 lake env /path/to/lml-exposition/.lake/build/bin/exposition \
   --root MyLibrary \
   --repo-url https://github.com/owner/repo \
+  --site-url https://owner.github.io/repo \
   --output /path/to/site-out
 ```
 
@@ -45,8 +49,14 @@ Verso writes the site into the chosen output directory, typically under `html-mu
 
 ## Options
 
-- `--root PREFIX`: root module prefix to expose
+- `--root PREFIX`: root module prefix to expose (defaults to the first root library)
 - `--repo-url URL`: base GitHub URL used for source and issue links
+- `--site-url URL`: base URL where the generated site will be deployed. When set, each declaration
+  gets an "open in web editor" link pointing at [live.lean-lang.org](https://live.lean-lang.org),
+  preloaded (via its `#url=` parameter) with the declaration's standalone extracted file served from
+  `<site-url>/extracted/<id>.lean`. Omit it to skip these editor links (the `extracted/` files are
+  still written either way). The URL must match where the site is actually published, since the web
+  editor fetches the `.lean` file over the network.
 - `--title TITLE`: override the site title
 - `--output DIR`: output directory passed through to Verso
 - `--exclude-lib NAME`: root library to skip when importing the target project
