@@ -358,11 +358,11 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
 /-- Builds graph nodes/edges for `decls`, with edges only between declarations that are
 themselves in `decls`. Each edge points from a dependency (the "parent") to the declaration
 that depends on it (the "child"), so the arrow direction follows the order in which the
-declarations must be established. Follows `graphDeps`, i.e. only type dependencies for
-theorems (matching the declaration detail page's transitive closure), and type + body
-dependencies for everything else. -/
-private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String) :
-    GraphData :=
+declarations must be established. `depsOf` picks which dependency set each edge follows: pass
+`graphDeps` (type-only for theorems) on declaration detail pages, to match their transitive
+closure, or `(·.deps)` (always type + body) for the full-repository graph. -/
+private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String)
+    (depsOf : DeclInfo → Array Name) : GraphData :=
   let names : Std.HashSet Name := decls.foldl (fun acc d => acc.insert d.name) {}
   let nodes := decls.map fun decl => {
     id := decl.name.toString
@@ -374,7 +374,7 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
     href := declHrefs.getD decl.name (pathForPart decl.groupKey decl.modulePath decl.name)
   }
   let edges := decls.foldl (fun acc decl =>
-    acc ++ (graphDeps decl).filterMap (fun dep =>
+    acc ++ (depsOf decl).filterMap (fun dep =>
       if names.contains dep then
         some { source := dep.toString, target := decl.name.toString }
       else
@@ -449,7 +449,7 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   blocks := blocks ++ #[extractedLink, mkDeclBlock decl ctx]
   if pageDecls.size > 1 then
     blocks := blocks.push (.para #[.bold #[.text "Dependency graph"]])
-    blocks := blocks.push (.other (Block.graph (mkGraphData pageDecls ctx.declHrefs)) #[])
+    blocks := blocks.push (.other (Block.graph (mkGraphData pageDecls ctx.declHrefs graphDeps)) #[])
   if !typeDepCards.isEmpty then
     blocks := blocks.push (.para #[.bold #[.text s!"Type dependencies ({typeDepCards.size})"]])
     blocks := blocks ++ typeDepCards
@@ -507,7 +507,7 @@ private def mkGroupPart (group : GroupInfo) (ctx : SiteContext) : Part Manual :=
 
 /-- Builds the interactive dependency graph page and graph payload. -/
 private def mkGraphPart (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String) : Part Manual :=
-  let graphData := transitiveReduce (mkGraphData decls declHrefs)
+  let graphData := transitiveReduce (mkGraphData decls declHrefs (·.deps))
   {
     title := #[.text "Dependency Graph"]
     titleString := "Dependency Graph"
@@ -519,14 +519,11 @@ private def mkGraphPart (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
     content := #[
       .para #[.text "Interactive dependency view for exposed declarations."],
       .para #[.text (String.join [
-        "An edge points from a dependency to the declaration that depends on it. For a ",
-        "theorem, only its statement's dependencies are shown (its proof is replaced by ",
-        "sorry in the extracted files, so what it proves doesn't depend on how); for ",
-        "everything else (definitions, structures, ...), both the type and the body/value ",
-        "are followed, since their content is part of what later declarations build on. ",
-        "Edges implied by a longer path through other edges are pruned (e.g. if A uses B ",
-        "and B uses C, the direct A → C edge is dropped when A also uses C only because B ",
-        "does), so only the most direct dependency relationships are drawn."
+        "An edge points from a dependency to the declaration that depends on it, following ",
+        "every dependency (both type and proof/body) of each declaration. Edges implied by a ",
+        "longer path through other edges are pruned (e.g. if A uses B and B uses C, the ",
+        "direct A → C edge is dropped when A also uses C only because B does), so only the ",
+        "most direct dependency relationships are drawn."
       ])],
       .other (Block.graph graphData) #[]
     ]
