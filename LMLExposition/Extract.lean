@@ -98,6 +98,30 @@ partial def findDeclValStx? (root : Syntax) : Option Syntax := Id.run do
       worklist := worklist.push arg
   return none
 
+/-- The range of a declaration's value when that value is, in its entirety, a single tactic block
+(`def f … := by tac`), as opposed to a term that merely *contains* `by` proofs. Such a block is a
+direct child of the `declVal` node; an embedded proof sits deeper in the term.
+
+This case must be left alone rather than replaced by `sorry`, because for a **definition** Lean
+decides which section `variable`s to include from what the value actually mentions. A `sorry`
+mentions nothing, so every instance binder the real body relied on silently disappears from the
+signature: `def leftLimWithin (f : α → β) (s : Set α) (a : α) : β := by …` under
+`variable {α β : Type*} [LinearOrder α] [TopologicalSpace β]` becomes
+`{α β} → (α → β) → Set α → α → β` instead of
+`{α β} → [LinearOrder α] → [TopologicalSpace β] → (α → β) → Set α → α → β`, and every use site
+that passes those instances positionally (`@leftLimWithin αᵒᵈ β _ _ f s a`) fails to typecheck.
+
+Keeping the body is safe with respect to the closure: `graphDeps` follows `deps` (type *and* body)
+for everything that is not a theorem, so a definition's body dependencies are already inlined.
+Theorems are unaffected — they take the whole-proof `sorry` path above, and Lean's inclusion rule
+for a theorem does not depend on its proof term. -/
+def wholeValueTacticRange? (stx : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := do
+  let v ← findDeclValStx? stx
+  let tac ← v.getArgs.find? (·.getKind == ``Lean.Parser.Term.byTactic)
+  let s ← tac.getPos?
+  let e ← tac.getTailPos?
+  pure (s, e)
+
 /-- The byte range of the *value*/proof part of a declaration, if present. -/
 def findDeclVal? (root : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := do
   let v ← findDeclValStx? root
@@ -325,6 +349,27 @@ def binderBoundNames (binderSrc : String) : Array String :=
     let w := w.trimAscii.toString
     if w.isEmpty then none else some w
 
+/-- The head symbol of a `variable` binder's type, as spelled in the source: for
+`{𝓕 : Filtration ι mΩ}` this is `Filtration`. `none` when the binder has no `:` separator or its
+type does not start with an identifier.
+
+Used to resolve *generalized field notation* written on a bound name: `𝓕.IsComplete` denotes
+`Filtration.IsComplete`, a spelling in which the referenced declaration's own name never literally
+appears. -/
+def binderTypeHead? (binderSrc : String) : Option Name :=
+  let s := binderSrc.trimAsciiStart.toString
+  match s.splitOn ":" with
+  | _ :: rest@(_ :: _) =>
+    let afterColon := String.intercalate ":" rest
+    let isSep (c : Char) : Bool :=
+      c == ' ' || c == '(' || c == ')' || c == '{' || c == '}' || c == '[' || c == ']'
+        || c == '⦃' || c == '⦄' || c == ',' || c == '→'
+    let toks := (afterColon.split isSep).toArray.filterMap fun w =>
+      let w := w.trimAscii.toString
+      if w.isEmpty then none else some w
+    toks[0]?.map (·.toName)
+  | _ => none
+
 /-! ## Phase 1: process one source file -/
 
 /-- Re-elaborates `source` against `env` and classifies every command. `declPos` maps the byte index
@@ -391,6 +436,14 @@ def processFile (env : Environment) (source : String) (filePath : String)
               let byBlocks := match findDeclValStx? stx with
                 | some v => collectByBlocks v
                 | none => #[]
+              -- Keep a value that is *entirely* one tactic block: replacing it would drop the
+              -- instance binders the body pulled in, changing the declaration's signature. See
+              -- `wholeValueTacticRange?`.
+              let byBlocks := match wholeValueTacticRange? stx with
+                | some (ws, we) =>
+                  byBlocks.filter fun (r : String.Pos.Raw × String.Pos.Raw) =>
+                    r.1.byteIdx != ws.byteIdx || r.2.byteIdx != we.byteIdx
+                | none => byBlocks
               byBlocks.map fun (bs, be) => (bs, be, "sorry")
           applyEdits source cmdStart declEnd edits
       let usedNotations := notationKinds.toArray.filter (collectSyntaxKinds stx).contains
@@ -492,12 +545,33 @@ the open/entered namespaces) turns it into an excluded name, *and* it does not a
 external (non-project) constant. The latter guard is essential: otherwise a Mathlib type or class that
 merely shares its last name component with a project declaration (e.g. `IndexedPartition`) would be
 mistaken for the project one and its binder wrongly dropped, taking the binders it scopes with it.
+
+A reference can also be spelled as *generalized field notation* on another bound name, in which the
+referenced declaration's own name never literally appears: `variable [𝓕.IsComplete P]` denotes
+`MeasureTheory.Filtration.IsComplete` purely by virtue of `𝓕`'s type. `boundVarTypes` maps each
+`variable`-bound name to the head symbol of its type (`𝓕 ↦ Filtration`) so such a binder can be
+resolved and, when excluded, dropped. Going through the receiver's type keeps this as precise as the
+direct case — matching the field's last component against excluded short names instead would
+resurrect exactly the `IndexedPartition` confusion the guard above exists to prevent, since Mathlib
+has its own top-level `IsComplete`.
+
 Returns `none` if no binder survives. -/
 def pruneVariable (env : Environment) (rootPrefix : Name) (excludedNames : Std.HashSet Name)
-    (activePrefixes : Array Name) (boundVars : Std.HashSet Name) (e : CommandEntry) : Option String :=
+    (activePrefixes : Array Name) (boundVars : Std.HashSet Name)
+    (boundVarTypes : Std.HashMap Name Name) (e : CommandEntry) : Option String :=
   if e.binders.isEmpty then
     some e.src   -- couldn't decompose; keep verbatim
   else
+    let resolvesToExcluded (n : Name) : Bool :=
+      activePrefixes.any fun pfx => excludedNames.contains (pfx ++ n)
+    -- `x.f` with `x` a `variable`-bound name: resolve it as `T.f`, `T` being the head of `x`'s type.
+    let fieldNotationExcluded (n : Name) : Bool :=
+      match nameComponents n with
+      | recv :: field@(_ :: _) =>
+        match boundVarTypes.get? recv.toName with
+        | some ty => resolvesToExcluded (field.foldl (fun acc c => Name.str acc c) ty)
+        | none => false
+      | _ => false
     let refsExcluded (id : String) : Bool :=
       let n := id.toName
       if boundVars.contains n then
@@ -505,7 +579,7 @@ def pruneVariable (env : Environment) (rootPrefix : Name) (excludedNames : Std.H
       else if env.contains n && !isProjectLocalConst env rootPrefix n then
         false   -- an external (e.g. Mathlib) constant, not a project reference
       else
-        activePrefixes.any fun pfx => excludedNames.contains (pfx ++ n)
+        resolvesToExcluded n || fieldNotationExcluded n
     let kept := e.binders.filter fun (_, idents) => !idents.any refsExcluded
     if kept.isEmpty then none
     else some ("variable " ++ " ".intercalate (kept.map (·.1)).toList)
@@ -615,6 +689,19 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
             for nm in binderBoundNames bsrc do
               s := s.insert nm.toName
     return s
+  -- The head symbol of each bound name's type (`𝓕 ↦ Filtration`), so that generalized field
+  -- notation written on it (`𝓕.IsComplete`) can be resolved back to the declaration it names.
+  -- See `pruneVariable`.
+  let boundVarTypes : Std.HashMap Name Name := Id.run do
+    let mut m : Std.HashMap Name Name := {}
+    for (_, entries) in involved do
+      for e in entries do
+        if e.kind == ``Parser.Command.«variable» then
+          for (bsrc, _) in e.binders do
+            if let some ty := binderTypeHead? bsrc then
+              for nm in binderBoundNames bsrc do
+                m := m.insert nm.toName ty
+    return m
   -- Project namespaces entered (`namespace Foo`) or opened (`open … Foo …`) across the involved
   -- modules. We emit existence stubs for them up front, since an `open Foo` may precede the
   -- `namespace Foo` that (re)creates `Foo` here — and may even refer to a namespace no kept
@@ -699,7 +786,8 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
         if trimmedSrc.startsWith "@[expose]" || (trimmedSrc.splitOn "public section").length > 1 then
           pure ()   -- drop the module-system `@[expose] public section` wrapper
         else if e.kind == ``Parser.Command.«variable» then
-          if let some v := pruneVariable env rootPrefix excludedNames activePrefixes boundVars e then
+          if let some v := pruneVariable env rootPrefix excludedNames activePrefixes boundVars
+              boundVarTypes e then
             items := items.push (.soft, v ++ "\n")
         else if e.kind == ``Parser.Command.namespace then
           if let some ns := e.nsName? then
