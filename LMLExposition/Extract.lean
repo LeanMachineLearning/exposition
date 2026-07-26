@@ -80,6 +80,14 @@ structure CommandEntry where
   notation's expansion (not the parser) is what shows up in the elaborated term, so this syntactic
   signal is the only way to know the verbatim source needs that notation command replayed. -/
   usedNotations : Array Name := #[]
+  /-- For a declaration wrapped in `omit … in`, the omitted binders as `(source text, identifiers)`.
+  These name `variable` binders, so they must be pruned in step with them: `pruneVariable` drops a
+  binder referencing a declaration outside the target's closure, and an `omit` still naming it would
+  then be an undefined reference. Empty for every other command. -/
+  omitBinders : Array (String × Array String) := #[]
+  /-- For such a declaration, its source with the `omit … in` prefix removed, so `pruneOmit` can
+  re-render the prefix (or drop it entirely) without re-deriving the body. -/
+  srcNoOmit? : Option String := none
   deriving Inhabited
 
 /-! ## Syntax inspection -/
@@ -370,6 +378,82 @@ def binderTypeHead? (binderSrc : String) : Option Name :=
     toks[0]?.map (·.toName)
   | _ => none
 
+/-- True if this attribute must be dropped from an extracted declaration, given `attrSrc`, the
+source text of a single attribute inside an `@[…]` group.
+
+The one case is `@[ext]` on a *theorem*: it generates the converse of the ext lemma **and proves
+it**, which needs the `@[refl]` lemma of the relation in the statement (for `f ≡ᵐ[μ] g`, that is
+`Indistinguishable.refl`). Since that dependency runs through an attribute rather than through any
+term, it is invisible to the dependency analysis and the lemma is not in the closure. Registering
+the lemma for the `ext` tactic is of no use in a file whose proofs are all `sorry`.
+
+Three near neighbours are deliberately **kept**, each because it *produces* something the rest of
+the file may depend on rather than merely registering one:
+
+* `@[ext]` on a `structure`/`class` (hence the `onStructure` guard) is what defines `Foo.ext` and
+  `Foo.ext_iff` in the first place; only the theorem form is inert.
+* plain `@[to_additive]` generates the additive sibling — the very thing `commandSiblings` in
+  `writeAllExtractions` works to keep elaborable.
+* `@[to_additive existing]` looks inert (it links to a counterpart declared elsewhere rather than
+  generating one) but is not: the link it registers is what lets *later* plain `@[to_additive]`
+  commands translate a type mentioning the multiplicative declaration. Dropping it was measured to
+  turn 5 failures into 339 on the brownian-motion corpus, every one of them a downstream
+  `to_additive` translation that could no longer map `Monoid γ` to `AddMonoid γ`. -/
+def isDroppedAttribute (onStructure : Bool) (attrSrc : String) : Bool :=
+  let toks := (attrSrc.split fun c => c == ' ' || c == '\n' || c == '\t' || c == '\r').toArray
+    |>.filterMap fun w =>
+      let w := w.trimAscii.toString
+      if w.isEmpty then none else some w
+  match toks[0]? with
+  | some "ext" => !onStructure
+  | _ => false
+
+/-- Source edits dropping every `isDroppedAttribute` from the `@[…]` groups in `root`. A group is
+re-rendered from the attributes that survive, or removed outright when none do. -/
+partial def attributeStripEdits (source : String) (root : Syntax) (onStructure : Bool) :
+    Array (String.Pos.Raw × String.Pos.Raw × String) := Id.run do
+  let mut acc : Array (String.Pos.Raw × String.Pos.Raw × String) := #[]
+  let mut worklist : Array Syntax := #[root]
+  while !worklist.isEmpty do
+    let stx := worklist.back!
+    worklist := worklist.pop
+    if stx.getKind == ``Lean.Parser.Term.attributes then
+      match stx.getPos?, stx.getTailPos? with
+      | some s, some e =>
+        let instances := (if stx.getArgs.size ≥ 2 then stx[1].getArgs else #[]).filter
+          (·.getKind == ``Lean.Parser.Term.attrInstance)
+        let texts := instances.filterMap fun i =>
+          match i.getPos?, i.getTailPos? with
+          | some is, some ie => some (slice source is ie)
+          | _, _ => none
+        let kept := texts.filter (!isDroppedAttribute onStructure ·)
+        if kept.size != texts.size then
+          let repl := if kept.isEmpty then "" else "@[" ++ ", ".intercalate kept.toList ++ "]"
+          acc := acc.push (s, e, repl)
+      | _, _ => pure ()
+    else
+      for a in stx.getArgs do
+        worklist := worklist.push a
+  return acc
+
+/-- For a declaration wrapped in `omit … in`, its omitted binders as `(source text, identifiers
+referenced)` together with the byte position where the wrapped declaration itself starts.
+
+`omit … in <decl>` parses as `Command.in` with the `Command.omit` as its first child, so the
+binders are the children of that command's `many1` node — the same shape `decomposeVariable`
+handles for `variable`. -/
+def decomposeOmit? (source : String) (stx : Syntax) :
+    Option (Array (String × Array String) × String.Pos.Raw) := do
+  guard (stx.getKind == ``Parser.Command.in && stx.getArgs.size ≥ 3)
+  let om := stx[0]
+  guard (om.getKind == ``Parser.Command.omit && om.getArgs.size ≥ 2)
+  let innerStart ← stx[2].getPos?
+  let binders := om[1].getArgs.filterMap fun b =>
+    match b.getPos?, b.getTailPos? with
+    | some s, some e => some (slice source s e, collectIdents b)
+    | _, _ => none
+  pure (binders, innerStart)
+
 /-! ## Phase 1: process one source file -/
 
 /-- Re-elaborates `source` against `env` and classifies every command. `declPos` maps the byte index
@@ -415,11 +499,20 @@ def processFile (env : Environment) (source : String) (filePath : String)
         else match derivingReplacement? source stx cmdEnd with
           | some (dpos, instances) => (dpos, instances)
           | none => (cmdEnd, #[])
-      let src :=
+      -- Attributes whose elaboration reaches outside this file are dropped from every declaration
+      -- command, theorem or not (see `isDroppedAttribute`).
+      let attrEdits := attributeStripEdits source stx (isStructureDecl stx)
+      -- Renders the command from `start`, which is either the command's own start or — for a
+      -- declaration wrapped in `omit … in` — the start of the wrapped declaration, so that
+      -- `pruneOmit` can re-render the prefix per target. Edits before `start` are irrelevant to
+      -- that slice and are dropped, since `applyEdits` reads its edits in position order.
+      let mkSrc (start : String.Pos.Raw) : String :=
+        let attrEdits := attrEdits.filter fun (r : String.Pos.Raw × String.Pos.Raw × String) =>
+          r.1.byteIdx ≥ start.byteIdx
         if isTheoremDecl stx then
           match findDeclVal? stx with
-          | some (valStart, _) => slice source cmdStart valStart ++ ":= sorry"
-          | none => slice source cmdStart cmdEnd
+          | some (valStart, _) => applyEdits source start valStart attrEdits ++ ":= sorry"
+          | none => applyEdits source start cmdEnd attrEdits
         else
           let edits :=
             if isStructureDecl stx then
@@ -445,10 +538,16 @@ def processFile (env : Environment) (source : String) (filePath : String)
                     r.1.byteIdx != ws.byteIdx || r.2.byteIdx != we.byteIdx
                 | none => byBlocks
               byBlocks.map fun (bs, be) => (bs, be, "sorry")
-          applyEdits source cmdStart declEnd edits
+          applyEdits source start declEnd (attrEdits ++ edits)
+      let src := mkSrc cmdStart
+      let (omitBinders, srcNoOmit?) :=
+        match decomposeOmit? source stx with
+        | some (binders, innerStart) => (binders, some (mkSrc innerStart))
+        | none => (#[], none)
       let usedNotations := notationKinds.toArray.filter (collectSyntaxKinds stx).contains
       entries := entries.push
-        { cls := .decl, src, kind := stx.getKind, declNames := names, appended, usedNotations }
+        { cls := .decl, src, kind := stx.getKind, declNames := names, appended, usedNotations,
+          omitBinders, srcNoOmit? }
     else if isContextCmd stx then
       let kind := stx.getKind
       let nsName? := if kind == ``Parser.Command.namespace && stx.getArgs.size ≥ 2 then
@@ -556,33 +655,59 @@ resurrect exactly the `IndexedPartition` confusion the guard above exists to pre
 has its own top-level `IsComplete`.
 
 Returns `none` if no binder survives. -/
+def binderRefsExcluded (env : Environment) (rootPrefix : Name) (excludedNames : Std.HashSet Name)
+    (activePrefixes : Array Name) (boundVars : Std.HashSet Name)
+    (boundVarTypes : Std.HashMap Name Name) (id : String) : Bool :=
+  let resolvesToExcluded (n : Name) : Bool :=
+    activePrefixes.any fun pfx => excludedNames.contains (pfx ++ n)
+  -- `x.f` with `x` a `variable`-bound name: resolve it as `T.f`, `T` being the head of `x`'s type.
+  let fieldNotationExcluded (n : Name) : Bool :=
+    match nameComponents n with
+    | recv :: field@(_ :: _) =>
+      match boundVarTypes.get? recv.toName with
+      | some ty => resolvesToExcluded (field.foldl (fun acc c => Name.str acc c) ty)
+      | none => false
+    | _ => false
+  let n := id.toName
+  if boundVars.contains n then
+    false   -- a locally-bound `variable` name, not a global reference
+  else if env.contains n && !isProjectLocalConst env rootPrefix n then
+    false   -- an external (e.g. Mathlib) constant, not a project reference
+  else
+    resolvesToExcluded n || fieldNotationExcluded n
+
+@[inherit_doc binderRefsExcluded]
 def pruneVariable (env : Environment) (rootPrefix : Name) (excludedNames : Std.HashSet Name)
     (activePrefixes : Array Name) (boundVars : Std.HashSet Name)
     (boundVarTypes : Std.HashMap Name Name) (e : CommandEntry) : Option String :=
   if e.binders.isEmpty then
     some e.src   -- couldn't decompose; keep verbatim
   else
-    let resolvesToExcluded (n : Name) : Bool :=
-      activePrefixes.any fun pfx => excludedNames.contains (pfx ++ n)
-    -- `x.f` with `x` a `variable`-bound name: resolve it as `T.f`, `T` being the head of `x`'s type.
-    let fieldNotationExcluded (n : Name) : Bool :=
-      match nameComponents n with
-      | recv :: field@(_ :: _) =>
-        match boundVarTypes.get? recv.toName with
-        | some ty => resolvesToExcluded (field.foldl (fun acc c => Name.str acc c) ty)
-        | none => false
-      | _ => false
-    let refsExcluded (id : String) : Bool :=
-      let n := id.toName
-      if boundVars.contains n then
-        false   -- a locally-bound `variable` name, not a global reference
-      else if env.contains n && !isProjectLocalConst env rootPrefix n then
-        false   -- an external (e.g. Mathlib) constant, not a project reference
-      else
-        resolvesToExcluded n || fieldNotationExcluded n
-    let kept := e.binders.filter fun (_, idents) => !idents.any refsExcluded
+    let kept := e.binders.filter fun (_, idents) =>
+      !idents.any (binderRefsExcluded env rootPrefix excludedNames activePrefixes boundVars
+        boundVarTypes)
     if kept.isEmpty then none
     else some ("variable " ++ " ".intercalate (kept.map (·.1)).toList)
+
+/-- Renders a declaration command, pruning any `omit … in` prefix in step with `pruneVariable`.
+
+`omit` names `variable` binders, so whenever a binder is dropped because it references a
+declaration outside this target's closure, an `omit` still naming it becomes an undefined
+reference (`unknown identifier`). The surviving entries are re-rendered, or the whole prefix is
+dropped when none survive. Uses the same predicate as `pruneVariable`, so it sees generalized
+field notation (`[𝓕.IsRightContinuous]`) the same way. -/
+def pruneOmit (env : Environment) (rootPrefix : Name) (excludedNames : Std.HashSet Name)
+    (activePrefixes : Array Name) (boundVars : Std.HashSet Name)
+    (boundVarTypes : Std.HashMap Name Name) (e : CommandEntry) : String :=
+  match e.srcNoOmit? with
+  | none => e.src
+  | some bare =>
+    let kept := e.omitBinders.filter fun (_, idents) =>
+      !idents.any (binderRefsExcluded env rootPrefix excludedNames activePrefixes boundVars
+        boundVarTypes)
+    if kept.size == e.omitBinders.size then e.src
+    else if kept.isEmpty then bare
+    else "omit " ++ " ".intercalate (kept.map (·.1)).toList ++ " in\n" ++ bare
 
 /-- Role of a pre-rendered output chunk for scope balancing in `stripEmptyScopes`. -/
 inductive ScopeTag where
@@ -808,7 +933,8 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
         else
           items := items.push (.hard, e.src ++ "\n")
       | .decl =>
-        let mut s := "\n" ++ e.src ++ "\n"
+        let body := pruneOmit env rootPrefix excludedNames activePrefixes boundVars boundVarTypes e
+        let mut s := "\n" ++ body ++ "\n"
         for extra in e.appended do
           s := s ++ extra ++ "\n"
         s := s ++ "\n"
