@@ -121,6 +121,19 @@ partial def isTheoremDecl (stx : Syntax) : Bool := Id.run do
       worklist := worklist.push arg
   return false
 
+/-- True if `stx` declares a `structure` or a `class` (both parse as `Command.structure`, which
+begins with either `structureTk` or `classTk`). Searched over the whole tree for the same reason as
+`isTheoremDecl`: wrapper commands like `open … in <decl>` must be seen through. -/
+partial def isStructureDecl (stx : Syntax) : Bool := Id.run do
+  let mut worklist : Array Syntax := #[stx]
+  while !worklist.isEmpty do
+    let s := worklist.back!
+    worklist := worklist.pop
+    if s.getKind == ``Parser.Command.structure then return true
+    for arg in s.getArgs do
+      worklist := worklist.push arg
+  return false
+
 /-- The byte ranges of the outermost `by …` tactic blocks inside `root` (not recursing into a block
 already collected). Used to replace embedded proofs in a *definition's* value with `sorry`. -/
 partial def collectByBlocks (root : Syntax) : Array (String.Pos.Raw × String.Pos.Raw) := Id.run do
@@ -130,6 +143,29 @@ partial def collectByBlocks (root : Syntax) : Array (String.Pos.Raw × String.Po
     let stx := worklist.back!
     worklist := worklist.pop
     if stx.getKind == ``Lean.Parser.Term.byTactic then
+      match stx.getPos?, stx.getTailPos? with
+      | some s, some e => acc := acc.push (s, e)   -- don't descend into a block we'll replace
+      | _, _ => for arg in stx.getArgs do worklist := worklist.push arg
+    else
+      for arg in stx.getArgs do
+        worklist := worklist.push arg
+  return acc
+
+/-- The byte ranges of the `binderTactic` nodes inside `root`, i.e. binder/field defaults written
+`:= by tac`.
+
+This is deliberately separate from `collectByBlocks`: such a default is **not** a `Term.byTactic`
+node, so that walk never finds it. Its parser is `atomic (symbol " := " >> " by ") >> tacticSeq`,
+meaning the node's range covers the ` := by ` prefix as well as the tactic block — a replacement
+therefore has to supply the `:=` itself. -/
+partial def collectBinderTactics (root : Syntax) : Array (String.Pos.Raw × String.Pos.Raw) :=
+  Id.run do
+  let mut acc : Array (String.Pos.Raw × String.Pos.Raw) := #[]
+  let mut worklist : Array Syntax := #[root]
+  while !worklist.isEmpty do
+    let stx := worklist.back!
+    worklist := worklist.pop
+    if stx.getKind == ``Lean.Parser.Term.binderTactic then
       match stx.getPos?, stx.getTailPos? with
       | some s, some e => acc := acc.push (s, e)   -- don't descend into a block we'll replace
       | _, _ => for arg in stx.getArgs do worklist := worklist.push arg
@@ -340,10 +376,23 @@ def processFile (env : Environment) (source : String) (filePath : String)
           | some (valStart, _) => slice source cmdStart valStart ++ ":= sorry"
           | none => slice source cmdStart cmdEnd
         else
-          let byBlocks := match findDeclValStx? stx with
-            | some v => collectByBlocks v
-            | none => #[]
-          applyEdits source cmdStart declEnd (byBlocks.map fun (bs, be) => (bs, be, "sorry"))
+          let edits :=
+            if isStructureDecl stx then
+              -- A structure/class field's default value (`field : T := by tac`) is a
+              -- `Term.binderTactic` in the `structFields` node — neither a `Term.byTactic` nor
+              -- part of any `declVal`, so the scan below never sees it and the tactic is emitted
+              -- verbatim. It then has to run inside the minimal file, where the lemma sets it
+              -- relies on (`measurability`, `fun_prop`, …) are not populated, and every
+              -- construction of the structure that omits the field fails with "could not
+              -- synthesize default value for field". `binderTactic` spans its own ` := by `, so
+              -- the replacement has to restore the `:=`.
+              (collectBinderTactics stx).map fun (bs, be) => (bs, be, ":= sorry")
+            else
+              let byBlocks := match findDeclValStx? stx with
+                | some v => collectByBlocks v
+                | none => #[]
+              byBlocks.map fun (bs, be) => (bs, be, "sorry")
+          applyEdits source cmdStart declEnd edits
       let usedNotations := notationKinds.toArray.filter (collectSyntaxKinds stx).contains
       entries := entries.push
         { cls := .decl, src, kind := stx.getKind, declNames := names, appended, usedNotations }
@@ -575,16 +624,35 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
     let mut acc : Array Name := #[]
     let add (ns : Name) (seen : Std.HashSet Name) (acc : Array Name) :=
       if seen.contains ns then (seen, acc) else (seen.insert ns, acc.push ns)
+    -- `projectNamespaces` holds fully-qualified names, but an `open` token may be spelled
+    -- *relative* to a namespace already in scope — `open MeasureTheory … AEEqProcess` names
+    -- `MeasureTheory.AEEqProcess`. Matching the bare token alone therefore misses it, no stub is
+    -- emitted, and the whole `open` fails with `unknown namespace`, which in turn leaves the
+    -- namespaces spelled correctly on the same line (`MeasureTheory`, …) unopened too. So resolve
+    -- each token against the namespaces this file enters, plus the ones the same `open` command
+    -- brings into scope ahead of it.
+    let mut prefixes : Array Name := #[Name.anonymous]
+    for (_, entries) in involved do
+      for e in entries do
+        if let some ns := e.qualifiedNsName? then
+          prefixes := prefixes.push ns
     for (_, entries) in involved do
       for e in entries do
         if let some ns := e.qualifiedNsName? then
           (seen, acc) := add ns seen acc
         else if e.kind == ``Parser.Command.«open» then
           -- Tokens after `open`/`scoped` that name a project namespace.
-          for tok in (e.src.replace "\n" " ").splitOn " " do
-            let nm := tok.trimAscii.toString.toName
-            if projectNamespaces.contains nm then
-              (seen, acc) := add nm seen acc
+          let toks := ((e.src.replace "\n" " ").splitOn " ").toArray.map
+            (·.trimAscii.toString.toName)
+          for tok in toks do
+            if tok.isAnonymous then continue
+            let resolved? :=
+              if projectNamespaces.contains tok then some tok
+              else (prefixes ++ toks).findSome? fun p =>
+                let full := p ++ tok
+                if projectNamespaces.contains full then some full else none
+            if let some ns := resolved? then
+              (seen, acc) := add ns seen acc
     return acc
   let imports := externalImports env rootPrefix (involved.map (·.1))
   -- The extracted files are terminal and self-contained (nothing imports them), so the source's
@@ -707,28 +775,57 @@ def writeAllExtractions (env : Environment) (rootPrefix : Name)
     cache := cache.insert modName entries
   -- Map each declaration to the notation parsers its source uses (gathered syntactically above).
   let mut declUsedNotations : Std.HashMap Name (Array Name) := {}
+  -- Map each declaration to every exposed declaration its own source command also defines.
+  --
+  -- One command routinely declares several constants: `@[to_additive]` produces a multiplicative
+  -- and an additive version, `@[simps]` adds projection lemmas. The dependency closure is computed
+  -- per *declaration*, but extraction emits whole *commands* (`restrictToTarget` keeps a command
+  -- when any one of its declarations is in `keep`), so keeping one sibling emits the others too —
+  -- and they must then elaborate. Concretely: a target needing only `toGermAddMonoidHom` emits the
+  -- `@[to_additive] def toGermMonoidHom` command it comes from, whose *multiplicative* spelling
+  -- needs `Monoid`-side instances that the additive closure never mentions.
+  let mut commandSiblings : Std.HashMap Name (Array Name) := {}
   for (_, entries) in cache.toList do
     for e in entries do
-      if e.cls == .decl && !e.usedNotations.isEmpty then
-        for nm in e.declNames do
-          declUsedNotations := declUsedNotations.insert nm e.usedNotations
+      if e.cls == .decl then
+        if !e.usedNotations.isEmpty then
+          for nm in e.declNames do
+            declUsedNotations := declUsedNotations.insert nm e.usedNotations
+        if e.declNames.size > 1 then
+          for nm in e.declNames do
+            commandSiblings := commandSiblings.insert nm e.declNames
+  -- Each exposed declaration's own closure, used to re-close `keep` around a newly pulled-in
+  -- sibling (which arrives with requirements of its own).
+  let transDepsOf : Std.HashMap Name (Array Name) :=
+    decls.foldl (fun m d => m.insert d.name (d.transDeps.filter exposedNames.contains)) {}
   -- Phase 3: assemble and write one file per declaration.
   IO.FS.createDirAll dir
   for decl in decls do
     let mut keep : Std.HashSet Name :=
       (decl.transDeps.filter exposedNames.contains).foldl (·.insert ·) ({} : Std.HashSet Name)
         |>.insert decl.name
-    -- Close under notation usage: a kept declaration whose source uses a notation needs that
-    -- notation's command replayed, and notations may themselves use further notations.
+    -- Close `keep` to a fixpoint under:
+    --  * notation usage — a kept declaration whose source uses a notation needs that notation's
+    --    command replayed, and notations may themselves use further notations;
+    --  * source-command siblings (`commandSiblings`) — emitting a command emits every declaration
+    --    it defines, so each sibling must be present and elaborable;
+    --  * the transitive dependencies of anything the two steps above newly added.
+    -- The last step is skipped on the first round: those names come from `decl.transDeps`, which
+    -- is already closed under `graphDeps`, so expanding them again would only re-walk the closure
+    -- of every member for no gain.
     let mut frontier : Array Name := keep.toArray
+    let mut closeDeps := false
     while !frontier.isEmpty do
       let mut next : Array Name := #[]
       for n in frontier do
-        for nk in declUsedNotations.getD n #[] do
-          unless keep.contains nk do
-            keep := keep.insert nk
-            next := next.push nk
+        let extra := declUsedNotations.getD n #[] ++ commandSiblings.getD n #[]
+          ++ (if closeDeps then transDepsOf.getD n #[] else #[])
+        for m in extra do
+          unless keep.contains m do
+            keep := keep.insert m
+            next := next.push m
       frontier := next
+      closeDeps := true
     let content := assembleTarget env rootPrefix cache moduleOrder exposedNames keep
       projectNamespaces decl.name
     IO.FS.writeFile (dir / s!"{anchorIdOf decl.name}.lean") content

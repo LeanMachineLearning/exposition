@@ -1007,6 +1007,53 @@ def toSourceInfo? (projectDir : System.FilePath) (pkg : Lake.Package) (moduleNam
     endLine := ranges.range.endPos.line
   }
 
+/-- Every structure name carried by an `Expr.proj` node inside `e`, in traversal order and
+possibly with repeats (all consumers dedup).
+
+`Expr.getUsedConstants` does *not* report these: its underlying `Expr.foldConsts` recurses through
+a `.proj S i b` node into `b` without ever offering `S`. So a structure that an elaborated term
+reaches only by projecting one of its fields — never by naming it — is absent from the constant
+list, and would be absent from a declaration's `deps`/`typeDeps`.
+
+This is a correctness guard, not a fix for an observed failure. Surface-level field access
+(`x.field`) elaborates to an application of the projection *function* (`S.field x`), which
+`getUsedConstants` reports normally; bare `.proj` nodes come from the compiler's own recursion
+machinery (`brecOn`, `._f`, `.wf._unary._proof_n`) and from upstream `Equiv`/`Subtype`-style
+bundled structures. Scanning the 438950-constant environment of a Mathlib-backed target found 14
+distinct names lost this way — `PProd`, `WellFoundedRelation`, `Equiv`, `Subtype`, `Zero`, ... —
+and **none** of them was a declaration of the target project itself. Such names are dropped
+anyway by the exposed-declaration filters in the graph, the `Uses` links, and the extraction
+closure, so recovering them changes no output today; they are simply the correct input to those
+filters if a project ever does elaborate a `.proj` of one of its own structures.
+
+The walk memoizes on the `Expr` nodes themselves so heavily-shared proof terms are not re-walked:
+`Hashable Expr` is the hash cached in the expression header and `BEq Expr` is the native
+`Expr.eqv`, so both are cheap. It is still ~3x the cost of core's `foldConsts` (which memoizes on
+a pointer set from unsafe code); that is immaterial here because only the target project's own
+constants are ever walked. -/
+partial def projStructureNames (e : Expr) : Array Name :=
+  (go e (#[], {})).1
+where
+  go (e : Expr) (st : Array Name × Std.HashSet Expr) : Array Name × Std.HashSet Expr :=
+    let (acc, seen) := st
+    if seen.contains e then
+      st
+    else
+      let seen := seen.insert e
+      match e with
+      | .app f a => go a (go f (acc, seen))
+      | .lam _ t b _ => go b (go t (acc, seen))
+      | .forallE _ t b _ => go b (go t (acc, seen))
+      | .letE _ t v b _ => go b (go v (go t (acc, seen)))
+      | .mdata _ b => go b (acc, seen)
+      | .proj s _ b => go b (acc.push s, seen)
+      | _ => (acc, seen)
+
+/-- Like `Expr.getUsedConstants`, but also reports the structure name of every `Expr.proj` node
+(see `projStructureNames` for why that name would otherwise be lost). -/
+def exprUsedConstants (e : Expr) : Array Name :=
+  e.getUsedConstants ++ projStructureNames e
+
 /-- One-level "used constants" for a declaration's type (and, if `includeValue`, also its
 value/body), handling inductive constructor types and structure field-default functions: for
 inductives/structures, `info.type` alone does not mention constructor field types, so those are
@@ -1018,16 +1065,16 @@ def usedConstantsOf (env : Environment) (name : Name) (info : ConstantInfo)
     | .inductInfo val =>
       val.ctors.foldl (fun acc ctorName =>
         match env.find? ctorName with
-        | some ctorInfo => acc ++ ctorInfo.type.getUsedConstants
-        | none => acc) info.type.getUsedConstants
-    | _ => info.type.getUsedConstants
+        | some ctorInfo => acc ++ exprUsedConstants ctorInfo.type
+        | none => acc) (exprUsedConstants info.type)
+    | _ => exprUsedConstants info.type
   if !includeValue then
     typeUsed
   else
     let valueUsed :=
       match info with
-      | .defnInfo val => val.value.getUsedConstants
-      | .thmInfo val => val.value.getUsedConstants
+      | .defnInfo val => exprUsedConstants val.value
+      | .thmInfo val => exprUsedConstants val.value
       | .inductInfo _ =>
         if (getStructureInfo? env name).isNone then
           #[]
@@ -1036,7 +1083,7 @@ def usedConstantsOf (env : Environment) (name : Name) (info : ConstantInfo)
             match getDefaultFnForField? env name fieldName with
             | some defaultFn =>
               match env.find? defaultFn >>= ConstantInfo.value? with
-              | some value => acc ++ value.getUsedConstants
+              | some value => acc ++ exprUsedConstants value
               | none => acc
             | none => acc) #[]
       | _ => #[]

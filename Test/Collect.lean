@@ -8,6 +8,8 @@ build and propagate the dependency lists of a declaration:
 
 * name classification feeding `shouldExpose` / dependency expansion
   (`isPrefixWithDigitSuffix`, `isAuxComponent`, `isInternalName`, `hasPrefixName`);
+* the `Expr`-level constant collection those lists are built from
+  (`projStructureNames`, `exprUsedConstants`);
 * the dependency-graph passes that run on the collected `DeclInfo` array
   (`topologicalClosure`, `attachReverseDeps`, `attachTransitiveDeps`, `attachDependsOnSorry`);
 * the small name/string helpers used to build hrefs and signatures.
@@ -297,6 +299,46 @@ private def sorryViaExternal : Array DeclInfo := #[
   mkDecl `A (deps := #[`NotExposed])
 ]
 #guard field (attachDependsOnSorry sorryViaExternal) `A (·.dependsOnSorry) == some false
+
+/-! ## `Expr`-level constant collection
+
+`Expr.getUsedConstants` recurses *through* an `Expr.proj` node without ever reporting the
+structure name it carries, so a structure an elaborated term reaches only by projecting a field
+would be missing from the declaration's `deps`/`typeDeps`. `projStructureNames` recovers exactly
+those names and `exprUsedConstants` adds them to what core reports. See `projStructureNames` for
+why this is a guard rather than a fix for an observed failure — on real targets the recovered
+names are always upstream types, which the exposed-declaration filters drop regardless.
+
+Both are pure functions of an `Expr`, so — unlike `usedConstantsOf`, which needs an
+`Environment` — they can be checked here directly. -/
+
+private def natE : Expr := .const `Nat []
+private def zeroE : Expr := .const `Nat.zero []
+private def projA : Expr := .proj `A 0 (.bvar 0)
+
+-- The gap being closed: core reports no constant at all for a projection of a bound variable.
+#guard Expr.getUsedConstants projA == (#[] : Array Name)
+#guard projStructureNames projA == #[`A]
+#guard exprUsedConstants projA == #[`A]
+
+-- Projections are found under every structural node the walk descends into.
+#guard projStructureNames (.app projA (.proj `B 1 (.bvar 1))) == #[`A, `B]
+#guard projStructureNames (.lam `x natE projA .default) == #[`A]
+#guard projStructureNames (.forallE `x natE projA .default) == #[`A]
+#guard projStructureNames (.letE `x natE projA (.proj `B 0 (.bvar 0)) false) == #[`A, `B]
+#guard projStructureNames (.mdata {} projA) == #[`A]
+
+-- Structurally identical subterms are walked once, so a shared projection is reported once...
+#guard projStructureNames (.app projA projA) == #[`A]
+-- ...while two *different* projections of the same structure both report it (consumers dedup).
+#guard projStructureNames (.app projA (.proj `A 1 (.bvar 0))) == #[`A, `A]
+
+-- With no projection anywhere, nothing is added and `exprUsedConstants` agrees with core.
+#guard projStructureNames (.app natE zeroE) == (#[] : Array Name)
+#guard exprUsedConstants (.app natE zeroE) == Expr.getUsedConstants (.app natE zeroE)
+
+-- Ordinary constants and projected structures are both reported.
+#guard exprUsedConstants (.app zeroE projA) == #[`Nat.zero, `A]
 
 /-! ## JSON round-trip for collected data
 
