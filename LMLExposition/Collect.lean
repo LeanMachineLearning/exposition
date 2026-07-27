@@ -49,6 +49,15 @@ structure Cli where
   /-- Path to the collected-data JSON file: written by `collect`, read by `extract` and
   `build-site`. -/
   dataPath : Option String := none
+  /-- Single module to process, used by the `highlight-module` worker subcommand. -/
+  moduleName : Option Name := none
+  /-- Directory of per-module highlighting JSON written by `highlight`. Read by `build-site`,
+  which falls back to `<output>/highlighting` and renders plain code when it is absent. -/
+  highlightingDir : Option String := none
+  /-- Single input file, used by the `highlight-file` worker subcommand. -/
+  inputPath : Option String := none
+  /-- Maximum number of worker processes to run at once. Defaults to the CPU count. -/
+  jobs : Option Nat := none
 deriving Repr
 
 /-- Classification of exposed Lean declarations. -/
@@ -74,6 +83,16 @@ def DeclKind.label : DeclKind → String
   | .axiom => "Axiom"
   | .instance => "Instance"
 
+/-- The kind label shown to a reader, which is finer-grained than `DeclKind`.
+
+Lean records `lemma` and `theorem` as the same kind, and some declarations written with `instance`
+elaborate to theorems, so `DeclKind.label` alone would show a `lemma` as "Theorem". A reader
+comparing the site against the source should see the keyword the author actually wrote. -/
+def displayKindLabel (kindLabel : String) (isLemma isInstanceDecl : Bool) : String :=
+  if isInstanceDecl then "Instance"
+  else if isLemma then "Lemma"
+  else kindLabel
+
 /-- Source file location (path and line range) for a declaration. -/
 structure SourceInfo where
   relPath : String
@@ -97,7 +116,25 @@ structure DeclCardData where
   isLemma : Bool := false
   isInstanceDecl : Bool := false
   tags : Array String := #[]
-  detailsUrl? : Option String := none
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- One row of a declaration index: the listing used for module contents, the claims and trust
+pages, and a declaration's dependency closures. -/
+structure DeclIndexEntry where
+  name : String
+  href : String
+  /-- The label shown to the reader (`displayKindLabel`). -/
+  kind : String
+  /-- `definition` / `lemma` / `theorem`, matching the sidebar's visibility toggles. -/
+  group : String
+  /-- Project declarations in its closure, where that is worth showing. -/
+  deps : Option Nat := none
+  dependsOnSorry : Bool := false
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- Data container for DeclIndexData. -/
+structure DeclIndexData where
+  entries : Array DeclIndexEntry
 deriving Repr, ToJson, FromJson, Inhabited
 
 /-- Data container for DetailsData. -/
@@ -114,6 +151,13 @@ structure GraphNode where
   groupKey : String
   moduleName : String
   href : String
+  /-- True for the declaration whose page this graph is on, so the reader can see at a glance
+  which node the picture is about. False everywhere on the whole-repository graph. -/
+  focus : Bool := false
+  /-- The declaration's statement, source form, for the graph's side panel. -/
+  signature : String := ""
+  /-- The declaration's docstring, as written. Empty when it has none. -/
+  doc : String := ""
 deriving Repr, ToJson, FromJson
 
 /-- Data container for GraphEdge. -/
@@ -138,6 +182,10 @@ structure DeclInfo where
   displaySignature : String
   expandedSignature : String
   docBlocks : Array (Block Manual)
+  /-- The docstring as written, before markdown parsing. `docBlocks` is the rendered form and is
+  the right thing for a page; this is kept for the places that need plain text, such as the
+  dependency graph's side panel, which is built as JSON rather than as Verso blocks. -/
+  docText? : Option String := none
   proofText? : Option String
   source? : Option SourceInfo
   /-- True if the declaration was written with the `lemma` keyword (a `theorem` alias used in
@@ -154,12 +202,24 @@ structure DeclInfo where
   `sorry` is its own or inherited from something it rests on. Computed with `Lean.collectAxioms`,
   so it sees through compiler-generated helpers and into upstream libraries alike. -/
   dependsOnSorry : Bool := false
+  /-- True if this declaration's *own* type or body contains a `sorry`. `dependsOnSorry` without
+  `hasOwnSorry` means the gap is inherited, and the site has to point at where it actually is
+  rather than blame this declaration for it. -/
+  hasOwnSorry : Bool := false
+  /-- Every axiom the declaration's closure rests on, i.e. what `#print axioms` reports. Beyond
+  `Classical.choice`/`propext`/`Quot.sound` these are assumptions a reader is being asked to
+  grant, so they are reported rather than collapsed into a flag. -/
+  axioms : Array Name := #[]
   deps : Array Name
   typeDeps : Array Name := #[]
   usedBy : Array Name := #[]
   transDeps : Array Name := #[]
   docstringBlock? : Option (Block Manual) := none
 deriving Repr, ToJson, FromJson
+
+/-- The kind label to show for this declaration; see `displayKindLabel`. -/
+def DeclInfo.displayKind (decl : DeclInfo) : String :=
+  displayKindLabel decl.kind.label decl.isLemma decl.isInstanceDecl
 
 /-- Exposed declarations grouped by Lean module. -/
 structure ModuleInfo where
@@ -182,12 +242,21 @@ structure MarkdownSection where
   body : String
 deriving Repr, ToJson, FromJson
 
+/-- Format version of `CollectedData`. Bump whenever `DeclInfo` or `CollectedData` gains or
+changes a field, so that `build-site` fails with an actionable message rather than a field-level
+decode error when handed a JSON file written by an older `collect`.
+
+- 1: initial
+- 2: adds `DeclInfo.hasOwnSorry` and `DeclInfo.axioms`
+- 3: adds `DeclInfo.docText?` -/
+def collectedDataVersion : Nat := 3
+
 /-- The full result of the `collect` subcommand's analysis, persisted as JSON so `extract`
 and `build-site` can run without re-importing the target project. `moduleOrder` and
 `moduleDocs` are flattened to arrays (rather than `Std.HashMap`) purely for JSON-friendliness;
 reconstruct the map at the consuming end. -/
 structure CollectedData where
-  version : Nat := 1
+  version : Nat := collectedDataVersion
   rootPrefix : Name
   decls : Array DeclInfo
   moduleOrder : Array (Name × Nat)
@@ -198,17 +267,29 @@ deriving ToJson, FromJson
 /-- Command-line usage text shown for invalid arguments. -/
 def usage : String :=
   String.intercalate "\n" [
-    "Usage: lake exe exposition [collect|extract|build-site|all] [options]",
+    "Usage: lake exe exposition [SUBCOMMAND] [options]",
     "",
     "Subcommands:",
-    "  collect       Import the target project and write collected declaration data as JSON.",
-    "  extract       Read collected data and write standalone per-declaration .lean files.",
-    "  extract-flat  Same, but rendered from the compiled environment instead of from source:",
-    "                unreadable but far more robust, as a fallback for files `extract` cannot",
-    "                make compile. Writes to <output>/html-multi/extracted-flat.",
-    "  build-site    Read collected data and render the Verso HTML site (no Lean env needed).",
-    "  all           Run all of the above in one process, without a JSON round-trip",
-    "                (default when no subcommand is given, for backward compatibility).",
+    "  collect              Import the target project and write collected declaration data as JSON.",
+    "  extract              Read collected data and write standalone per-declaration .lean files.",
+    "  extract-flat         Same, but rendered from the compiled environment instead of from",
+    "                       source: unreadable but far more robust, as a fallback for files",
+    "                       `extract` cannot make compile. Writes to <output>/html-multi/",
+    "                       extracted-flat.",
+    "  highlight            Elaborate each project module and write interactive-Lean highlighting",
+    "                       to <output>/highlighting. Optional; without it the site renders plain",
+    "                       code blocks.",
+    "  highlight-extracted  Elaborate each extracted minimal .lean file and write its highlighting,",
+    "                       plus whether it compiles, to <output>/extracted-highlighting. Requires",
+    "                       `extract` to have run first.",
+    "  build-site           Read collected data and render the Verso HTML site (no Lean env",
+    "                       needed).",
+    "  all                  Run collect, extract, and build-site in one process, without a JSON",
+    "                       round-trip (default when no subcommand is given, for backward",
+    "                       compatibility). Does not include the highlighting phases.",
+    "",
+    "  highlight-module / highlight-file are internal workers used by the two phases above; they",
+    "  process a single module or file and are not meant to be invoked directly.",
     "",
     "Options:",
     "  --root PREFIX        Root module prefix to expose (default: first root library)",
@@ -220,6 +301,12 @@ def usage : String :=
     "  --exclude-lib NAME   Exclude a root library when importing the target project",
     "  --data PATH          Collected-data JSON file: written by `collect`, read by `extract`",
     "                       and `build-site`",
+    "  --highlighting DIR   Directory of per-module highlighting read by `build-site`",
+    "                       (default: <output>/highlighting)",
+    "  --jobs N             Worker processes to run at once in the highlighting phases",
+    "                       (default: CPU count)",
+    "  --module NAME        Internal: the module `highlight-module` should process",
+    "  --input FILE         Internal: the file `highlight-file` should process",
   ]
 
 /-- Parses CLI arguments into `Cli`, or returns a usage error. -/
@@ -246,6 +333,20 @@ def parseArgs : List String → Except String Cli
   | "--data" :: path :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with dataPath := some path }
+  | "--module" :: name :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with moduleName := some name.toName }
+  | "--highlighting" :: dir :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with highlightingDir := some dir }
+  | "--input" :: path :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with inputPath := some path }
+  | "--jobs" :: n :: rest => do
+      let some n := n.toNat?
+        | .error s!"--jobs expects a number, got: {n}"
+      let cfg ← parseArgs rest
+      pure { cfg with jobs := some n }
   | flag :: _ =>
       .error s!"Unknown or incomplete option: {flag}\n\n{usage}"
 
@@ -315,6 +416,20 @@ def anchorIdOf (name : Name) : String :=
     | '\\' => '＼' | '|' => '｜' | '?' => '？' | '*' => '＊'
     | _ => c
   (String.intercalate "___" (name.toString.splitOn ".")).map safeChar
+
+/-- Maps a declaration name to a pure-ASCII identifier that is unique across declarations, for use
+as an explicit Verso cross-reference tag.
+
+`anchorIdOf` keeps non-ASCII characters, which is right for filenames and anchors but not for
+Verso tags: when a declaration page does not provide its own tag, Verso derives one from the title
+and non-ASCII characters do not survive that derivation. `induction_on`, `induction_on₂` and
+`induction_on₃` therefore derived the *same* tag and the build failed with a duplicate-tag error.
+Encoding every character outside `[A-Za-z0-9]` as `_xHEX_` keeps the mapping injective and the
+result ASCII. -/
+def asciiTagOf (name : Name) : String :=
+  name.toString.foldl (init := "") fun acc c =>
+    if c.isAlphanum then acc.push c
+    else acc ++ s!"_x{String.ofList (Nat.toDigits 16 c.toNat)}_"
 
 /-- Percent-encodes `s` (as UTF-8) for use in a URL path, escaping every byte outside the RFC 3986
 unreserved set (`A-Za-z0-9` and `-_.~`). -/
@@ -780,7 +895,10 @@ def proofTextFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : Ar
   | .theorem, some src
   | .opaque, some src
   | .instance, some src =>
-      let snippet := (String.trimAscii (sliceSourceSnippet lines src)).toString
+      -- Clean first, exactly as `displaySignatureFromSource` does. Without it the split below
+      -- lands on a `:=` *inside an attribute* — `@[to_additive (attr := simp)]` made the "Proof"
+      -- section start with `simp)]` followed by the entire declaration.
+      let snippet := cleanDeclSnippet (sliceSourceSnippet lines src)
       match snippet.splitOn ":=" with
       | _prefix :: rest@(_ :: _) =>
           some <| (String.trimAscii (String.intercalate ":=" rest)).toString
@@ -921,18 +1039,23 @@ def toSourceInfo? (projectDir : System.FilePath) (pkg : Lake.Package) (moduleNam
     endLine := ranges.range.endPos.line
   }
 
-/-- The exposed declarations whose transitive closure contains a `sorry`, via `Lean.collectAxioms`.
+/-- Every exposed declaration's axiom set, via `Lean.collectAxioms`.
 
 Lean precomputes each declaration's axiom set when the `.olean` is written and looks it up by
 binary search for imported declarations, so this is a table lookup per declaration rather than a
 walk of the closure. It also means the answer is the honest one: a `sorry` lifted into a
-compiler-generated `_proof_N` helper counts, and so does one inherited from an upstream library. -/
-def sorriedDecls (env : Environment) (names : Array Name) : IO (Std.HashSet Name) :=
+compiler-generated `_proof_N` helper counts, and so does one inherited from an upstream library.
+
+This is the same answer `#print axioms` gives. Keeping the whole set rather than collapsing it to
+"does this rest on `sorry`" is what lets the site report *what* a result assumes, not just whether
+it is suspicious: `Classical.choice`/`propext`/`Quot.sound` are the ordinary three, while anything
+else is a claim the reader has to accept on faith. -/
+def axiomsOfDecls (env : Environment) (names : Array Name) : IO (Std.HashMap Name (Array Name)) :=
   runCoreIO env do
-    let mut acc : Std.HashSet Name := {}
+    let mut acc : Std.HashMap Name (Array Name) := {}
     for name in names do
-      if (← Lean.collectAxioms name).contains ``sorryAx then
-        acc := acc.insert name
+      let axs ← Lean.collectAxioms name
+      acc := acc.insert name (axs.qsort Name.lt)
     return acc
 
 /-- Collects all exposed declarations and computes their primary metadata. The dependency lists
@@ -941,7 +1064,7 @@ kind, `sorry` status — is computed here. -/
 def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     (pkg : Lake.Package) (env : Environment) : IO (Array DeclInfo) := do
   let depsCtx := LeanDeps.Context.of env rootPrefix
-  let sorried ← sorriedDecls env (depsCtx.constants.filterMap fun (name, _, _) =>
+  let declAxioms ← axiomsOfDecls env (depsCtx.constants.filterMap fun (name, _, _) =>
     if depsCtx.exposed.contains name then some name else none)
   let simpTheorems ← runCoreIO env Lean.Meta.getSimpTheorems
   let simpLemmaNames : Std.HashSet Name :=
@@ -988,6 +1111,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     -- is handled syntactically during extraction, where the parsed syntax is available.
     let (declDeps, cache') := depsCtx.declDeps cache name info
     cache := cache'
+    let axs := declAxioms.getD name #[]
     let docstringBlock? ← mkDocstringBlock? env name
     let decl : DeclInfo := {
       name := name
@@ -998,9 +1122,12 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       displaySignature := displaySignature
       expandedSignature := expandedSignature
       docBlocks := docBlocks
+      docText? := doc?
       proofText? := proofText?
       source? := source?
-      dependsOnSorry := sorried.contains name
+      dependsOnSorry := axs.contains ``sorryAx
+      hasOwnSorry := info.type.hasSorry || (info.value?.map Expr.hasSorry).getD false
+      axioms := axs
       isLemma := isLemma
       isInstanceDecl := isInstanceDecl
       isAlias := isAliasFromSource source? lines

@@ -675,6 +675,37 @@ def restrictToTarget (entries : Array CommandEntry) (keep : Std.HashSet Name) : 
             else { e with src := s!"open {ns} ({String.intercalate " " kept.toList})" }
     | .skip => e
 
+/-- Drops every *declaration* emitted after the one defining `target`, keeping context commands so
+that `namespace`/`section`/`end` nesting stays balanced.
+
+Nothing a declaration depends on can be defined after it. Within a module Lean requires definition
+before use, and across modules a dependency must live in an imported module, which `moduleOrder`
+places earlier. So any declaration positioned after the target is provably unnecessary, and is
+either a spurious dependency edge or a sibling dragged in by whole-command emission.
+
+Without this, 491 of brownian-motion's 1677 minimal files (29%) ended with a block of unrelated
+declarations — the target buried in the middle of the file it is supposed to be the point of. -/
+def truncateAfterTarget (involved : Array (Name × Array CommandEntry)) (target : Name) :
+    Array (Name × Array CommandEntry) := Id.run do
+  -- Which module, and which entry within it, defines the target.
+  let mut targetModule? : Option Nat := none
+  let mut targetEntry? : Option Nat := none
+  for i in [0:involved.size] do
+    let (_, entries) := involved[i]!
+    for j in [0:entries.size] do
+      if entries[j]!.cls == .decl && entries[j]!.declNames.contains target then
+        targetModule? := some i
+        targetEntry? := some j
+  let some tm := targetModule? | return involved
+  let some te := targetEntry? | return involved
+  return involved.mapIdx fun i (modName, entries) =>
+    if i < tm then (modName, entries)
+    else
+      -- In the target's own module, drop declarations after its entry; in every later module,
+      -- drop all of them. Context commands survive either way, to keep nesting balanced.
+      (modName, entries.mapIdx fun j e =>
+        if e.cls == .decl && (i > tm || j > te) then { e with cls := .skip } else e)
+
 /-! ## Phase 3: assembly -/
 
 /-- The external (non-project) modules to `import` for `modules`. Because project modules are emitted
@@ -877,6 +908,13 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
         e.cls == .context && e.kind == ``Parser.Command.«attribute» && e.attrIsTranslation
       if filtered.any (·.cls == .decl) || hasAttribute then
         involved := involved.push (modName, filtered)
+  -- Nothing after the target can be needed by it; drop it so the file ends where it is going.
+  involved := truncateAfterTarget involved target
+  -- Truncation can empty a module of declarations entirely; drop those so the file does not carry
+  -- a bare `namespace …`/`end` shell (or an import) for a module that now contributes nothing.
+  involved := involved.filter fun (_, entries) =>
+    entries.any fun e =>
+      e.cls == .decl || (e.cls == .context && e.kind == ``Parser.Command.«attribute» && e.attrIsTranslation)
   -- Exposed declarations *not* emitted in this file: a `variable` binder referencing one of these
   -- would reference an undefined name, so such binders are dropped (see `pruneVariable`).
   let excludedNames : Std.HashSet Name := exposedNames.fold (init := {}) fun s n =>

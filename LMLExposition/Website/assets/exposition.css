@@ -1,0 +1,806 @@
+/* ===========================================================================
+   Exposition theme
+
+   Loaded after Verso's `book.css` and `verso-vars.css`, so it can both redefine
+   Verso's own custom properties and override the handful of places where its
+   stylesheet hardcodes a colour.
+
+   Everything visual derives from the token block below, which exists in a light
+   and a dark variant. Verso ships no dark mode of its own, so the dark variant
+   also has to reach into Verso's chrome (header, table of contents, code).
+   =========================================================================== */
+
+/* --------------------------------------------------------------- tokens --- */
+
+:root {
+  color-scheme: light;
+  --site-dark: 0;
+
+  --site-bg: #fcfcfd;
+  --site-surface: #ffffff;
+  --site-surface-2: #f5f6f8;
+  --site-surface-3: #eceef2;
+  --site-border: #e3e5ea;
+  --site-border-strong: #ccd0d8;
+
+  --site-ink: #14161a;
+  --site-ink-2: #4b5159;
+  --site-ink-3: #7c838e;
+
+  --site-accent: #2f5d8c;
+  --site-accent-hover: #1f4368;
+  --site-accent-soft: #eaf1f8;
+
+  --site-ok: #2c7a51;
+  --site-ok-soft: #e9f4ee;
+  --site-warn: #8a5a10;
+  --site-warn-soft: #fbf1de;
+  --site-warn-border: #e4c68a;
+
+  /* Declaration kinds. Muted enough to sit under text without shouting. */
+  --site-kind-theorem: #3f6fa8;
+  --site-kind-definition: #4a7c6f;
+  --site-kind-structure: #7a6096;
+  --site-kind-instance: #8a6b3d;
+
+  --site-shadow: 0 1px 2px rgba(16, 20, 28, .04), 0 8px 24px -12px rgba(16, 20, 28, .10);
+  --site-shadow-lift: 0 2px 4px rgba(16, 20, 28, .06), 0 14px 32px -14px rgba(16, 20, 28, .18);
+
+  --site-radius: 10px;
+  --site-radius-sm: 6px;
+  --site-measure: 78rem;
+
+  /* ---- Verso's own variables, restated ---- */
+  --verso-text-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --verso-structure-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --verso-code-font-family: ui-monospace, SFMono-Regular, "SF Mono", "JetBrains Mono", "Iosevka Term", Menlo, Consolas, monospace;
+
+  --verso-text-color: var(--site-ink);
+  --verso-code-color: var(--site-ink);
+  --verso-structure-color: var(--site-ink);
+  --verso-selected-color: var(--site-accent-soft);
+  --verso-toc-background-color: var(--site-surface-2);
+  /* Verso's search stylesheet reads this but never defines it, so it falls back to white and the
+     search box stays light in dark mode. Defining it here is enough to theme the whole combobox. */
+  --verso-background-color: var(--site-surface);
+
+  --verso-code-const-color: #2b5f7d;
+  --verso-code-const-weight: 500;
+  --verso-code-keyword-color: #8a4a86;
+  --verso-code-keyword-weight: 600;
+  --verso-code-var-color: #7a5a2e;
+  --verso-code-var-style: normal;
+
+  --verso-error-color: #b3261e;
+  --verso-warning-color: var(--site-warn);
+  --verso-info-color: var(--site-ink-2);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --site-dark: 1;
+
+    --site-bg: #0e1013;
+    --site-surface: #15181d;
+    --site-surface-2: #1a1e24;
+    --site-surface-3: #222731;
+    --site-border: #272c34;
+    --site-border-strong: #3a414c;
+
+    --site-ink: #e7eaee;
+    --site-ink-2: #aab2bd;
+    --site-ink-3: #79818d;
+
+    --site-accent: #82b1e0;
+    --site-accent-hover: #a8caee;
+    --site-accent-soft: #16222e;
+
+    --site-ok: #6cc08b;
+    --site-ok-soft: #14231b;
+    --site-warn: #e0b25e;
+    --site-warn-soft: #241d10;
+    --site-warn-border: #5a4620;
+
+    --site-kind-theorem: #7fa9d8;
+    --site-kind-definition: #74b3a2;
+    --site-kind-structure: #ab93c6;
+    --site-kind-instance: #c2a06a;
+
+    --site-shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 28px -14px rgba(0, 0, 0, .7);
+    --site-shadow-lift: 0 2px 6px rgba(0, 0, 0, .5), 0 18px 40px -16px rgba(0, 0, 0, .8);
+
+    --verso-code-const-color: #8fc3dd;
+    --verso-code-keyword-color: #cf9fcb;
+    --verso-code-var-color: #d7b98a;
+    --verso-error-color: #f2857c;
+  }
+}
+
+/* The toggle wins over the media query in both directions. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --site-dark: 1;
+
+  --site-bg: #0e1013;
+  --site-surface: #15181d;
+  --site-surface-2: #1a1e24;
+  --site-surface-3: #222731;
+  --site-border: #272c34;
+  --site-border-strong: #3a414c;
+
+  --site-ink: #e7eaee;
+  --site-ink-2: #aab2bd;
+  --site-ink-3: #79818d;
+
+  --site-accent: #82b1e0;
+  --site-accent-hover: #a8caee;
+  --site-accent-soft: #16222e;
+
+  --site-ok: #6cc08b;
+  --site-ok-soft: #14231b;
+  --site-warn: #e0b25e;
+  --site-warn-soft: #241d10;
+  --site-warn-border: #5a4620;
+
+  --site-kind-theorem: #7fa9d8;
+  --site-kind-definition: #74b3a2;
+  --site-kind-structure: #ab93c6;
+  --site-kind-instance: #c2a06a;
+
+  --site-shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 28px -14px rgba(0, 0, 0, .7);
+  --site-shadow-lift: 0 2px 6px rgba(0, 0, 0, .5), 0 18px 40px -16px rgba(0, 0, 0, .8);
+
+  --verso-code-const-color: #8fc3dd;
+  --verso-code-keyword-color: #cf9fcb;
+  --verso-code-var-color: #d7b98a;
+  --verso-error-color: #f2857c;
+}
+
+/* ----------------------------------------------------------- base/layout --- */
+
+html {
+  background: var(--site-bg);
+}
+
+body {
+  background: var(--site-bg);
+  color: var(--site-ink);
+  font-feature-settings: "kern" 1, "liga" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Verso hardcodes a white header with a grey shadow. */
+header {
+  background: color-mix(in srgb, var(--site-bg) 82%, transparent);
+  backdrop-filter: saturate(1.6) blur(10px);
+  border-bottom: 1px solid var(--site-border);
+  box-shadow: none;
+}
+
+.header-title h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.header-title,
+.header-title:hover {
+  color: var(--site-ink);
+  text-decoration: none;
+}
+
+#toc {
+  background: var(--site-surface-2);
+  border-right: 1px solid var(--site-border);
+}
+
+#toc a {
+  color: var(--site-ink-2);
+  text-decoration: none;
+}
+
+#toc a:hover {
+  color: var(--site-accent);
+}
+
+.toc-title h1 {
+  font-size: .95rem;
+  letter-spacing: -0.01em;
+}
+
+#meta-links a {
+  color: var(--site-ink-3);
+  font-size: .85rem;
+}
+
+.toc-resize-handle::after {
+  background: var(--site-border);
+}
+
+/* Content is given room — declaration signatures are wide — but not unbounded. */
+@media screen and (min-width: 900px) {
+  .content-wrapper {
+    box-sizing: border-box;
+    margin: 0;
+    max-width: none;
+    width: 100%;
+  }
+
+  .content-wrapper > section,
+  main section {
+    box-sizing: border-box;
+    max-width: var(--site-measure);
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+/* --------------------------------------------------------------- typography */
+
+h1, h2, h3, h4 {
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+}
+
+h1 { font-size: 1.9rem; font-weight: 640; }
+h2 { font-size: 1.3rem; font-weight: 620; }
+h3 { font-size: 1.08rem; font-weight: 600; }
+
+p, li {
+  line-height: 1.65;
+}
+
+a {
+  color: var(--site-accent);
+  text-decoration-color: color-mix(in srgb, var(--site-accent) 35%, transparent);
+  text-underline-offset: 2px;
+  transition: color .12s ease, text-decoration-color .12s ease;
+}
+
+a:hover {
+  color: var(--site-accent-hover);
+  text-decoration-color: currentColor;
+}
+
+:focus-visible {
+  outline: 2px solid var(--site-accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+code, pre {
+  font-variant-ligatures: none;
+}
+
+/* ------------------------------------------------------- declaration cards */
+
+.decl-section {
+  scroll-margin-top: 5rem;
+}
+
+.decl-heading {
+  align-items: baseline;
+  display: flex;
+  gap: .5rem;
+  margin: 2.2rem 0 .6rem;
+}
+
+.decl-heading code {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.decl-permalink {
+  color: var(--site-ink-3);
+  font-size: .85rem;
+  opacity: 0;
+  text-decoration: none;
+  transition: opacity .12s ease;
+}
+
+.decl-heading:hover .decl-permalink,
+.decl-permalink:focus-visible {
+  opacity: 1;
+}
+
+.decl-card {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-left: 3px solid var(--site-kind-definition);
+  border-radius: var(--site-radius);
+  box-shadow: var(--site-shadow);
+  margin: 1rem 0 1.6rem;
+  padding: 1rem 1.15rem;
+  transition: box-shadow .16s ease, border-color .16s ease;
+}
+
+.decl-card:hover {
+  box-shadow: var(--site-shadow-lift);
+}
+
+/* Keyed on the declaration's kind rather than on the card's modifier class: the modifiers only
+   distinguish "headline theorem" from "definition", so a lemma fell through to the definition
+   colour and read as the wrong kind of thing. */
+.decl-section[data-decl-kind="Theorem"] .decl-card { border-left-color: var(--site-kind-theorem); }
+.decl-section[data-decl-kind="Definition"] .decl-card,
+.decl-section[data-decl-kind="Inductive"] .decl-card,
+.decl-section[data-decl-kind="Opaque"] .decl-card,
+.decl-section[data-decl-kind="Axiom"] .decl-card { border-left-color: var(--site-kind-definition); }
+.decl-section[data-decl-kind="Instance"] .decl-card { border-left-color: var(--site-kind-instance); }
+.decl-section[data-decl-kind="Structure"] .decl-card,
+.decl-section[data-decl-kind="Type Class"] .decl-card { border-left-color: var(--site-kind-structure); }
+
+/* A headline theorem — one written with `theorem`, not `lemma`, and not an instance — is the
+   point of its page, so it gets a heavier rule than the machinery around it. */
+.decl-card--theorem { border-left-width: 4px; }
+
+.decl-card-header {
+  align-items: flex-start;
+  display: flex;
+  gap: .8rem;
+  justify-content: space-between;
+  margin-bottom: .85rem;
+}
+
+.decl-card-title { min-width: 0; }
+
+.decl-card-label {
+  color: var(--site-ink-3);
+  font-family: var(--verso-structure-font-family);
+  font-size: .68rem;
+  font-weight: 650;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+
+.decl-card-label--theorem {
+  color: var(--site-kind-theorem);
+}
+
+.decl-card-name {
+  display: block;
+  font-family: var(--verso-code-font-family);
+  font-size: .95rem;
+  font-weight: 550;
+  margin-top: .15rem;
+  overflow-wrap: anywhere;
+}
+
+.decl-card-tagbar {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: .45rem;
+}
+
+.decl-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+}
+
+.decl-card-tag {
+  border: 1px solid var(--site-border);
+  border-radius: 999px;
+  color: var(--site-ink-2);
+  font-family: var(--verso-structure-font-family);
+  font-size: .74rem;
+  padding: .15rem .55rem;
+}
+
+.decl-card-tag.sorry {
+  background: var(--site-warn-soft);
+  border-color: var(--site-warn-border);
+  color: var(--site-warn);
+}
+
+.decl-card-action {
+  background: transparent;
+  border: 1px solid var(--site-border-strong);
+  border-radius: 999px;
+  color: var(--site-ink-2) !important;
+  font-family: var(--verso-structure-font-family);
+  font-size: .76rem;
+  font-weight: 550;
+  padding: .25rem .7rem;
+  text-decoration: none !important;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+
+.decl-card-action:hover {
+  background: var(--site-accent-soft);
+  border-color: var(--site-accent);
+  color: var(--site-accent) !important;
+}
+
+.decl-card details {
+  border-top: 1px solid var(--site-border);
+  margin-top: .9rem;
+  padding-top: .7rem;
+}
+
+.decl-card summary,
+details > summary {
+  color: var(--site-ink-2);
+  cursor: pointer;
+  font-family: var(--verso-structure-font-family);
+  font-size: .88rem;
+  font-weight: 600;
+  transition: color .12s ease;
+}
+
+.decl-card summary:hover,
+details > summary:hover {
+  color: var(--site-accent);
+}
+
+.decl-card details ul {
+  margin: .6rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.decl-card details li + li { margin-top: .2rem; }
+
+/* Code surfaces, including Verso's highlighted blocks. */
+.decl-card pre,
+.decl-card code.hl.lean.block,
+pre.lean,
+code.hl.lean.block {
+  background: var(--site-surface-2) !important;
+  border: 1px solid var(--site-border);
+  border-radius: var(--site-radius-sm);
+  box-shadow: none;
+}
+
+.decl-card pre,
+pre.lean {
+  overflow-x: auto;
+  padding: .8rem .95rem;
+}
+
+/* --------------------------------------------------------- prev/next nav --- */
+
+/* Verso renders these above and below every page. They are wayfinding, not content, so they read
+   as quiet secondary controls rather than competing with the page title. */
+.prev-next-buttons {
+  display: flex;
+  gap: .6rem;
+  justify-content: space-between;
+  margin: .2rem 0 1.4rem;
+}
+
+.prev-next-buttons .local-button {
+  align-items: baseline;
+  border-radius: var(--site-radius-sm);
+  color: var(--site-ink-3);
+  display: inline-flex;
+  font-size: .82rem;
+  font-weight: 500;
+  gap: .35rem;
+  max-width: 45%;
+  padding: .2rem .4rem;
+  text-decoration: none;
+  transition: background .12s ease, color .12s ease;
+}
+
+.prev-next-buttons .local-button:hover {
+  background: var(--site-accent-soft);
+  color: var(--site-accent);
+}
+
+.prev-next-buttons .where {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- index lists */
+
+main ul { padding-left: 1.15rem; }
+
+main li code { font-size: .92em; }
+
+/* ----------------------------------------------------------- sidebar tools */
+
+.header-logo-wrapper,
+.with-toc #toc,
+.with-toc > main {
+  transition: flex-basis var(--verso-toc-transition-time) ease,
+              width var(--verso-toc-transition-time) ease,
+              padding-left var(--verso-toc-transition-time) ease,
+              transform var(--verso-toc-transition-time) ease;
+}
+
+.site-utility-nav {
+  align-items: stretch;
+  border-bottom: 1px solid var(--site-border);
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+  margin: .2rem 0 .8rem;
+  padding: 0 1rem .85rem;
+}
+
+.site-utility-link {
+  border-radius: var(--site-radius-sm);
+  color: var(--site-ink-2);
+  font-family: var(--verso-structure-font-family);
+  font-size: .84rem;
+  font-weight: 550;
+  padding: .2rem .35rem;
+  text-decoration: none;
+  transition: background .12s ease, color .12s ease;
+}
+
+.site-utility-link:hover {
+  background: var(--site-accent-soft);
+  color: var(--site-accent);
+}
+
+.site-utility-button {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-radius: 999px;
+  color: var(--site-ink-2);
+  cursor: pointer;
+  font-family: var(--verso-structure-font-family);
+  font-size: .76rem;
+  font-weight: 550;
+  padding: .28rem .7rem;
+  text-align: left;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+
+.site-utility-button:hover {
+  background: var(--site-accent-soft);
+  border-color: var(--site-accent);
+  color: var(--site-accent);
+}
+
+.site-utility-button[aria-pressed="true"] {
+  background: var(--site-surface-3);
+  color: var(--site-ink);
+}
+
+.site-theme-toggle {
+  margin-top: .15rem;
+}
+
+/* The sidebar's visibility controls filter declaration *listings* — module contents, the claims
+   and trust pages, and a declaration's dependency closures. They deliberately do not touch the
+   card on a declaration's own page (which carries `data-card-group`, not `data-decl-group`):
+   hiding the very thing you navigated to would be a strange thing for a filter to do. */
+body.hide-definitions [data-decl-group="definition"],
+body.hide-lemmas [data-decl-group="lemma"],
+body.hide-theorems [data-decl-group="theorem"] {
+  display: none;
+}
+
+/* With `rootTocDepth`/`sectionTocDepth` at 0 Verso still emits the wrapper for its automatic
+   sub-page list, so the empty element is hidden rather than left to contribute stray margins.
+   `:has` covers the case where it ever emits whitespace inside. On the landing page the list also
+   comes wrapped in a `<section>` with its own "Contents" heading, which goes with it. */
+.section-toc:empty,
+.section-toc:not(:has(li)) {
+  display: none;
+}
+
+/* Headings the site writes into page content itself (see `Block.sectionHeading`), as opposed to
+   the page title Verso renders from the `Part`. */
+.site-heading {
+  border-top: 1px solid var(--site-border);
+  margin-top: 2.2rem;
+  padding-top: 1.4rem;
+}
+
+/* ------------------------------------------------------- declaration index */
+
+.decl-index {
+  list-style: none;
+  margin: .6rem 0 1.2rem;
+  padding: 0;
+}
+
+.decl-index-item {
+  align-items: baseline;
+  border-bottom: 1px solid var(--site-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  padding: .32rem .1rem;
+}
+
+.decl-index-item:last-child { border-bottom: none; }
+
+.decl-index-item:hover { background: var(--site-surface-2); }
+
+.decl-index-name {
+  flex: 1 1 22rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.decl-index-name code { font-size: .9rem; }
+
+.decl-index-meta {
+  color: var(--site-ink-3);
+  flex: 0 0 auto;
+  font-size: .8rem;
+  white-space: nowrap;
+}
+
+.decl-index-flag {
+  background: var(--site-warn-soft);
+  border: 1px solid var(--site-warn-border);
+  border-radius: 999px;
+  color: var(--site-warn);
+  flex: 0 0 auto;
+  font-size: .72rem;
+  padding: .05rem .45rem;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ graph */
+
+#graph-root {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-radius: var(--site-radius);
+  padding: .9rem;
+}
+
+.graph-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+  margin-bottom: .7rem;
+}
+
+.graph-toolbar input,
+.graph-toolbar select,
+.graph-toolbar button {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-radius: 999px;
+  color: var(--site-ink);
+  font-family: var(--verso-structure-font-family);
+  font-size: .85rem;
+  padding: .45rem .85rem;
+  transition: border-color .12s ease;
+}
+
+.graph-toolbar input { flex: 1 1 18rem; }
+.graph-toolbar input::placeholder { color: var(--site-ink-3); }
+.graph-toolbar button { cursor: pointer; }
+
+.graph-toolbar input:hover,
+.graph-toolbar select:hover,
+.graph-toolbar button:hover {
+  border-color: var(--site-border-strong);
+}
+
+.graph-hint,
+.graph-legend {
+  color: var(--site-ink-3);
+  font-size: .84rem;
+  line-height: 1.55;
+  margin: .2rem 0 .7rem;
+}
+
+.graph-layout {
+  display: grid;
+  gap: .9rem;
+  /* Wide enough for a statement to be readable, since that is now the panel's main content. */
+  grid-template-columns: minmax(0, 1fr) 21rem;
+}
+
+.graph-panel {
+  background: var(--site-surface-2);
+  border: 1px solid var(--site-border);
+  border-radius: var(--site-radius);
+  padding: .85rem 1rem;
+}
+
+.graph-panel h2 {
+  font-size: 1rem;
+  margin-top: 0;
+}
+
+.graph-panel p { font-size: .88rem; }
+.graph-panel code { font-size: .85rem; }
+
+.graph-panel h2 {
+  overflow-wrap: anywhere;
+}
+
+.graph-panel-meta {
+  color: var(--site-ink-3);
+  margin-top: -.4rem;
+}
+
+.graph-panel-warn {
+  color: var(--site-warn);
+  font-weight: 550;
+}
+
+/* The selected declaration's statement. Scrolls rather than wraps: a broken Lean statement is
+   harder to read than one you have to nudge sideways. */
+.graph-panel-code {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-radius: var(--site-radius-sm);
+  font-family: var(--verso-code-font-family);
+  font-size: .76rem;
+  line-height: 1.5;
+  margin: .6rem 0;
+  max-height: 16rem;
+  overflow: auto;
+  padding: .55rem .65rem;
+  white-space: pre;
+}
+
+.graph-panel-doc {
+  border-left: 2px solid var(--site-border);
+  color: var(--site-ink-2);
+  padding-left: .6rem;
+}
+
+.graph-panel-nodoc {
+  color: var(--site-ink-3);
+  font-style: italic;
+}
+
+#graph-svg {
+  background: var(--site-surface-2);
+  border: 1px solid var(--site-border);
+  border-radius: var(--site-radius-sm);
+  cursor: grab;
+  display: block;
+}
+
+#graph-svg:active { cursor: grabbing; }
+
+/* Row-depth gutter labels: quiet, so they read as an axis rather than as content. */
+.graph-row-label {
+  fill: var(--site-ink-3);
+  font-family: var(--verso-structure-font-family);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.graph-node text.graph-label {
+  font-family: var(--verso-code-font-family);
+  font-size: 11.5px;
+  font-weight: 550;
+  pointer-events: none;
+  user-select: none;
+}
+
+.graph-node rect.graph-box { transition: stroke-width .09s ease-out; }
+.graph-node, #graph-svg path { transition: opacity .09s ease-out; }
+
+.graph-neighbor-list {
+  margin: .6rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.graph-neighbor-list li { margin-bottom: .3rem; }
+
+@media (max-width: 900px) {
+  .graph-layout { grid-template-columns: 1fr; }
+}
+
+/* ------------------------------------------------------------ preferences */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    transition-duration: .001ms !important;
+  }
+}

@@ -345,26 +345,54 @@ elaborate. -/
 def coercionClasses : List Name :=
   [``CoeFun, ``CoeSort, ``Coe, ``CoeTC, ``CoeHead, ``CoeTail, ``CoeHTCT, ``CoeOut, ``CoeDep]
 
-/-- If `type` is, under its binders, a coercion-class application `Cls Src …`, the head constant of
-`Src` (the type coerced *from*). -/
-partial def coercionSourceType? (type : Expr) : Option Name :=
+/-- If `type` is, under its binders, a coercion-class application `Cls Src …`, the type coerced
+*from* (`Src`). -/
+partial def coercionSource? (type : Expr) : Option Expr :=
   match type with
-  | .forallE _ _ b _ => coercionSourceType? b
+  | .forallE _ _ b _ => coercionSource? b
   | _ =>
     let (fn, args) := type.getAppFnArgs
-    if coercionClasses.contains fn && args.size ≥ 1 then args[0]!.getAppFn.constName?
+    if coercionClasses.contains fn && args.size ≥ 1 then some args[0]!
     else none
+
+/-- If `type` is, under its binders, a coercion-class application `Cls Src …`, the head constant of
+`Src`. -/
+partial def coercionSourceType? (type : Expr) : Option Name :=
+  coercionSource? type >>= (·.getAppFn.constName?)
+
+/-- A coercion instance, together with the project constants that must be present for it to be
+relevant (see `coercionInstancesByType`). -/
+structure CoercionInstance where
+  /-- The instance declaration. -/
+  name : Name
+  /-- Project-local constants occurring in the coerced-from type, other than its head. -/
+  witnesses : Array Name
+deriving Inhabited
 
 /-- Maps a type's head constant to the exposed coercion instances coercing *from* it. A declaration
 mentioning such a type needs these instances replayed so its source coercions still elaborate (the
-instances themselves never appear in the elaborated term; see `coercionClasses`). -/
-def coercionInstancesByType (env : Environment) (exposed : Std.HashSet Name)
-    (projectConsts : Array (Name × Name × ConstantInfo)) : Std.HashMap Name (Array Name) := Id.run do
-  let mut m : Std.HashMap Name (Array Name) := {}
+instances themselves never appear in the elaborated term; see `coercionClasses`).
+
+The head constant alone is too coarse a key. `instance : CoeFun (SquareIntegrable ι E P 𝓕) …` has
+coerced-from type `{ x // x ∈ SquareIntegrable … }`, whose head is **`Subtype`** — so keying on the
+head filed it under `Subtype` and handed it to every declaration mentioning a subtype at all. In
+brownian-motion that was 208 declarations, none of which mention `SquareIntegrable`, and each one
+inherited `SquareIntegrable`'s whole closure. Many of those declarations live in modules that do
+not even import the one defining the instance, so the edge was not merely useless but impossible.
+
+`witnesses` records the other project constants in the coerced-from type (`SquareIntegrable` here),
+and `Context.declDeps` only replays the instance for declarations that mention all of them. -/
+def coercionInstancesByType (env : Environment) (rootPrefix : Name) (exposed : Std.HashSet Name)
+    (projectConsts : Array (Name × Name × ConstantInfo)) :
+    Std.HashMap Name (Array CoercionInstance) := Id.run do
+  let mut m : Std.HashMap Name (Array CoercionInstance) := {}
   for (cname, _, cinfo) in projectConsts do
     if exposed.contains cname && Lean.Meta.isInstanceCore env cname then
-      if let some src := coercionSourceType? cinfo.type then
-        m := m.insert src ((m.getD src #[]).push cname)
+      if let some src := coercionSource? cinfo.type then
+        if let some head := src.getAppFn.constName? then
+          let witnesses := src.getUsedConstants.filter fun c =>
+            c != head && isProjectLocalConst env rootPrefix c
+          m := m.insert head ((m.getD head #[]).push { name := cname, witnesses })
   return m
 
 /-! ## Expansion through compiler-generated helpers -/
@@ -435,7 +463,38 @@ structure Context where
   /-- Notation kind ↦ constants its expansion references (`notationExpansionDeps`). -/
   notationDeps : Std.HashMap Name (Array Name)
   /-- Type head constant ↦ coercion instances coercing from it (`coercionInstancesByType`). -/
-  coercionInstances : Std.HashMap Name (Array Name)
+  coercionInstances : Std.HashMap Name (Array CoercionInstance)
+  /-- Project constant ↦ the module declaring it. -/
+  declModule : Std.HashMap Name Name
+  /-- Project module ↦ the project modules it can see (`visibleProjectModules`). -/
+  visibleModules : Std.HashMap Name (Std.HashSet Name)
+
+/-- For each project module, the project modules it can see: itself plus everything it imports,
+transitively.
+
+Only project modules are tracked. A project module can only be reached from another project module
+(nothing upstream imports the project), so reachability among them never leaves the set.
+
+Relies on `moduleNames` being in dependency order — Lean writes a module's imports before the
+module itself — so one forward pass suffices. -/
+def visibleProjectModules (env : Environment) (rootPrefix : Name) :
+    Std.HashMap Name (Std.HashSet Name) := Id.run do
+  let names := env.header.moduleNames
+  let data := env.header.moduleData
+  let mut visible : Std.HashMap Name (Std.HashSet Name) := {}
+  for i in [0:names.size] do
+    let modName := names[i]!
+    if !hasPrefixName modName rootPrefix then
+      continue
+    let mut seen : Std.HashSet Name := ({} : Std.HashSet Name).insert modName
+    if h : i < data.size then
+      for imp in data[i].imports do
+        if hasPrefixName imp.module rootPrefix then
+          seen := seen.insert imp.module
+          for m in visible.getD imp.module {} do
+            seen := seen.insert m
+    visible := visible.insert modName seen
+  return visible
 
 /-- Scans `env` for the project rooted at `rootPrefix` and builds the tables `Context.declDeps`
 needs. Does the whole-environment work once, so a caller analysing many declarations should build
@@ -450,16 +509,23 @@ def Context.of (env : Environment) (rootPrefix : Name) : Context :=
     constants := constants
     exposed := exposed
     notationDeps := notationExpansionDeps env constants
-    coercionInstances := coercionInstancesByType env exposed constants }
+    coercionInstances := coercionInstancesByType env rootPrefix exposed constants
+    declModule := constants.foldl (fun acc (name, mod, _) => acc.insert name mod) {}
+    visibleModules := visibleProjectModules env rootPrefix }
 
 /-- The dependencies of the single declaration `name` (whose `ConstantInfo` is `info`), threading
 the memo `cache` used by `expandThroughInternals`; the updated cache is returned alongside and
 should be passed to the next call. -/
 def Context.declDeps (ctx : Context) (cache : Cache) (name : Name) (info : ConstantInfo) :
     DeclDeps × Cache :=
-  -- Adds, for every referenced type with coercion instances, those instances (see `coercionClasses`).
+  -- Adds, for every referenced type with coercion instances, those instances (see `coercionClasses`),
+  -- but only the ones whose coerced-from type this declaration actually mentions in full: the head
+  -- constant on its own is far too coarse a match (see `coercionInstancesByType`).
   let addCoercionInsts (cs : Array Name) : Array Name :=
-    cs ++ cs.foldl (fun acc c => acc ++ ctx.coercionInstances.getD c #[]) #[]
+    let present : Std.HashSet Name := cs.foldl (fun acc c => acc.insert c) {}
+    cs ++ cs.foldl (init := #[]) fun acc c =>
+      acc ++ (ctx.coercionInstances.getD c #[]).filterMap fun inst =>
+        if inst.witnesses.all present.contains then some inst.name else none
   let typeUsedConstants := addCoercionInsts (usedConstantsOf ctx.env name info false)
   -- When this declaration *is* a notation, also depend on the constants it expands to (which are
   -- stored as `Name` data inside its macro and so invisible to `getUsedConstants`); see
@@ -471,8 +537,19 @@ def Context.declDeps (ctx : Context) (cache : Cache) (name : Name) (info : Const
     expandThroughInternals ctx.env ctx.rootPrefix ctx.exposed cache typeUsedConstants
   let (allExpanded, cache) :=
     expandThroughInternals ctx.env ctx.rootPrefix ctx.exposed cache allUsedConstants
+  -- A declaration can only reference what its own module can see. Any project-local dependency in
+  -- a module this one does not import is impossible, so it is an artifact of the analysis (a
+  -- too-eagerly replayed coercion instance, say) rather than a real edge. Constants outside the
+  -- project are left alone: they are never emitted, and pruning them here would only hide them
+  -- from the assumption counts.
+  let visible := ctx.visibleModules.getD (ctx.declModule.getD name .anonymous) {}
+  let importable (dep : Name) : Bool :=
+    match ctx.declModule.get? dep with
+    | none => true
+    | some mod => visible.contains mod
   let dedup (cs : Array Name) : Array Name :=
-    cs.foldl (fun acc dep => if dep != name && !acc.contains dep then acc.push dep else acc) #[]
+    cs.foldl (fun acc dep =>
+      if dep != name && importable dep && !acc.contains dep then acc.push dep else acc) #[]
   ({ typeDeps := dedup typeExpanded, deps := dedup allExpanded }, cache)
 
 /-- The dependencies of every exposed declaration of the project, in environment order, sharing one

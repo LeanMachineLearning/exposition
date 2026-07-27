@@ -13,10 +13,16 @@ whole corpus; none of it is estimated.
 
 | target project | compiling | failing |
 |---|---|---|
-| brownian-motion | 1673 / 1677 | 4 |
+| brownian-motion | 1671 / 1677 | 6 |
 | LML (`LeanMachineLearning`) | 696 / 698 | 2 |
 | alpha-rar | 779 / 784 | 5 |
-| **total** | **3148 / 3159 (99.65%)** | **11** |
+| **total** | **3146 / 3159 (99.59%)** | **13** |
+
+> brownian-motion went from 4 failures to 6 when the dependency analysis was corrected (see
+> [issue 4](#4-to_additive-existing-needs-a-declaration-the-term-never-mentions)). The two extra
+> files were never *correctly* extracted; they compiled because spurious dependency edges happened
+> to drag in the declaration they needed. Removing 188 impossible edges removed that accident too.
+> Only brownian-motion has been re-measured since; the LML and alpha-rar rows predate the change.
 
 Reproduce with, per project:
 
@@ -73,7 +79,7 @@ so a tactic that relied on the ambient environment can fail.
 closure) trades these failures against the much larger set documented under *Rejected: replaying all
 `attribute` commands*.
 
-### 4. `@[to_additive existing]` without its counterpart (2 files, brownian-motion)
+### 4. `@[to_additive existing]` without its counterpart (4 files, brownian-motion)
 
 **Symptom** ``@[to_additive] failed to add declaration `MeasureTheory.AEEqProcess.instAddGroup…` ``.
 
@@ -84,6 +90,11 @@ fails on `pow_toGerm`, which is `@[simp]`-only and so has no registered additive
 
 Note this is **not** a gap in the same-command sibling closure (`commandSiblings`): those two
 declarations come from different commands.
+
+This affects all four of brownian-motion's `@[to_additive existing]` uses — `instMonoid`,
+`instCommMonoid`, `instGroup`, `instCommGroup`. It used to affect only the latter two: the first
+two compiled because the over-broad coercion keying (since fixed) pulled their counterparts in by
+accident. They were never correctly extracted; the accident merely hid the gap.
 
 **Fix direction** Put the counterpart in the closure. That needs the name, i.e. `to_additive`'s
 translation table, which is not reachable — the tool does not depend on Mathlib. A hand-rolled

@@ -7,7 +7,10 @@ Features:
 - programmatic `Part Manual` generation from declarations in a compiled environment
 - grouping by the first path component after the root module, with chapter/module order derived from the import graph
 - declaration cards with docstrings, source-first Lean statements, collapsible `Uses` / `Used by`, and collapsible proof bodies
-- dependency graph page backed by inline JSON + D3, with chapter filtering and neighborhood focus
+- a per-declaration dependency graph, laid out in rows by dependency depth (top row depends on
+  nothing) and transitively reduced. There is deliberately no whole-project graph: one picture of
+  every declaration is unreadable at any zoom and answers no question a reader has
+- a claims page (results nothing else in the library uses) and a trust page (`sorry` chains, axioms)
 - per-declaration standalone Lean files (under `extracted/`), each self-contained with its transitive
   dependencies inlined and theorem proofs replaced by `sorry`, optionally linked into the
   [live.lean-lang.org](https://live.lean-lang.org) web editor (see `--site-url`)
@@ -34,13 +37,19 @@ lake build exposition
 
 The target repo must already have current `.olean` files for the modules you want to expose.
 
-The tool has four subcommands: `collect`, `extract`, `build-site`, and `all`. `collect`
-imports the target project and writes its analysis (declarations, dependency graph,
-docstrings, ...) to a JSON file; `extract` and `build-site` both read that JSON instead of
-redoing the analysis. Only `collect` and `extract` need to run inside the target project's
-`lake env` (they need its compiled `.olean`s); `build-site` only ever touches the JSON file
-and can be re-run as many times as you like — e.g. while iterating on page layout or CSS —
-without re-importing the target project.
+The pipeline is a sequence of phases with one hard boundary: everything that needs a Lean
+environment produces **data**, and rendering is a pure function of that data.
+
+| phase | needs `lake env`? | produces |
+|---|---|---|
+| `collect` | yes | `data.json` — declarations, dependencies, docstrings, axioms, `sorry` status |
+| `extract` | yes | `extracted/*.lean` — the self-contained minimal file per declaration |
+| `highlight` | yes | `highlighting/*.json` — interactive Lean for each project module |
+| `highlight-extracted` | yes | `extracted-highlighting/*.json` — interactive Lean for each minimal file, **and whether it compiles** |
+| `build-site` | no | the Verso HTML site |
+
+`build-site` touches nothing but those files, so it can be re-run as many times as you like —
+e.g. while iterating on page layout or CSS — without re-importing the target project.
 
 ```bash
 cd /path/to/target-repo
@@ -48,15 +57,31 @@ lake exe cache get
 lake build MyLibrary
 
 EXPOSITION=/path/to/lml-exposition/.lake/build/bin/exposition
+OUT=/path/to/site-out
 
 lake env "$EXPOSITION" collect --root MyLibrary --data data.json
 
-lake env "$EXPOSITION" extract --data data.json --output /path/to/site-out
+lake env "$EXPOSITION" extract --data data.json --output "$OUT"
 
-"$EXPOSITION" build-site --data data.json --output /path/to/site-out \
+# Interactive Lean: hover a symbol for its type, click to jump to its definition.
+lake env "$EXPOSITION" highlight --data data.json --output "$OUT"
+lake env "$EXPOSITION" highlight-extracted --output "$OUT"
+
+"$EXPOSITION" build-site --data data.json --output "$OUT" \
   --repo-url https://github.com/owner/repo \
   --site-url https://owner.github.io/repo
 ```
+
+Both highlighting phases fan out one worker process per file (`--jobs N`, defaulting to the CPU
+count) because highlighting must elaborate source against a freshly imported environment. They are
+optional: without them `build-site` renders plain code blocks and omits the inline minimal files,
+and says so.
+
+`highlight-extracted` doubles as the compile check for the extracted files. Producing the
+highlighting *is* an elaboration, so the same pass records which minimal files fail — and the site
+reports that on the declaration's own page rather than presenting unverified output as verified.
+This subsumes what `scripts/check-extracted-compile.sh` does for site-building purposes; the script
+remains useful for checking extraction in isolation.
 
 `build-site` is the only one of the three that doesn't need `lake env` (it has no
 environment or project dependency at all). `--repo-url`/`--site-url`/`--title` only affect
@@ -156,8 +181,65 @@ file for the declarations whose readable version does not compile. See
   theorems). `sorry` status is a single transitive flag (`dependsOnSorry`) obtained from
   `Lean.collectAxioms`, i.e. the same answer `#print axioms` gives.
 - `LMLExposition/Extract.lean` — the standalone `.lean` file extraction (see `KNOWN-ISSUES.md`).
-- `LMLExposition/Site.lean`, `Theme.lean`, `GraphJs.lean`, `TocJs.lean` — Verso page construction,
-  CSS/JS assets, and the CLI subcommands.
+- `LMLExposition/Highlight.lean` — source-text highlighting. Runs the Lean frontend over a file and
+  returns SubVerso `Highlighted` per command, tagged with the names each command defines, plus any
+  elaboration errors. Depends on Lean and SubVerso only — it knows nothing about the site.
+- `LMLExposition/Website/Site.lean` — Verso page construction and the CLI subcommands. The site's
+  CSS and JavaScript live in `LMLExposition/Website/assets/` as real files and are embedded with
+  `include_str`. D3 is vendored there too rather than fetched from a CDN at page load.
+
+## What The Tool Assumes About Your Library
+
+Almost everything the site shows is derived: dependencies, closures, `sorry` chains, axioms,
+compile status. One thing is not, and it is worth knowing before you point the tool at a project.
+
+**The Claims page lists the declarations you wrote with `theorem`, not `lemma`.** It takes the
+usual convention at face value — `theorem` for a result worth stating for its own sake, `lemma`
+for a step towards one — because Lean records both as the same kind and nothing else in the
+environment distinguishes them.
+
+So the choice between the two keywords is the one piece of editorial intent the tool cannot infer,
+and the only thing you have to do deliberately to get a useful Claims page. `LeanMachineLearning`
+states 11 of its 698 declarations as theorems, and they are exactly the point of the library — the
+regret bounds. A project that writes `theorem` everywhere gets a Claims page meaning "all results":
+still true, just less useful. Nothing else on the site depends on the distinction.
+
+## Theme
+
+`LMLExposition/Website/assets/exposition.css` is the whole theme, built on a token block that
+exists in a light and a dark variant. It loads after Verso's `book.css` and `verso-vars.css`, so it
+both restates Verso's own custom properties (fonts, text/code/structure colours, code-highlighting
+colours) and overrides the handful of places its stylesheet hardcodes a colour.
+
+Verso ships no dark mode, so the dark variant also themes its chrome — header, table of contents,
+and the search box, which reads a `--verso-background-color` that Verso never defines and so
+defaulted to white. A control in the sidebar cycles auto → light → dark; the choice is stored in
+`localStorage` and applied by a small inline script in `<head>` so the page never flashes the wrong
+theme. The dependency graph reads its colours from the same tokens and repaints on a
+`exposition:themechange` event rather than requiring a reload.
+
+## Iterating On Style
+
+The site's CSS and JS are emitted as *files* (into `html-multi/-verso-data/`) rather than inlined
+into every page, so a style change does not need a rebuild at all:
+
+```bash
+# edit LMLExposition/Website/assets/exposition.css or graph.js, then:
+scripts/sync-assets.sh /path/to/site-out
+```
+
+and reload the browser, bypassing its cache. That takes milliseconds, against roughly a minute for
+`lake build` plus `build-site`. A full rebuild is only needed once the Lean-side page structure
+changes.
+
+Two things worth knowing:
+
+- The assets are declared as a Lake `input_dir` in `lakefile.lean`, with `needs := #[websiteAssets]`
+  on the library. Without that, `include_str` is invisible to Lake's change detection and
+  `lake build` reports success while silently keeping the stale `.olean` — the site then builds from
+  the *previous* version of the file.
+- `sync-assets.sh` patches an already-built site only. The binary still embeds whatever was there at
+  build time, so re-run `lake build` before generating a site you intend to publish.
 - `Test/` — `#guard`-based unit tests (`lake build Test`), split the same way: `Test/Deps.lean`
   covers `LeanDeps`, `Test/Collect.lean` and `Test/Extract.lean` cover this tool.
 
