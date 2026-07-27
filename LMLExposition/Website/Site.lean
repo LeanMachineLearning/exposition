@@ -206,6 +206,29 @@ block_extension Block.sectionHeading (_payload : String) where
         pure .empty
     pure {{<h2 class="site-heading">{{title}}</h2>}}
 
+/- The Browse table.
+
+Only the mount point and the data are emitted; `browse.js` builds the table. Sorting and filtering
+over the whole library have to happen in the browser — Verso renders static HTML, so there is no
+server to ask — and shipping rows as JSON rather than as markup keeps the page a good deal smaller
+than the equivalent `<tr>`s would be. -/
+block_extension Block.browseTable (_payload : BrowseData) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI _goB _id data _ => do
+    let .ok (payload : BrowseData) := FromJson.fromJson? data
+      | Verso.reportError s!"Could not decode browse data from {data.compress}"
+        pure .empty
+    pure {{
+      <div id="browse-root">
+        <noscript>"The Browse table needs JavaScript. Every declaration is also reachable from its
+          module page."</noscript>
+      </div>
+      {{Html.tag "script" #[("id", "browse-data"), ("type", "application/json")]
+          (.text false (ToJson.toJson payload).compress)}}
+    }}
+
 block_extension Block.details (_payload : DetailsData) where
   data := ToJson.toJson _payload
   traverse _ _ _ _ := pure none
@@ -309,6 +332,11 @@ private def tocJsFile : JsFile where
   contents := JS.mk (include_str "assets/toc.js")
   sourceMap? := none
 
+private def browseJsFile : JsFile where
+  filename := "browse.js"
+  contents := JS.mk (include_str "assets/browse.js")
+  sourceMap? := none
+
 /-- Rendering configuration for the exposition site output. -/
 private def renderConfig : RenderConfig :=
   {
@@ -328,7 +356,7 @@ private def renderConfig : RenderConfig :=
     rootTocDepth := some 0
     sectionTocDepth := some 0
     extraCssFiles := {expositionCssFile}
-    extraJsFiles := {d3JsFile, graphJsFile, tocJsFile}
+    extraJsFiles := {d3JsFile, graphJsFile, tocJsFile, browseJsFile}
     -- Inline and in `<head>`, so the stored theme is applied before the first paint. Loading this
     -- as a file would let the light theme flash before the script ran.
     extraHead := #[Html.tag "script" #[] (.text false themeBootJs)]
@@ -971,6 +999,52 @@ private def mkClaimsPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
     subParts := #[]
   }
 
+/-- Builds the Browse page: every declaration in one sortable, filterable table.
+
+The uncurated entry point. Claims and Trust are curated views for readers who know what they are
+after; this is for the reader who does not, and it is the only page that answers questions cutting
+across the module hierarchy — which theorems rest on the least machinery, what is in a chapter that
+is not a lemma, what is `sorry`-free below some closure size. -/
+private def mkBrowsePart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manual :=
+  let ordinary : Array Name := #[``Classical.choice, ``propext, ``Quot.sound]
+  let rows := decls.filterMap fun decl => do
+    let href ← ctx.declPageHrefs.get? decl.name
+    pure {
+      name := decl.name.toString
+      href := href
+      kind := decl.displayKind
+      group := declGroupOfFields decl.kind.label decl.isLemma decl.isInstanceDecl
+      module := decl.modulePath
+      chapter := humanizeWord decl.groupKey
+      deps := closureSize decl ctx
+      ext := (externalConstants decl ctx).size
+      dependsOnSorry := decl.dependsOnSorry
+      extraAxioms := decl.axioms.any fun a => !ordinary.contains a && a != ``sorryAx
+      : BrowseRow
+    }
+  {
+    title := #[.text "Browse"]
+    titleString := "Browse"
+    metadata := some {
+      file := some "browse"
+      shortTitle := some "Browse"
+      tag := some (.provided "browse")
+      number := false
+    }
+    content := #[
+      .para #[.text s!"Every one of the {decls.size} exposed declarations. Sort by any column, \
+        and filter by kind, chapter, trust, or name."],
+      .para #[
+        .text "“Deps” counts the project declarations in a declaration's closure and “External” \
+          the distinct constants outside the project it bottoms out in — together, how much a \
+          reader must accept in order to believe it. Sorting by them ascending finds the results \
+          that are cheapest to audit."
+      ],
+      .other (Block.browseTable { rows }) #[]
+    ]
+    subParts := #[]
+  }
+
 /-- Builds the trust page: everything incomplete or resting on an unusual assumption. -/
 private def mkTrustPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manual :=
   Id.run do
@@ -1076,7 +1150,7 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
       ++ mkLandingBlocks decls ctx
       ++ mkDashboardBlocks groups
       ++ overviewBlocks
-    subParts := #[mkClaimsPart decls ctx, mkTrustPart decls ctx]
+    subParts := #[mkClaimsPart decls ctx, mkBrowsePart decls ctx, mkTrustPart decls ctx]
       ++ (groups.map fun group => mkGroupPart group ctx)
   }
 

@@ -137,6 +137,32 @@ structure DeclIndexData where
   entries : Array DeclIndexEntry
 deriving Repr, ToJson, FromJson, Inhabited
 
+/-- One row of the Browse table: every exposed declaration, with the columns a reader sorts and
+filters on. Deliberately light — no docstring or statement — since every row of the library rides
+along in a single page. -/
+structure BrowseRow where
+  name : String
+  href : String
+  /-- Reader-facing kind (`displayKindLabel`). -/
+  kind : String
+  /-- `definition` / `lemma` / `theorem`, matching the sidebar's visibility toggles. -/
+  group : String
+  module : String
+  chapter : String
+  /-- Project declarations in its closure. -/
+  deps : Nat
+  /-- Distinct constants outside the project its closure bottoms out in. -/
+  ext : Nat
+  dependsOnSorry : Bool
+  /-- Rests on an axiom beyond `Classical.choice`/`propext`/`Quot.sound`. -/
+  extraAxioms : Bool
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- Data container for BrowseData. -/
+structure BrowseData where
+  rows : Array BrowseRow
+deriving Repr, ToJson, FromJson, Inhabited
+
 /-- Data container for DetailsData. -/
 structure DetailsData where
   summary : String

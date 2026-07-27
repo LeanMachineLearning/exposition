@@ -10,7 +10,8 @@ Features:
 - a per-declaration dependency graph, laid out in rows by dependency depth (top row depends on
   nothing) and transitively reduced. There is deliberately no whole-project graph: one picture of
   every declaration is unreadable at any zoom and answers no question a reader has
-- a claims page (results nothing else in the library uses) and a trust page (`sorry` chains, axioms)
+- a claims page (everything stated with `theorem`), a browse page (every declaration in one
+  sortable, filterable table), and a trust page (`sorry` chains, axioms)
 - per-declaration standalone Lean files (under `extracted/`), each self-contained with its transitive
   dependencies inlined and theorem proofs replaced by `sorry`, optionally linked into the
   [live.lean-lang.org](https://live.lean-lang.org) web editor (see `--site-url`)

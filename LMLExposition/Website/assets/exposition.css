@@ -643,6 +643,121 @@ body.hide-theorems [data-decl-group="theorem"] {
   white-space: nowrap;
 }
 
+/* ----------------------------------------------------------------- browse */
+
+.browse-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+  margin: 1rem 0 .6rem;
+}
+
+.browse-controls input,
+.browse-controls select,
+.browse-controls button {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-radius: 999px;
+  color: var(--site-ink);
+  font-family: var(--verso-structure-font-family);
+  font-size: .85rem;
+  padding: .45rem .85rem;
+  transition: border-color .12s ease;
+}
+
+.browse-controls input { flex: 1 1 16rem; }
+.browse-controls input::placeholder { color: var(--site-ink-3); }
+.browse-controls button { cursor: pointer; }
+
+.browse-controls input:hover,
+.browse-controls select:hover,
+.browse-controls button:hover { border-color: var(--site-border-strong); }
+
+.browse-count {
+  color: var(--site-ink-3);
+  font-size: .84rem;
+  margin: 0 0 .5rem;
+}
+
+/* The table scrolls inside its own box: a long declaration name must not widen the page. */
+.browse-scroll {
+  border: 1px solid var(--site-border);
+  border-radius: var(--site-radius);
+  max-height: 44rem;
+  overflow: auto;
+}
+
+.browse-table {
+  border-collapse: collapse;
+  font-size: .86rem;
+  width: 100%;
+}
+
+.browse-table thead th {
+  background: var(--site-surface-2);
+  border-bottom: 1px solid var(--site-border);
+  color: var(--site-ink-2);
+  font-family: var(--verso-structure-font-family);
+  font-size: .76rem;
+  font-weight: 600;
+  letter-spacing: .04em;
+  position: sticky;
+  text-align: left;
+  text-transform: uppercase;
+  top: 0;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.browse-sortable {
+  cursor: pointer;
+  padding: .5rem .7rem;
+  user-select: none;
+}
+
+.browse-sortable:hover { color: var(--site-accent); }
+
+/* The arrow marks which column is sorted, and which way. */
+.browse-sortable[data-dir="asc"]::after { content: " ↑"; }
+.browse-sortable[data-dir="desc"]::after { content: " ↓"; }
+.browse-sorted { color: var(--site-ink); }
+
+.browse-table td {
+  border-bottom: 1px solid var(--site-border);
+  padding: .34rem .7rem;
+  vertical-align: baseline;
+}
+
+.browse-table tbody tr:last-child td { border-bottom: none; }
+.browse-table tbody tr:hover { background: var(--site-surface-2); }
+
+.browse-table td a { text-decoration: none; }
+.browse-table code { font-size: .88em; overflow-wrap: anywhere; }
+
+.browse-kind,
+.browse-module { color: var(--site-ink-3); white-space: nowrap; }
+
+.browse-num { text-align: right; white-space: nowrap; }
+
+.browse-flag {
+  border-radius: 999px;
+  font-size: .72rem;
+  padding: .05rem .45rem;
+  white-space: nowrap;
+}
+
+.browse-flag-ok {
+  background: var(--site-ok-soft);
+  color: var(--site-ok);
+}
+
+.browse-flag-warn {
+  background: var(--site-warn-soft);
+  border: 1px solid var(--site-warn-border);
+  color: var(--site-warn);
+}
+
 /* ------------------------------------------------------------------ graph */
 
 #graph-root {

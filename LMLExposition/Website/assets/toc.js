@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
      a "Graph" link outlived the graph page. */
   const utilityLinks = [
     { slug: 'claims', label: 'Claims' },
+    { slug: 'browse', label: 'Browse' },
     { slug: 'trust', label: 'Trust' }
   ];
 

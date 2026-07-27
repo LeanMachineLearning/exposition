@@ -281,7 +281,8 @@ Measured against `brownian-motion` (1677 declarations, 81 modules, 23k lines of 
 | Interactive Lean on declarations | Source-form statements render with types on hover and click-to-jump, not as `<pre>`. |
 | Minimal file as a page (P2) | One highlighted, hoverable page per declaration, on-site, with a compile-status banner — no longer an off-site link to `live.lean-lang.org`. |
 | Compile honesty (P11) | 4 of 1677 minimal files do not compile; each says so on its own page, with the error. |
-| Claims page (P3) | 476 results nothing else uses (439 theorems), ranked by dependency footprint. |
+| Claims page (P3) | Everything stated with `theorem`, ranked by dependency footprint. 307 of brownian-motion's 1677 declarations; 11 of `LeanMachineLearning`'s 698. |
+| Browse page (§5) | Every declaration in one table, sortable on name/kind/module/deps/external/status and filterable by kind, chapter, trust and name. Renders at most 600 rows at a time and says so. |
 | Trust page + chains (P5) | Per-declaration `sorry` chains (`depends on a → b, which contains a sorry`), axiom reporting, whole-library checklist. |
 | Audit surface (P6) | Project-closure size and distinct external constants, per declaration. |
 | Compact closure lists (P9) | Replaced a full card per transitive dependency — the corpus rendered 176,288 of them. |
@@ -356,8 +357,8 @@ Declarations whose names differ only outside ASCII — `induction_on`, `inductio
 
 ### Not yet done
 
-- **Browse page** (§5) — the filterable, sortable table of every declaration. Verso's built-in
-  search is enabled, but the sortable audit-surface view is not built.
+- **Search** — Verso's built-in full-text search is enabled and untouched. It does name lookup;
+  it does not know about kinds, closures or trust, which is what Browse is for.
 - **P8, partially** — path queries ("why does A depend on B") and module-level aggregate graphs are
   not built. The rest of P8 is done: the force-directed layout is gone, replaced by a deterministic
   layered DAG (rows by longest-path depth, edges routed through waypoints, transitively reduced),
