@@ -1,13 +1,17 @@
-import Lean
-import Lean.DeclarationRange
-import Lean.Meta.Instances
-import Lean.Util.Sorry
-import Lake.CLI.Main
-import Lake.Load.Workspace
-import MD4Lean
-import VersoManual
-import VersoManual.Markdown
-import LeanDeps
+module
+
+public import Lean
+public import Lean.DeclarationRange
+public import Lean.Meta.Instances
+public import Lean.Util.Sorry
+public import Lake.CLI.Main
+public import Lake.Load.Workspace
+public import MD4Lean
+public import VersoManual
+public import VersoManual.Markdown
+public import LeanDeps
+
+@[expose] public section
 
 /-!
 # Collecting the exposed declarations of a project
@@ -471,13 +475,19 @@ partial def namespaceAncestors : Name → List Name
   | .anonymous => []
   | n => n :: namespaceAncestors n.getPrefix
 
+set_option compiler.checkMeta false in
 /-- Builds the same `Block.docstring` value that `{docstring name}` would produce inside
 a `#doc` page, by directly invoking Verso's signature/declaration-type computation. Returns
 `none` if this fails for the given declaration (e.g. unsupported declaration shapes).
 
 The pretty-printing context opens the declaration's own namespace and all of its ancestors, so
 that `scoped` notation declared in those namespaces (e.g. order notation for a structure defined
-there) is used instead of falling back to raw instance/projection names. -/
+there) is used instead of falling back to raw instance/projection names.
+
+`Block.Docstring.DeclType.ofName` and `Signature.forName` are `meta` in Verso: they are meant to
+run while a `#doc` page elaborates. This tool calls them from the compiled executable instead, so
+the module system's phase check has to be switched off for this one definition. Both are ordinary
+`LEAN_EXPORT` symbols in Verso's library, so the call links and runs normally. -/
 def mkDocstringBlock? (env : Environment) (name : Name) : IO (Option (Block Manual)) := do
   let options := Options.empty.setBool `pp.fieldNotation false
   let coreCtx : Core.Context := { fileName := "<exposition>", fileMap := default, options }

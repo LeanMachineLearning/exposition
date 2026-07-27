@@ -1,5 +1,9 @@
-import Lean
-import Lean.Meta.Instances
+module
+
+public import Lean
+public import Lean.Meta.Instances
+
+@[expose] public section
 
 /-!
 # Dependency analysis for the declarations of a Lean project
@@ -276,8 +280,11 @@ private def exprStrLit? (e : Expr) : Option String :=
 /-- Reconstructs the `Name` value that `e` builds, if `e` is a `Name.anonymous`/`Name.str`/
 `Name.mkStr1..4` application. Notation and macro definitions store the constants they expand to as
 pre-resolved `Name` *data* built this way (inside the embedded `Syntax`), so these references are
-invisible to `Expr.getUsedConstants`; reconstructing them is how we recover the dependency. -/
-partial def evalNameExpr? (e : Expr) : Option Name := do
+invisible to `Expr.getUsedConstants`; reconstructing them is how we recover the dependency.
+
+Not `@[expose]`, so that the body may keep referring to the `private` `exprStrLit?`. Nothing is
+lost: this is a `partial` definition, so importers cannot unfold it either way. -/
+@[no_expose] partial def evalNameExpr? (e : Expr) : Option Name := do
   match e.getAppFnArgs with
   | (``Lean.Name.anonymous, _) => some .anonymous
   | (``Lean.Name.mkStr1, #[a]) => some (.str .anonymous (← exprStrLit? a))

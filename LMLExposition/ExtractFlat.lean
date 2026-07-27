@@ -1,4 +1,8 @@
-import LMLExposition.Extract
+module
+
+public import LMLExposition.Extract
+
+@[expose] public section
 
 /-!
 # Standalone Lean file extraction (flat, environment-derived variant)

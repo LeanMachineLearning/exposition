@@ -1,4 +1,11 @@
-import LMLExposition.Collect
+module
+
+public import LMLExposition.Collect
+-- The checks below are `#guard`s, which Lean elaborates into compile-time (`meta`)
+-- definitions, so the declarations under test have to be imported at that level too.
+meta import LMLExposition.Collect
+
+@[expose] public section
 
 /-!
 # Tests for `LMLExposition.Collect`

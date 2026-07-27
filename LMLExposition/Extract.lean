@@ -1,4 +1,8 @@
-import LMLExposition.Collect
+module
+
+public import LMLExposition.Collect
+
+@[expose] public section
 
 /-!
 # Standalone Lean file extraction (verbatim-source variant)

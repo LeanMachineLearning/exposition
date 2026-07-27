@@ -1,4 +1,8 @@
-import LMLExposition
+module
+
+public import LMLExposition
+
+@[expose] public section
 
 open LMLExposition
 

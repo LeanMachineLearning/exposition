@@ -1,4 +1,11 @@
-import LeanDeps
+module
+
+public import LeanDeps
+-- The checks below are `#guard`s, which Lean elaborates into compile-time (`meta`)
+-- definitions, so the declarations under test have to be imported at that level too.
+meta import LeanDeps
+
+@[expose] public section
 
 /-!
 # Tests for `LeanDeps`

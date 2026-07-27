@@ -1,3 +1,7 @@
+module
+
+@[expose] public section
+
 namespace LMLExposition
 
 /-- JS for the TOC sidebar. -/

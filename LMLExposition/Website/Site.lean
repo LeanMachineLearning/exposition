@@ -1,18 +1,20 @@
-import Lean
-import Lean.DeclarationRange
-import Lean.Meta.Instances
-import Lean.Util.Sorry
-import Lake.CLI.Main
-import Lake.Load.Workspace
-import MD4Lean
-import VersoManual
-import VersoManual.Markdown
-import LMLExposition.Theme
-import LMLExposition.GraphJs
-import LMLExposition.TocJs
-import LMLExposition.Collect
-import LMLExposition.Extract
-import LMLExposition.ExtractFlat
+module
+
+public import Lean
+public import Lean.DeclarationRange
+public import Lean.Meta.Instances
+public import Lean.Util.Sorry
+public import Lake.CLI.Main
+public import Lake.Load.Workspace
+public import MD4Lean
+public import VersoManual
+public import VersoManual.Markdown
+public import LMLExposition.Website.Theme
+public import LMLExposition.Website.GraphJs
+public import LMLExposition.Website.TocJs
+public import LMLExposition.Collect
+public import LMLExposition.Extract
+public import LMLExposition.ExtractFlat
 
 open Lake
 open Lean
@@ -26,6 +28,10 @@ namespace LMLExposition
 open Verso.Output Html
 open LeanDeps
 
+/- The exposed section opens here rather than directly under the imports so that the
+`block_extension` commands below can close it and run in a plain `public section`; the `open`s above
+stay in the enclosing scope and so survive that gap. -/
+@[expose] public section
 
 /-- Returns the ordering rank for a module, with a large fallback value. -/
 private def moduleRank (order : Std.HashMap Name Nat) (moduleName : Name) : Nat :=
@@ -148,6 +154,12 @@ private def declGroupOfFields (kindLabel : String) (isLemma isInstanceDecl : Boo
   else if kindLabel == "Theorem" || kindLabel == "Instance" then "lemma"
   else "definition"
 
+/- Not `@[expose]`: `block_extension` expands to a `public def X.descr := X.descr.inner` whose body
+mentions the `private` definition the macro generates alongside it. That reference only resolves
+while the body stays unexposed, so these three commands sit in a plain `public section`. -/
+end
+public section
+
 block_extension Block.declCard (_payload : DeclCardData) where
   data := ToJson.toJson _payload
   traverse _ _ _ _ := pure none
@@ -229,6 +241,9 @@ block_extension Block.graph (_payload : GraphData) where
       <div id="graph-root"></div>
       {{Html.tag "script" #[("id", "graph-data"), ("type", "application/json")] (.text false (ToJson.toJson payload).compress)}}
     }}
+
+end
+@[expose] public section
 
 /-- Rendering configuration for the exposition site output. -/
 private def renderConfig : RenderConfig :=
@@ -779,7 +794,7 @@ private unsafe def runAll (cfg : Cli) : IO UInt32 := do
 /-- Main entry point: dispatches to the `collect`/`extract`/`build-site`/`all` subcommands. A
 missing or unrecognized leading token defaults to `all`, so invocations from before this
 split (bare flags, no subcommand) keep working unchanged. -/
-unsafe def mainImpl (args : List String) : IO UInt32 := do
+@[no_expose] unsafe def mainImpl (args : List String) : IO UInt32 := do
   let (subcommand, rest) :=
     match args with
     | "collect" :: rest => ("collect", rest)
@@ -800,5 +815,7 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   | "extract-flat" => runExtractFlat cfg
   | "build-site" => runBuildSite cfg
   | _ => runAll cfg
+
+end
 
 end LMLExposition
