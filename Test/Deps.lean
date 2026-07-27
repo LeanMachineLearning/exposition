@@ -188,31 +188,4 @@ private def revGraph : Array (Name × Array Name) := #[
 -- An edge pointing outside the graph records nothing, so no spurious node appears.
 #guard !(reverseDeps revGraph).contains `External
 
-/-! ### `taintedClosure` (propagate a property upwards along dependency edges) -/
-
--- `A → B → C`, where `C` is a seed; the mark must propagate up the whole chain.
-private def chain : Array (Name × Array Name) := #[
-  (`A, #[`B]),
-  (`B, #[`C]),
-  (`C, #[])
-]
-#guard (taintedClosure chain (.ofList [`C])).contains `A
-#guard (taintedClosure chain (.ofList [`C])).contains `B
-#guard (taintedClosure chain (.ofList [`C])).contains `C
--- No seed, no marks.
-#guard (taintedClosure chain {}).isEmpty
-
--- A node on a clean branch stays clean.
-private def branch : Array (Name × Array Name) := #[
-  (`Root, #[`Tainted, `Clean]),
-  (`Tainted, #[`Bad]),
-  (`Bad, #[]),
-  (`Clean, #[`Leaf]),
-  (`Leaf, #[])
-]
-#guard (taintedClosure branch (.ofList [`Bad])).contains `Root
-#guard (taintedClosure branch (.ofList [`Bad])).contains `Tainted
-#guard !(taintedClosure branch (.ofList [`Bad])).contains `Clean
-#guard !(taintedClosure branch (.ofList [`Bad])).contains `Leaf
-
 end LeanDeps.Test

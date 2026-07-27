@@ -136,7 +136,6 @@ structure DeclInfo where
   docBlocks : Array (Block Manual)
   proofText? : Option String
   source? : Option SourceInfo
-  hasSorry : Bool
   /-- True if the declaration was written with the `lemma` keyword (a `theorem` alias used in
   Mathlib to mark less central results). -/
   isLemma : Bool := false
@@ -147,6 +146,9 @@ structure DeclInfo where
   verbatim during extraction (`alias … := target`) rather than replaced by `sorry`, so its transitive
   closure must follow value dependencies (the alias target), not just type dependencies. -/
   isAlias : Bool := false
+  /-- True if `sorryAx` occurs anywhere in the declaration's transitive closure — whether the
+  `sorry` is its own or inherited from something it rests on. Computed with `Lean.collectAxioms`,
+  so it sees through compiler-generated helpers and into upstream libraries alike. -/
   dependsOnSorry : Bool := false
   deps : Array Name
   typeDeps : Array Name := #[]
@@ -786,7 +788,7 @@ def groupIndexMap (mods : Array ModuleInfo) : Std.HashMap String (Array ModuleIn
     {}
 
 /-- Builds a prefilled GitHub issue URL for declaration review. -/
-def issueUrlOf (repoUrl? : Option String) (decl : Name) (moduleName : Name) (source? : Option SourceInfo) (hasSorry : Bool) : Option String :=
+def issueUrlOf (repoUrl? : Option String) (decl : Name) (moduleName : Name) (source? : Option SourceInfo) (dependsOnSorry : Bool) : Option String :=
   repoUrl?.map fun repoUrl =>
     let title := s!"Review: {decl.getString!}"
     let sourceLine :=
@@ -797,7 +799,7 @@ def issueUrlOf (repoUrl? : Option String) (decl : Name) (moduleName : Name) (sou
       s!"**Declaration:** `{decl}`",
       s!"**Module:** `{moduleName}`",
       sourceLine,
-      s!"**Status:** {if hasSorry then "sorry" else "proved"}",
+      s!"**Status:** {if dependsOnSorry then "sorry" else "proved"}",
       "",
       "---",
       "",
@@ -906,40 +908,19 @@ def toSourceInfo? (projectDir : System.FilePath) (pkg : Lake.Package) (moduleNam
     endLine := ranges.range.endPos.line
   }
 
-/-- True if a `sorryAx` occurs directly in the declaration's own type or value. -/
-def hasSorryIn (info : ConstantInfo) : Bool :=
-  info.type.hasSorry || info.value?.any Expr.hasSorry
+/-- The exposed declarations whose transitive closure contains a `sorry`, via `Lean.collectAxioms`.
 
-/-- True if `name` is incomplete because of a `sorry`, looking *through* project-local
-compiler-generated helpers (`_proof_N`, `match_..`, field defaults, ...) the same way
-`LeanDeps.expandThroughInternals` surfaces hidden dependencies. A direct `sorryAx` in the
-declaration's own type/value, or in any such helper it transitively reaches, counts.
-
-Exposed declarations and external (non-project) constants are *not* followed: a `sorry` reachable
-only through an exposed declaration is surfaced separately by `attachDependsOnSorry`, and upstream
-library constants are assumed sorry-free. This closes the gap where `hasSorryIn` alone would miss a
-`sorry` that the elaborator lifted into an auxiliary `_proof_N` lemma. -/
-partial def usesSorryThroughInternals (env : Environment) (rootPrefix : Name)
-    (exposed : Std.HashSet Name) (name : Name) (info : ConstantInfo) : Bool :=
-  hasSorryIn info || go {} (usedConstantsOf env name info true).toList
-where
-  go (visited : Std.HashSet Name) : List Name → Bool
-    | [] => false
-    | n :: rest =>
-      if visited.contains n then
-        go visited rest
-      else
-        let visited := visited.insert n
-        let isInternalHelper := !exposed.contains n && isProjectLocalConst env rootPrefix n
-        if !isInternalHelper then
-          go visited rest
-        else match env.find? n with
-          | none => go visited rest
-          | some info' =>
-            if hasSorryIn info' then
-              true
-            else
-              go visited (rest ++ (usedConstantsOf env n info' true).toList)
+Lean precomputes each declaration's axiom set when the `.olean` is written and looks it up by
+binary search for imported declarations, so this is a table lookup per declaration rather than a
+walk of the closure. It also means the answer is the honest one: a `sorry` lifted into a
+compiler-generated `_proof_N` helper counts, and so does one inherited from an upstream library. -/
+def sorriedDecls (env : Environment) (names : Array Name) : IO (Std.HashSet Name) :=
+  runCoreIO env do
+    let mut acc : Std.HashSet Name := {}
+    for name in names do
+      if (← Lean.collectAxioms name).contains ``sorryAx then
+        acc := acc.insert name
+    return acc
 
 /-- Collects all exposed declarations and computes their primary metadata. The dependency lists
 (`deps`, `typeDeps`) come from `LeanDeps`; everything else — signature, docstring, source snippet,
@@ -947,6 +928,8 @@ kind, `sorry` status — is computed here. -/
 def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     (pkg : Lake.Package) (env : Environment) : IO (Array DeclInfo) := do
   let depsCtx := LeanDeps.Context.of env rootPrefix
+  let sorried ← sorriedDecls env (depsCtx.constants.filterMap fun (name, _, _) =>
+    if depsCtx.exposed.contains name then some name else none)
   let simpTheorems ← runCoreIO env Lean.Meta.getSimpTheorems
   let simpLemmaNames : Std.HashSet Name :=
     simpTheorems.lemmaNames.fold (fun acc origin =>
@@ -1004,7 +987,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       docBlocks := docBlocks
       proofText? := proofText?
       source? := source?
-      hasSorry := usesSorryThroughInternals env rootPrefix depsCtx.exposed name info
+      dependsOnSorry := sorried.contains name
       isLemma := isLemma
       isInstanceDecl := isInstanceDecl
       isAlias := isAliasFromSource source? lines
@@ -1020,7 +1003,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
 Each of these is a thin adapter that projects `decls` onto the plain `(name, deps)` graph the
 `LeanDeps` passes work on, runs the pass, and writes the result back into the corresponding
 `DeclInfo` field. What varies between them is only *which* edges they follow — full `deps` for
-`usedBy` and `sorry` propagation, `graphDeps` for the transitive closure.
+`usedBy`, `graphDeps` for the transitive closure.
 -/
 
 /-- Adds reverse dependency links (`usedBy`) between exposed declarations, sorted by name. -/
@@ -1043,13 +1026,5 @@ def attachTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
   let depsMap : Std.HashMap Name (Array Name) :=
     decls.foldl (fun acc decl => acc.insert decl.name (graphDeps decl)) {}
   decls.map fun decl => { decl with transDeps := LeanDeps.transitiveDeps depsMap decl.name }
-
-/-- Marks declarations that transitively depend on any `sorry`. -/
-def attachDependsOnSorry (decls : Array DeclInfo) : Array DeclInfo :=
-  let seeds : Std.HashSet Name :=
-    decls.foldl (fun s decl => if decl.hasSorry then s.insert decl.name else s) {}
-  let marked := LeanDeps.taintedClosure (decls.map fun decl => (decl.name, decl.deps)) seeds
-  decls.map fun decl => { decl with dependsOnSorry := marked.contains decl.name }
-
 
 end LMLExposition

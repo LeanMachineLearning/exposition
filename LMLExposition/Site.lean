@@ -318,7 +318,7 @@ private structure SiteContext where
 /-- Renders one declaration card with docs, statement, links, and dependencies. -/
 private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
   Id.run do
-    let issueUrl := issueUrlOf ctx.repoUrl? decl.name decl.moduleName decl.source? decl.hasSorry
+    let issueUrl := issueUrlOf ctx.repoUrl? decl.name decl.moduleName decl.source? decl.dependsOnSorry
     let sourceUrl := sourceUrlOf ctx.repoUrl? decl.source?
     let detailsUrl := ctx.declPageHrefs.get? decl.name
     let mkLinks (deps : Array Name) := deps.filterMap fun dep =>
@@ -372,7 +372,7 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
     id := decl.name.toString
     label := decl.name.getString!
     kind := decl.kind.label
-    status := if decl.hasSorry then "sorry" else "proved"
+    status := if decl.dependsOnSorry then "sorry" else "proved"
     groupKey := decl.groupKey
     moduleName := decl.modulePath
     href := declHrefs.getD decl.name (pathForPart decl.groupKey decl.modulePath decl.name)
@@ -634,7 +634,7 @@ show today, and writes `excluded-declarations.txt` under `cfg.outputDir` when gi
 private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Workspace)
     (rootPrefix : Name) (env : Environment) : IO CollectedData := do
   let decls ← collectDecls projectDir rootPrefix ws.root env
-  let decls := decls |> dropUnsafeDeps |> attachReverseDeps |> attachTransitiveDeps |> attachDependsOnSorry
+  let decls := decls |> dropUnsafeDeps |> attachReverseDeps |> attachTransitiveDeps
   let excludedNames :=
     (projectConstants env rootPrefix).filterMap fun (name, _, info) =>
       if shouldExpose env rootPrefix name info then none else some name

@@ -7,9 +7,9 @@ This module audits the *pure* logic of `Collect.lean`:
 
 * the small name/string helpers used to build hrefs and signatures;
 * the dependency-graph passes as they apply to a collected `DeclInfo` array
-  (`attachReverseDeps`, `attachTransitiveDeps`, `attachDependsOnSorry`), i.e. the field plumbing
-  and the `graphDeps` edge choice — the passes themselves live in `LeanDeps` and are checked in
-  `Test/Deps.lean`, together with the rest of the dependency analysis;
+  (`attachReverseDeps`, `attachTransitiveDeps`), i.e. the field plumbing and the `graphDeps` edge
+  choice — the passes themselves live in `LeanDeps` and are checked in `Test/Deps.lean`, together
+  with the rest of the dependency analysis;
 * the JSON round-trip of the collected data.
 
 Each check is a `#guard`, so any regression turns into a build error. Run with
@@ -85,11 +85,11 @@ These run on an already-collected `Array DeclInfo`, wrapping the graph passes of
 is checked here is the `DeclInfo` side: which field each pass writes, and which edges it follows
 (`graphDeps`: type-only for theorems). We build small synthetic graphs and check the derived
 fields. `mkDecl` fills the structure with inert defaults so each test only specifies the fields
-that matter (`name`, `deps`, `typeDeps`, `kind`, `hasSorry`).
+that matter (`name`, `deps`, `typeDeps`, `kind`).
 -/
 
 private def mkDecl (name : Name) (deps : Array Name := #[]) (typeDeps : Array Name := #[])
-    (kind : DeclKind := .definition) (hasSorry : Bool := false) : DeclInfo := {
+    (kind : DeclKind := .definition) : DeclInfo := {
   name := name
   moduleName := `Test.Mod
   modulePath := "Mod"
@@ -100,7 +100,6 @@ private def mkDecl (name : Name) (deps : Array Name := #[]) (typeDeps : Array Na
   docBlocks := #[]
   proofText? := none
   source? := none
-  hasSorry := hasSorry
   deps := deps
   typeDeps := typeDeps
 }
@@ -170,41 +169,6 @@ private def mutualGraph : Array DeclInfo := #[
 #guard field (attachTransitiveDeps mutualGraph) `A (·.transDeps) == some #[`B]
 #guard field (attachTransitiveDeps mutualGraph) `B (·.transDeps) == some #[`A]
 
-/-! ### `attachDependsOnSorry` (transitive closure of "uses a `sorry`", over `deps`) -/
-
--- `A → B → C`, where `C` has a `sorry`; the flag must propagate up the whole chain, and a decl
--- with its own `sorry` is itself flagged.
-private def sorryChain : Array DeclInfo := #[
-  mkDecl `A (deps := #[`B]),
-  mkDecl `B (deps := #[`C]),
-  mkDecl `C (hasSorry := true)
-]
-#guard field (attachDependsOnSorry sorryChain) `A (·.dependsOnSorry) == some true
-#guard field (attachDependsOnSorry sorryChain) `B (·.dependsOnSorry) == some true
-#guard field (attachDependsOnSorry sorryChain) `C (·.dependsOnSorry) == some true
-
--- A declaration on a sorry-free branch stays clean.
-private def sorryBranch : Array DeclInfo := #[
-  mkDecl `Root (deps := #[`Tainted, `Clean]),
-  mkDecl `Tainted (deps := #[`Bad]),
-  mkDecl `Bad (hasSorry := true),
-  mkDecl `Clean (deps := #[`Leaf]),
-  mkDecl `Leaf
-]
-#guard field (attachDependsOnSorry sorryBranch) `Root (·.dependsOnSorry) == some true
-#guard field (attachDependsOnSorry sorryBranch) `Tainted (·.dependsOnSorry) == some true
-#guard field (attachDependsOnSorry sorryBranch) `Clean (·.dependsOnSorry) == some false
-#guard field (attachDependsOnSorry sorryBranch) `Leaf (·.dependsOnSorry) == some false
-
--- `attachDependsOnSorry` only propagates across *exposed* declarations. A sorry hidden behind a
--- non-exposed compiler helper is instead caught upstream, when `collectDecls` sets `hasSorry` via
--- `usesSorryThroughInternals` (which needs an `Environment`, so it is exercised end-to-end, not
--- here). For this isolated pass, an unexposed dep that is not itself marked stays clean.
-private def sorryViaExternal : Array DeclInfo := #[
-  mkDecl `A (deps := #[`NotExposed])
-]
-#guard field (attachDependsOnSorry sorryViaExternal) `A (·.dependsOnSorry) == some false
-
 /-! ## JSON round-trip for collected data
 
 `DeclInfo`/`ModuleInfo`/`GroupInfo`/`MarkdownSection`/`CollectedData` derive `ToJson`/`FromJson`
@@ -231,7 +195,6 @@ private def sampleDeclForJson : DeclInfo := {
   docBlocks := #[.para #[.text "docs"]]
   proofText? := some "trivial"
   source? := some { relPath := "Foo.lean", absPath := "/tmp/Foo.lean", line := 1, endLine := 2 }
-  hasSorry := false
   isLemma := true
   deps := #[`Nat.add]
   typeDeps := #[`Nat.add]

@@ -121,12 +121,13 @@ they are not retried.
   and body use, looking through compiler-generated helpers (`_proof_N`, `match_N`, field defaults)
   and recovering the dependencies an elaborated term drops (`Expr.proj` structures, notation
   expansions, coercion instances). It also holds the graph passes that run on the result: reverse
-  edges, transitive closure in topological order, and upward propagation of a mark along dependency
-  edges. Entry points: `LeanDeps.Context.of` / `Context.declDeps` / `declDepsOf`.
+  edges and transitive closure in topological order. Entry points: `LeanDeps.Context.of` /
+  `Context.declDeps` / `declDepsOf`.
 - `LMLExposition/Collect.lean` — walks the environment and builds one `DeclInfo` per exposed
-  declaration (signature, docstring, source snippet, kind, `sorry` status), delegating all
-  dependency computation to `LeanDeps` and deciding only which edges the exposition follows
-  (`graphDeps`: type-only for theorems).
+  declaration (signature, docstring, source snippet, kind), delegating all dependency computation to
+  `LeanDeps` and deciding only which edges the exposition follows (`graphDeps`: type-only for
+  theorems). `sorry` status is a single transitive flag (`dependsOnSorry`) obtained from
+  `Lean.collectAxioms`, i.e. the same answer `#print axioms` gives.
 - `LMLExposition/Extract.lean` — the standalone `.lean` file extraction (see `KNOWN-ISSUES.md`).
 - `LMLExposition/Site.lean`, `Theme.lean`, `GraphJs.lean`, `TocJs.lean` — Verso page construction,
   CSS/JS assets, and the CLI subcommands.

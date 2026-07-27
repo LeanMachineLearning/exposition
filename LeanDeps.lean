@@ -6,8 +6,7 @@ import Lean.Meta.Instances
 
 Computes, for every declaration of a project, which constants its *type* uses (`DeclDeps.typeDeps`)
 and which its type *and* body use (`DeclDeps.deps`), plus the graph-level passes that run on the
-result: reverse edges, transitive closure in topological order, and propagation of a mark along
-dependency edges.
+result: reverse edges and transitive closure in topological order.
 
 This module depends on Lean core only — no Lake, no document format, no notion of a "project
 directory" or of output — so it can be reused by any tool that needs to know what a declaration
@@ -36,9 +35,9 @@ this module compensates for:
 per declaration, threading a memo cache. `declDepsOf` wraps both for the common
 "give me everything" case.
 
-The graph passes (`reverseDeps`, `transitiveDeps`, `taintedClosure`) are deliberately stated over
-plain `Name`-keyed maps rather than over any declaration record, so a caller can decide which edges
-count (e.g. type-only edges for theorems) before running them.
+The graph passes (`reverseDeps`, `transitiveDeps`) are deliberately stated over plain `Name`-keyed
+maps rather than over any declaration record, so a caller can decide which edges count (e.g.
+type-only edges for theorems) before running them.
 -/
 
 open Lean
@@ -540,21 +539,5 @@ the declarations that use it) and excluding `name` itself, so it is directly usa
 a minimal standalone file for `name`. -/
 def transitiveDeps (depsMap : Std.HashMap Name (Array Name)) (name : Name) : Array Name :=
   (topologicalClosure depsMap (depsMap.getD name #[])).filter (· != name)
-
-/-- Propagates a mark *upwards* along dependency edges: the result is `seeds` plus every node of
-`nodes` one of whose dependencies is in the set, iterated to a fixed point. In other words, the
-nodes that transitively rest on something marked. -/
-def taintedClosure (nodes : Array (Name × Array Name)) (seeds : Std.HashSet Name) :
-    Std.HashSet Name := Id.run do
-  let mut marked := seeds
-  let mut changed := true
-  while changed do
-    changed := false
-    for (name, deps) in nodes do
-      if !marked.contains name then
-        if deps.any (marked.contains ·) then
-          marked := marked.insert name
-          changed := true
-  return marked
 
 end LeanDeps
