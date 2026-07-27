@@ -133,9 +133,8 @@ private def projA : Expr := .proj `A 0 (.bvar 0)
 /-! ## Graph passes
 
 These run on the plain `(name, deps)` graph, with the caller having already chosen which edges
-count. In this repo, `LMLExposition.Collect` wraps each of them for its own declaration record
-(`attachReverseDeps`, `attachTransitiveDeps`, `attachDependsOnSorry`) and `Test/Collect.lean`
-checks that wrapping; what is checked here is the passes themselves.
+count. In this repo, `LMLExposition.Collect` wraps each of them for its own declaration record and
+`Test/Collect.lean` checks that wrapping; what is checked here is the passes themselves.
 -/
 
 /-! ### `topologicalClosure` (depth-first post-order: every dependency before its users) -/

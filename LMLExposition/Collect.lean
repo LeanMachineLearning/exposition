@@ -906,9 +906,44 @@ def toSourceInfo? (projectDir : System.FilePath) (pkg : Lake.Package) (moduleNam
     endLine := ranges.range.endPos.line
   }
 
+/-- True if a `sorryAx` occurs directly in the declaration's own type or value. -/
+def hasSorryIn (info : ConstantInfo) : Bool :=
+  info.type.hasSorry || info.value?.any Expr.hasSorry
+
+/-- True if `name` is incomplete because of a `sorry`, looking *through* project-local
+compiler-generated helpers (`_proof_N`, `match_..`, field defaults, ...) the same way
+`LeanDeps.expandThroughInternals` surfaces hidden dependencies. A direct `sorryAx` in the
+declaration's own type/value, or in any such helper it transitively reaches, counts.
+
+Exposed declarations and external (non-project) constants are *not* followed: a `sorry` reachable
+only through an exposed declaration is surfaced separately by `attachDependsOnSorry`, and upstream
+library constants are assumed sorry-free. This closes the gap where `hasSorryIn` alone would miss a
+`sorry` that the elaborator lifted into an auxiliary `_proof_N` lemma. -/
+partial def usesSorryThroughInternals (env : Environment) (rootPrefix : Name)
+    (exposed : Std.HashSet Name) (name : Name) (info : ConstantInfo) : Bool :=
+  hasSorryIn info || go {} (usedConstantsOf env name info true).toList
+where
+  go (visited : Std.HashSet Name) : List Name → Bool
+    | [] => false
+    | n :: rest =>
+      if visited.contains n then
+        go visited rest
+      else
+        let visited := visited.insert n
+        let isInternalHelper := !exposed.contains n && isProjectLocalConst env rootPrefix n
+        if !isInternalHelper then
+          go visited rest
+        else match env.find? n with
+          | none => go visited rest
+          | some info' =>
+            if hasSorryIn info' then
+              true
+            else
+              go visited (rest ++ (usedConstantsOf env n info' true).toList)
+
 /-- Collects all exposed declarations and computes their primary metadata. The dependency lists
-(`deps`, `typeDeps`, `hasSorry`) come from `LeanDeps`; everything else — signature, docstring,
-source snippet, kind — is computed here. -/
+(`deps`, `typeDeps`) come from `LeanDeps`; everything else — signature, docstring, source snippet,
+kind, `sorry` status — is computed here. -/
 def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     (pkg : Lake.Package) (env : Environment) : IO (Array DeclInfo) := do
   let depsCtx := LeanDeps.Context.of env rootPrefix
@@ -969,7 +1004,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       docBlocks := docBlocks
       proofText? := proofText?
       source? := source?
-      hasSorry := declDeps.hasSorry
+      hasSorry := usesSorryThroughInternals env rootPrefix depsCtx.exposed name info
       isLemma := isLemma
       isInstanceDecl := isInstanceDecl
       isAlias := isAliasFromSource source? lines

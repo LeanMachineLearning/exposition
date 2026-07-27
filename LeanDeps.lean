@@ -1,13 +1,13 @@
 import Lean
 import Lean.Meta.Instances
-import Lean.Util.Sorry
 
 /-!
 # Dependency analysis for the declarations of a Lean project
 
 Computes, for every declaration of a project, which constants its *type* uses (`DeclDeps.typeDeps`)
 and which its type *and* body use (`DeclDeps.deps`), plus the graph-level passes that run on the
-result: reverse edges, transitive closure in topological order, and propagation of `sorry`.
+result: reverse edges, transitive closure in topological order, and propagation of a mark along
+dependency edges.
 
 This module depends on Lean core only — no Lake, no document format, no notion of a "project
 directory" or of output — so it can be reused by any tool that needs to know what a declaration
@@ -402,46 +402,9 @@ where
               let deps := usedConstantsOf env n info true
               go (cache.insert n deps) visited acc (rest ++ deps.toList)
 
-/-! ## `sorry` detection -/
-
-/-- True if a `sorryAx` occurs directly in the declaration's own type or value. -/
-def hasSorryIn (info : ConstantInfo) : Bool :=
-  info.type.hasSorry || info.value?.any Expr.hasSorry
-
-/-- True if `name` is incomplete because of a `sorry`, looking *through* project-local
-compiler-generated helpers (`_proof_N`, `match_..`, field defaults, ...) the same way
-`expandThroughInternals` surfaces hidden dependencies. A direct `sorryAx` in the declaration's own
-type/value, or in any such helper it transitively reaches, counts.
-
-Exposed declarations and external (non-project) constants are *not* followed: a `sorry` reachable
-only through an exposed declaration is surfaced separately, at the graph level, by `taintedClosure`,
-and upstream library constants are assumed sorry-free. This closes the gap where `hasSorryIn` alone
-would miss a `sorry` that the elaborator lifted into an auxiliary `_proof_N` lemma. -/
-partial def usesSorryThroughInternals (env : Environment) (rootPrefix : Name)
-    (exposed : Std.HashSet Name) (name : Name) (info : ConstantInfo) : Bool :=
-  hasSorryIn info || go {} (usedConstantsOf env name info true).toList
-where
-  go (visited : Std.HashSet Name) : List Name → Bool
-    | [] => false
-    | n :: rest =>
-      if visited.contains n then
-        go visited rest
-      else
-        let visited := visited.insert n
-        let isInternalHelper := !exposed.contains n && isProjectLocalConst env rootPrefix n
-        if !isInternalHelper then
-          go visited rest
-        else match env.find? n with
-          | none => go visited rest
-          | some info' =>
-            if hasSorryIn info' then
-              true
-            else
-              go visited (rest ++ (usedConstantsOf env n info' true).toList)
-
 /-! ## Per-declaration dependencies -/
 
-/-- What the analysis knows about one declaration. -/
+/-- The dependencies of one declaration. -/
 structure DeclDeps where
   /-- Constants used by the declaration's *type*, expanded through compiler-generated helpers and
   deduplicated. Never contains the declaration itself. -/
@@ -450,10 +413,6 @@ structure DeclDeps where
   expansion references), expanded and deduplicated the same way. Never contains the declaration
   itself. -/
   deps : Array Name
-  /-- True if the declaration is itself incomplete because of a `sorry`, including one hidden in a
-  compiler-generated helper. Dependence on *another* declaration's `sorry` is a graph-level fact;
-  see `taintedClosure`. -/
-  hasSorry : Bool
 deriving Repr, Inhabited
 
 /-- The project-wide tables the per-declaration analysis needs, computed once by `Context.of` and
@@ -508,10 +467,7 @@ def Context.declDeps (ctx : Context) (cache : Cache) (name : Name) (info : Const
     expandThroughInternals ctx.env ctx.rootPrefix ctx.exposed cache allUsedConstants
   let dedup (cs : Array Name) : Array Name :=
     cs.foldl (fun acc dep => if dep != name && !acc.contains dep then acc.push dep else acc) #[]
-  ({ typeDeps := dedup typeExpanded
-     deps := dedup allExpanded
-     hasSorry := usesSorryThroughInternals ctx.env ctx.rootPrefix ctx.exposed name info },
-   cache)
+  ({ typeDeps := dedup typeExpanded, deps := dedup allExpanded }, cache)
 
 /-- The dependencies of every exposed declaration of the project, in environment order, sharing one
 expansion cache. -/
@@ -585,9 +541,9 @@ a minimal standalone file for `name`. -/
 def transitiveDeps (depsMap : Std.HashMap Name (Array Name)) (name : Name) : Array Name :=
   (topologicalClosure depsMap (depsMap.getD name #[])).filter (· != name)
 
-/-- Propagates a property *upwards* along dependency edges: the result is `seeds` plus every node of
-`nodes` one of whose dependencies is in the set, iterated to a fixed point. Used to mark the
-declarations that transitively rest on a `sorry`. -/
+/-- Propagates a mark *upwards* along dependency edges: the result is `seeds` plus every node of
+`nodes` one of whose dependencies is in the set, iterated to a fixed point. In other words, the
+nodes that transitively rest on something marked. -/
 def taintedClosure (nodes : Array (Name × Array Name)) (seeds : Std.HashSet Name) :
     Std.HashSet Name := Id.run do
   let mut marked := seeds
