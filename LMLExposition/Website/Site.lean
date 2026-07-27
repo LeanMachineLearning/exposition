@@ -237,6 +237,17 @@ block_extension Block.graph (_payload : GraphData) where
 end
 @[expose] public section
 
+/-- The README text up to, but not including, a "Selected References" heading at any level.
+
+A bibliography is the one part of a README that reads as noise on a generated exposition page,
+and long enough to bury everything above it. -/
+private def readmeUpToReferences (readme : String) : String :=
+  let isReferencesHeading (line : String) : Bool :=
+    let trimmed := (String.trimAscii line).toString
+    let stripped := (String.trimAscii (trimmed.dropWhile (· == '#')).toString).toString
+    trimmed.startsWith "#" && stripped == "Selected References"
+  String.intercalate "\n" (readme.splitOn "\n" |>.takeWhile (!isReferencesHeading ·))
+
 /-- Builds the project-overview section of the landing page from the README. Pure (the README text
 is read once during `collect` and threaded through `CollectedData`), so `build-site` needs no
 access to the project directory.
@@ -247,12 +258,15 @@ addition being the link to `README.md`, which now sits under the heading here. -
 private def mkProjectOverviewBlocks (readmeText : Option String) (repoUrl? : Option String) :
     Array (Block Manual) := Id.run do
   let some readme := readmeText | return #[]
-  let sections := parseMarkdownSections readme
-  let sections := sections.takeWhile fun sec => sec.title != "Selected References"
-  let some overview := sections[0]? | return #[]
+  -- The whole README, not its first section. This used to render only the text preceding the
+  -- first `##` heading, which happened to be the entire file for a README that uses `#` and `###`
+  -- but nothing in between — and was almost empty for one organised with `##`, where it captured
+  -- only a stray `<div align="center">`.
+  let body := readmeUpToReferences readme
+  if body.trimAscii.isEmpty then return #[]
   #[.other (Block.sectionHeading "Project overview") #[]]
     ++ mkSourceParagraph "README.md" (repoFileUrlOf repoUrl? "README.md")
-    ++ markdownToBlocks overview.body
+    ++ markdownToBlocks body
 
 
 /-- D3, vendored rather than fetched from `d3js.org` at page load.
