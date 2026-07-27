@@ -12,6 +12,7 @@ import LMLExposition.GraphJs
 import LMLExposition.TocJs
 import LMLExposition.Collect
 import LMLExposition.Extract
+import LMLExposition.ExtractFlat
 
 open Lake
 open Lean
@@ -733,6 +734,27 @@ private unsafe def runExtract (cfg : Cli) : IO UInt32 := do
   IO.println s!"Wrote {n} standalone extraction files in {(← IO.monoMsNow) - startMs}ms"
   return 0
 
+/-- `extract-flat`: the tier-2 fallback extraction (see `LMLExposition.Flat`). Same inputs as
+`extract`, but the standalone files are rendered from the compiled environment rather than from
+source text, and land in `extracted-flat/` so both tiers can be produced and compared in one run. -/
+private unsafe def runExtractFlat (cfg : Cli) : IO UInt32 := do
+  let some dataPath := cfg.dataPath
+    | IO.eprintln "extract-flat requires --data PATH"
+      return 1
+  let some out := cfg.outputDir
+    | IO.eprintln "extract-flat requires --output DIR"
+      return 1
+  let data ← loadCollectedData dataPath
+  let projectDir : System.FilePath := "."
+  let ws ← loadWorkspaceAt projectDir
+  let imports := importRoots ws cfg.excludeLibs
+  let env ← loadEnv projectDir ws imports
+  let startMs ← IO.monoMsNow
+  let n ← Flat.writeAllFlatExtractions env data.rootPrefix data.decls
+    (System.FilePath.mk out / "html-multi" / "extracted-flat")
+  IO.println s!"Wrote {n} flat extraction files in {(← IO.monoMsNow) - startMs}ms"
+  return 0
+
 /-- `build-site`: reads collected data from `cfg.dataPath` and renders the Verso site. No Lean
 environment or project access at all. -/
 private def runBuildSite (cfg : Cli) : IO UInt32 := do
@@ -762,6 +784,7 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
     match args with
     | "collect" :: rest => ("collect", rest)
     | "extract" :: rest => ("extract", rest)
+    | "extract-flat" :: rest => ("extract-flat", rest)
     | "build-site" :: rest => ("build-site", rest)
     | "all" :: rest => ("all", rest)
     | rest => ("all", rest)
@@ -774,6 +797,7 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   match subcommand with
   | "collect" => runCollect cfg
   | "extract" => runExtract cfg
+  | "extract-flat" => runExtractFlat cfg
   | "build-site" => runBuildSite cfg
   | _ => runAll cfg
 

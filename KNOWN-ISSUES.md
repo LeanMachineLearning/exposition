@@ -1,5 +1,10 @@
 # Known issues in `extract`
 
+> There is a second, independent extraction path, `extract-flat`, which trades readability for
+> robustness and currently compiles **3159 / 3159 (100%)** on the same corpora. See
+> [Fallback: `extract-flat`](#fallback-extract-flat) at the end of this file. The issues below are
+> specific to `extract` and remain the reason the readable tier needs a fallback at all.
+
 Status of the standalone `.lean` files written by `exposition extract`, as measured by
 `scripts/check-extracted-compile.sh`. Every number below comes from running that script over a
 whole corpus; none of it is estimated.
@@ -148,6 +153,86 @@ dropped its `hmgdiff` binder.
 **Theorems are not affected** — Lean's inclusion rule for a theorem does not consult its proof
 term, which is why sorrying proofs (the bulk of what extraction does) is safe. Verified directly:
 `thmSorry` and `thmBody` both keep `[LinearOrder α]`.
+
+## Fallback: `extract-flat`
+
+`LMLExposition.Flat` (`exposition extract-flat`) is a second extraction path that renders each
+declaration from its `ConstantInfo` in the compiled environment instead of copying source text.
+Fully qualified names, `@`-explicit applications, `sorry` for every proof; no `variable`, no
+`namespace`/`open`, no notation, no attributes, no tactic blocks. It is unreadable by design.
+
+| target project | compiling | failing |
+|---|---|---|
+| brownian-motion | 1677 / 1677 | 0 |
+| LML (`LeanMachineLearning`) | 698 / 698 | 0 |
+| alpha-rar | 784 / 784 | 0 |
+| **total** | **3159 / 3159 (100%)** | **0** |
+
+Reproduce exactly as for `extract`, substituting the subcommand and the output directory:
+
+```bash
+lake env "$EXPOSITION" extract-flat --data data.json --output out
+scripts/check-extracted-compile.sh . out/html-multi/extracted-flat
+```
+
+Rendering all 1677 brownian-motion targets takes ~6s (every project constant is rendered once, then
+each target is a topological filter over that table), against ~40s for `extract`.
+
+### Why this compiles when `extract` does not
+
+Each of the four open issues above is a property of replaying source text, and none of them can
+arise here:
+
+1. *Private declarations* — the walk is over the environment, so `_private.M.0.f` is an ordinary
+   constant. It is emitted under a `«_private.M.0.f»`-escaped name (see `refName`), and every
+   reference to it goes through the same function, so both sides agree.
+2. *Tactic bodies naming lemmas the term does not* — there are no tactic bodies.
+3. *Tactics that cannot run in a minimal file* — likewise.
+4. *`@[to_additive existing]` without its counterpart* — no attribute is ever replayed. Nothing is
+   ever synthesized either: `@`-explicit applications make instance search, `simp` sets and
+   notation parsers all irrelevant.
+
+### What had to be got right
+
+Recorded because each was a real failure found by the compile check, and each is non-obvious:
+
+* **`_root_.` on every constant** (reference *and* declaration id). Elaborating
+  `theorem MeasureTheory.Submartingale.foo` puts `MeasureTheory.Submartingale` and `MeasureTheory`
+  in scope, so an unqualified reference inside it is captured by any same-short-name constant in
+  those namespaces — the project's root-level `predictablePart` silently resolved to Mathlib's
+  `MeasureTheory.predictablePart`. In a flat file spanning many namespaces this is routine, not
+  exotic.
+* **Recursive occurrences inside `inductive` are locals, not constants.** They must be written
+  bare: no `_root_.` (which only resolves declared constants), no `.{u}` (rejected outright on a
+  local), but *with* the parameters applied. Hence `RenderState.selfNames`.
+* **Mutual inductive families need one `mutual … end` block.** The head of `InductiveVal.all`
+  carries the whole block; the other members render to an empty command that merely depends on the
+  head, so pulling any member into a closure emits the family exactly once.
+* **Classes must be emitted as `class`, not `structure`.** `@`-explicit applications never need
+  synthesis, but an instance-implicit *binder* `[x : C α]` is still rejected when `C` is not a
+  registered class. (`set_option checkBinderAnnotations false` is in the header as a backstop.)
+* **Reserved words are per-*name*, not per-component.** Lean lexes an identifier greedily across
+  dots and only checks the whole token against the keyword table, so `Prop.partialOrder` is an
+  ordinary identifier; escaping it per-component produced `«Prop.partialOrder»`, a different name.
+* **`Expr` is a DAG; printed syntax is a tree.** Fully-explicit printing of a definition's value
+  expands sharing and can blow up by orders of magnitude — one target rendered to 34 MB and was
+  still elaborating after 45 minutes. Two mitigations: proofs print as a bare `sorry` (never
+  `(sorry : <statement>)` — the statement is often large too, and ascribing would also drag its
+  constants into the closure), and a value over `maxDefValueSize` (100 000 chars) is dropped, with
+  the definition emitted as an `axiom` and a comment saying so. Together: 147 MB → 40 MB on
+  brownian-motion, largest file 34 MB → 493 KB. 22 of 1677 files contain at least one such capped
+  definition, and all of them still compile.
+
+### Known limitations
+
+* **Dropped values are not free.** An `axiom` cannot be unfolded, so a capped definition breaks any
+  kernel defeq check that needed to look inside it. No target currently hits this, but the failure
+  mode exists and raising `maxDefValueSize` is the first thing to try if one appears.
+* **Statements are faithful but unreadable**, so this is a fallback and not a replacement. The
+  intended pipeline is: run both tiers, keep `extract`'s file per declaration, and substitute the
+  `extract-flat` file only where the readable one fails to compile.
+* **`Sort 0` rather than `Prop`, `Sort (u+1)` rather than `Type u`.** Correct, and deliberately not
+  prettified — every such special case is a chance to be wrong.
 
 ## Unrelated usability wart
 

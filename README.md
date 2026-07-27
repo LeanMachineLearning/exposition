@@ -97,6 +97,33 @@ records the current pass rate across the projects this is tested against, the ro
 remaining failure, and — importantly — the approaches that were tried and measured to be worse, so
 they are not retried.
 
+## Fallback Extraction (`extract-flat`)
+
+`extract` optimizes for a file a mathematician can read: it copies verbatim source text and
+replays the surrounding `namespace`/`open`/`variable`/notation context. That context replay is
+also where it fails.
+
+`extract-flat` is a second, independent extraction path that gives up readability to gain
+robustness. It never reads a source file: each declaration is rendered from its `ConstantInfo` in
+the compiled environment, fully qualified and `@`-explicit, with proofs replaced by `sorry`.
+Nothing has to be replayed — no `variable` binders, no namespaces, no notation, no attributes —
+and no instance is ever synthesized, so the entire class of context-replay failures disappears.
+
+```bash
+lake env "$EXPOSITION" extract-flat --data data.json --output /path/to/site-out
+```
+
+It takes the same inputs as `extract` and writes to `html-multi/extracted-flat/`, so both tiers can
+be produced from one `collect` and compared:
+
+```bash
+scripts/check-extracted-compile.sh /path/to/target-repo /path/to/site-out/html-multi/extracted-flat
+```
+
+The intended use is as a fallback: prefer `extract`'s output, and substitute the `extract-flat`
+file for the declarations whose readable version does not compile. See
+[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md) for its measured pass rate and its own failure modes.
+
 ## Options
 
 - `--root PREFIX`: root module prefix to expose (defaults to the first root library)
