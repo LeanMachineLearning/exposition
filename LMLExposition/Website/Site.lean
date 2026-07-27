@@ -900,6 +900,51 @@ private def mkModulePart (moduleInfo : ModuleInfo) (ctx : SiteContext) : Part Ma
     subParts := moduleInfo.decls.map (fun decl => mkDeclPart decl ctx)
   }
 
+/-- A chapter's modules as a dependency graph: one node per module, and an edge from a module to
+each module that uses something it declares.
+
+The aggregate a human actually named. A graph over every declaration is unreadable at library
+scale, but there are only tens of modules, and the question "in what order do I read this chapter"
+is one the module graph answers and no other view does. -/
+private def mkModuleGraphData (modules : Array ModuleInfo) (ctx : SiteContext) : GraphData :=
+  let paths : Std.HashSet String := modules.foldl (fun acc m => acc.insert m.path) {}
+  let nodes : Array GraphNode := modules.map fun modInfo =>
+    let sorried := (modInfo.decls.filter (·.dependsOnSorry)).size
+    let summary :=
+      if sorried == 0 then s!"{modInfo.decls.size} declarations, all proved"
+      else s!"{modInfo.decls.size} declarations; {sorried} depend on sorry"
+    -- Each label drops its own chapter prefix. On a chapter page every node shares it, so it is
+    -- pure width; across the project the chapter is already carried by the node's colour and by
+    -- the side panel, and the full paths are long enough to shrink the whole drawing.
+    let label :=
+      (modInfo.path.dropPrefix? s!"{modInfo.groupKey}.").map (·.toString) |>.getD modInfo.path
+    { id := modInfo.path
+      label := label
+      kind := "Module"
+      status := if sorried > 0 then "sorry" else "proved"
+      groupKey := modInfo.groupKey
+      moduleName := modInfo.path
+      href := s!"{groupHrefOf modInfo.groupKey}{moduleHrefOf modInfo.path}"
+      doc := summary }
+  let edges := modules.foldl (init := #[]) fun acc modInfo =>
+    let sources := modInfo.decls.foldl (init := ({} : Std.HashSet String)) fun acc decl =>
+      (graphDeps decl).foldl (init := acc) fun acc dep =>
+        match ctx.declByName.get? dep with
+        | some d => if d.modulePath != modInfo.path && paths.contains d.modulePath then
+            acc.insert d.modulePath
+          else acc
+        | none => acc
+    acc ++ sources.toArray.map fun src => { source := src, target := modInfo.path }
+  { nodes, edges, unit := "module" }
+
+/-- Drops the modules that take no part in any dependency, so a graph is not padded with isolated
+boxes. Returns the reduced graph and how many nodes were dropped. -/
+private def connectedOnly (graph : GraphData) : GraphData × Nat :=
+  let connected : Std.HashSet String :=
+    graph.edges.foldl (fun acc e => (acc.insert e.source).insert e.target) {}
+  let kept := graph.nodes.filter (connected.contains ·.id)
+  ({ graph with nodes := kept }, graph.nodes.size - kept.size)
+
 /-- Builds a chapter page that contains regular module pages. -/
 private def mkGroupPart (group : GroupInfo) (ctx : SiteContext) : Part Manual :=
   let title := humanizeWord group.key
@@ -914,14 +959,30 @@ private def mkGroupPart (group : GroupInfo) (ctx : SiteContext) : Part Manual :=
     -- Lists its modules itself rather than leaving that to Verso's automatic sub-page table of
     -- contents, which is switched off (see `renderConfig`) because on every other page it merely
     -- repeated a listing the page had already made.
-    content := #[
-      .para #[.text s!"Modules in the {title} slice are grouped from the first path component after the project root."],
-      .ul <| group.modules.map fun moduleInfo =>
-        Verso.Doc.ListItem.mk #[.para #[
-          .link #[.code moduleInfo.path] s!"{groupHrefOf group.key}{moduleHrefOf moduleInfo.path}",
-          .text s!"  {moduleInfo.decls.size} declarations"
-        ]]
-    ]
+    content := Id.run do
+      let mut blocks : Array (Block Manual) := #[
+        .para #[.text s!"Modules in the {title} slice are grouped from the first path component after the project root."],
+        .ul <| group.modules.map fun moduleInfo =>
+          Verso.Doc.ListItem.mk #[.para #[
+            .link #[.code moduleInfo.path] s!"{groupHrefOf group.key}{moduleHrefOf moduleInfo.path}",
+            .text s!"  {moduleInfo.decls.size} declarations"
+          ]]
+      ]
+      -- Only worth drawing when the modules actually depend on one another; a chapter whose
+      -- modules are independent would render as a single row of disconnected boxes.
+      -- Only the modules that take part. `Auxiliary` has 33 modules and 5 dependencies among
+      -- them, so drawing every node would bury the structure in 28 isolated boxes. The full list
+      -- is directly above; this is the part of it that has an order.
+      let (graph, omitted) :=
+        connectedOnly (transitiveReduce
+          (mkModuleGraphData group.modules ctx))
+      if !graph.edges.isEmpty then
+        blocks := blocks.push (.other (Block.sectionHeading "Module dependencies") #[])
+        if omitted > 0 then
+          blocks := blocks.push (.para #[.text s!"Showing the {graph.nodes.size} modules that \
+            depend on one another. The other {omitted} are independent of the rest of the chapter."])
+        blocks := blocks.push (.other (Block.graph graph) #[])
+      return blocks
     subParts := group.modules.map fun moduleInfo => mkModulePart moduleInfo ctx
   }
 
@@ -1045,6 +1106,40 @@ private def mkBrowsePart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
     subParts := #[]
   }
 
+/-- Builds the Modules page: the whole project's module dependency graph.
+
+The one aggregate view that survives at library scale. A graph over every declaration is a
+hairball — that page was removed — but a project has tens of modules, not thousands, and this is
+the only view that shows structure *across* chapters, where the interesting dependencies are: in
+`LeanMachineLearning` half the module dependencies cross a chapter boundary, and the per-chapter
+graphs cannot show any of them. -/
+private def mkModulesPart (groups : Array GroupInfo) (ctx : SiteContext) : Part Manual :=
+  let modules := groups.flatMap (·.modules)
+  let (graph, omitted) := connectedOnly (transitiveReduce (mkModuleGraphData modules ctx))
+  let intro : Array (Block Manual) := #[
+    .para #[.text s!"How the project's {modules.size} modules depend on one another. Colour marks \
+      the chapter, so the blocks of colour are the chapter structure and the edges between them \
+      are where it is crossed."],
+    .para #[.text "An edge means some declaration in the lower module uses something declared in \
+      the upper one. Edges implied by a longer path are not drawn."]
+  ]
+  let note : Array (Block Manual) :=
+    if omitted == 0 then #[]
+    else #[.para #[.text s!"Showing the {graph.nodes.size} modules that depend on one another; \
+      the other {omitted} are independent of the rest of the project."]]
+  {
+    title := #[.text "Modules"]
+    titleString := "Modules"
+    metadata := some {
+      file := some "modules"
+      shortTitle := some "Modules"
+      tag := some (.provided "modules")
+      number := false
+    }
+    content := intro ++ note ++ #[.other (Block.graph graph) #[]]
+    subParts := #[]
+  }
+
 /-- Builds the trust page: everything incomplete or resting on an unusual assumption. -/
 private def mkTrustPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manual :=
   Id.run do
@@ -1150,7 +1245,8 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
       ++ mkLandingBlocks decls ctx
       ++ mkDashboardBlocks groups
       ++ overviewBlocks
-    subParts := #[mkClaimsPart decls ctx, mkBrowsePart decls ctx, mkTrustPart decls ctx]
+    subParts := #[mkClaimsPart decls ctx, mkBrowsePart decls ctx, mkModulesPart groups ctx,
+        mkTrustPart decls ctx]
       ++ (groups.map fun group => mkGroupPart group ctx)
   }
 

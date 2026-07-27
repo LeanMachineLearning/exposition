@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const utilityLinks = [
     { slug: 'claims', label: 'Claims' },
     { slug: 'browse', label: 'Browse' },
+    { slug: 'modules', label: 'Modules' },
     { slug: 'trust', label: 'Trust' }
   ];
 

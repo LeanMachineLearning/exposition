@@ -196,6 +196,9 @@ deriving Repr, ToJson, FromJson
 structure GraphData where
   nodes : Array GraphNode
   edges : Array GraphEdge
+  /-- What a node stands for, singular. Used in the graph's own explanatory text, so that a graph
+  of modules does not describe itself as a graph of declarations. -/
+  unit : String := "declaration"
 deriving Repr, ToJson, FromJson
 
 /-- Fully collected metadata for one exposed declaration. -/

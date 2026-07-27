@@ -907,6 +907,9 @@ body.hide-theorems [data-decl-group="theorem"] {
 
 .graph-neighbor-list li { margin-bottom: .3rem; }
 
+/* Set by the graph script when the drawing is much wider than the column; see `graph.js`. */
+.graph-layout--wide { grid-template-columns: minmax(0, 1fr); }
+
 @media (max-width: 900px) {
   .graph-layout { grid-template-columns: 1fr; }
 }

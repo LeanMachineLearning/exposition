@@ -20,6 +20,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const allNodes = graph.nodes.map(n => ({ ...n }));
   const allEdges = graph.edges.map(e => ({ ...e }));
   const groups = [...new Set(allNodes.map(n => n.groupKey))].sort();
+  // What a node stands for. The same component draws declaration graphs and module graphs, and
+  // the explanatory text has to say which it is looking at.
+  const UNIT = graph.unit || 'declaration';
+  const UNITS = UNIT + 's';
+  const hasFocus = allNodes.some(n => n.focus);
 
   // ---------------------------------------------------------------- constants
 
@@ -62,23 +67,24 @@ document.addEventListener('DOMContentLoaded', () => {
   const groupOptions = groups.map(g => `<option value="${g}">${g}</option>`).join('');
   root.innerHTML = `
     <div class="graph-toolbar">
-      <input id="graph-filter" type="search" placeholder="Filter declarations by name or module" />
-      <select id="graph-group">
+      <input id="graph-filter" type="search" placeholder="Filter ${UNITS} by name" />
+      ${groups.length > 1 ? `<select id="graph-group">
         <option value="">All chapters</option>
         ${groupOptions}
-      </select>
+      </select>` : ''}
       <button id="graph-fit" type="button">Fit view</button>
       <button id="graph-clear" type="button">Clear focus</button>
     </div>
     <p class="graph-hint">Rows are dependency depth: the top row depends on nothing, and each
-      declaration sits one row below its bottom-most dependency. Arrows point from a dependency
+      ${UNIT} sits one row below its bottom-most dependency. Arrows point from a dependency
       down to what uses it. Edges implied by a longer path are not drawn, so what you see is the
       essential structure rather than every direct edge. Scroll to zoom, drag to pan, click a node
       to focus it, double-click to open its page.</p>
-    <p class="graph-legend">Colour marks the chapter; the filled node is the declaration this page
-      is about. An amber dashed outline means the declaration depends on <code>sorry</code>. A
+    <p class="graph-legend">${groups.length > 1 ? 'Colour marks the chapter. ' : ''}${hasFocus
+      ? 'The filled node is the declaration this page is about. '
+      : ''}An amber dashed outline marks something that depends on <code>sorry</code>. A
       violet dashed edge curving back upwards belongs to a dependency <em>cycle</em>: those
-      declarations refer to each other, so no ordering of rows can place both below everything they
+      ${UNITS} refer to each other, so no ordering of rows can place both below everything they
       depend on.</p>
     <div class="graph-layout">
       <svg id="graph-svg" width="100%" height="${VIEW_H}"></svg>
@@ -119,6 +125,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const measure = document.createElement('canvas').getContext('2d');
   measure.font = '600 12px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
   const widthOf = label => Math.max(64, Math.min(240, measure.measureText(label).width + 26));
+
+  // Height the drawing needs, and the scale it will actually be shown at. Both the viewport
+  // sizing and `fit` go through these so they cannot disagree.
+  const contentHeight = extent => extent.h + MARGIN.top + MARGIN.bottom + NODE_H;
+  const viewScale = extent => Math.min(2.2, 0.98 * Math.min(
+    width / Math.max(1, extent.w + MARGIN.left + MARGIN.right),
+    VIEW_H / Math.max(1, contentHeight(extent))));
 
   // ---------------------------------------------------------------- layout
 
@@ -257,6 +270,22 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
+    /* Cap the slack left by straightening. Each pass moves a node right to meet the median of its
+       neighbours and nothing ever pulls the row back, so the gaps compound: brownian-motion's 50
+       modules — widest row 19 — laid out 11,400px wide, several times what the boxes need, and the
+       drawing became unreadable. Closing any gap wider than this keeps the layout straight where
+       it can be and stops it growing where it cannot. */
+    const MAX_GAP = NODE_GAP * 4;
+    for (const row of rows) {
+      for (let i = 1; i < row.length; i++) {
+        const gap = (row[i].x - row[i].w / 2) - (row[i - 1].x + row[i - 1].w / 2);
+        if (gap > MAX_GAP) {
+          const shift = gap - MAX_GAP;
+          for (let j = i; j < row.length; j++) row[j].x -= shift;
+        }
+      }
+    }
+
     // Centre every row on the widest one and lift the whole drawing to the origin.
     let minX = Infinity, maxX = -Infinity;
     for (const row of rows) {
@@ -303,10 +332,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const { rows, routed, extent } = buildLayers(nodes, edges);
     // Height the drawing area to whatever the graph actually needs at the scale the width allows,
     // between a floor that keeps tiny graphs from looking cramped and the full viewport.
-    const widthScale = Math.min(2.2, 0.98 * width / Math.max(1, extent.w + MARGIN.left + MARGIN.right));
-    const needed = (extent.h + MARGIN.top + MARGIN.bottom) * widthScale;
-    viewH = Math.round(Math.max(260, Math.min(VIEW_H, needed)));
+    viewH = Math.round(Math.max(260, Math.min(VIEW_H, contentHeight(extent) * viewScale(extent) + 24)));
     svg.attr('height', viewH).attr('viewBox', [0, 0, width, viewH]);
+    /* A wide graph gets the full column, with the details panel below it rather than beside it.
+       A whole-project module graph is several times wider than it is tall, and surrendering a
+       fifth of the width to a mostly-empty panel is what pushes it from tight to illegible. */
+    const layout = root.querySelector('.graph-layout');
+    if (layout) layout.classList.toggle('graph-layout--wide', extent.w > 1600);
     state.rows = rows;
     state.routed = routed;
     state.byId = new Map(nodes.map(n => [n.id, n]));
@@ -435,7 +467,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!state.sel || !state.byId.has(state.sel)) {
       panel.innerHTML = `
         <h2>Graph</h2>
-        <p>${shown} declarations across ${rows} dependency ${rows === 1 ? 'row' : 'rows'}.</p>
+        <p>${shown} ${UNITS} across ${rows} dependency ${rows === 1 ? 'row' : 'rows'}.</p>
         <p>The top row depends on nothing. Click a node for its details.</p>`;
       return;
     }
@@ -468,9 +500,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const maxX = d3.max(cells, c => c.x + c.w / 2) + MARGIN.right;
     const minY = d3.min(cells, c => c.y) - MARGIN.top - NODE_H;
     const maxY = d3.max(cells, c => c.y) + MARGIN.bottom + NODE_H;
-    // Allow small graphs to scale up: a dozen nodes stranded at 60% in a 720px box reads as an
-    // afterthought rather than as the point of the page.
-    const scale = Math.min(2.2, 0.98 / Math.max((maxX - minX) / width, (maxY - minY) / viewH));
+    /* Fit the whole graph, and let the reader zoom for detail. Capping how far it may shrink was
+       tried and abandoned: it crops a wide graph to a corner, which is worse than a small but
+       complete picture of the structure — seeing the shape is the point of the page. */
+    const scale = Math.min(2.2, 0.98 * Math.min(width / (maxX - minX), viewH / (maxY - minY)));
     svg.transition().duration(200).call(
       zoom.transform,
       d3.zoomIdentity
@@ -496,7 +529,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   filterInput.addEventListener('input', e => { query = e.target.value.trim().toLowerCase(); apply(); });
-  groupSelect.addEventListener('change', e => { group = e.target.value; apply(); });
+  // The chapter filter is only rendered when there is more than one chapter to choose between.
+  if (groupSelect) groupSelect.addEventListener('change', e => { group = e.target.value; apply(); });
   document.getElementById('graph-fit').addEventListener('click', fit);
   document.getElementById('graph-clear').addEventListener('click', () => {
     state.sel = null; highlight(null); updatePanel();
