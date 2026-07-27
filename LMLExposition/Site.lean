@@ -23,6 +23,7 @@ open Manual
 namespace LMLExposition
 
 open Verso.Output Html
+open LeanDeps
 
 
 /-- Returns the ordering rank for a module, with a large fallback value. -/

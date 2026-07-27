@@ -113,6 +113,26 @@ they are not retried.
 - `--data PATH`: collected-data JSON file; written by `collect`, read by `extract` and
   `build-site`
 
+## Code Layout
+
+- `LeanDeps.lean` — the dependency analysis, as a **standalone library** (`lean_lib LeanDeps`)
+  that depends on Lean core only: no Lake, no Verso, no notion of a site or of an output format.
+  It answers, for every declaration of a project, which constants its type uses and which its type
+  and body use, looking through compiler-generated helpers (`_proof_N`, `match_N`, field defaults)
+  and recovering the dependencies an elaborated term drops (`Expr.proj` structures, notation
+  expansions, coercion instances). It also holds the graph passes that run on the result: reverse
+  edges, transitive closure in topological order, and `sorry` propagation. Entry points:
+  `LeanDeps.Context.of` / `Context.declDeps` / `declDepsOf`.
+- `LMLExposition/Collect.lean` — walks the environment and builds one `DeclInfo` per exposed
+  declaration (signature, docstring, source snippet, kind), delegating all dependency computation to
+  `LeanDeps` and deciding only which edges the exposition follows (`graphDeps`: type-only for
+  theorems).
+- `LMLExposition/Extract.lean` — the standalone `.lean` file extraction (see `KNOWN-ISSUES.md`).
+- `LMLExposition/Site.lean`, `Theme.lean`, `GraphJs.lean`, `TocJs.lean` — Verso page construction,
+  CSS/JS assets, and the CLI subcommands.
+- `Test/` — `#guard`-based unit tests (`lake build Test`), split the same way: `Test/Deps.lean`
+  covers `LeanDeps`, `Test/Collect.lean` and `Test/Extract.lean` cover this tool.
+
 ## CI: Prebuilt Binaries
 
 The `Publish Exposition Binary` workflow runs on pushes to `master`, on tags, and on manual dispatches. It builds the Linux `x86_64` binary, then calls `scripts/package-exposition-binary.sh` to produce a versioned archive under `dist/`:

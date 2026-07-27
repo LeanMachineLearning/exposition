@@ -30,6 +30,8 @@ open Lean Lean.Elab Lean.Elab.Command Lean.Parser
 
 namespace LMLExposition
 
+open LeanDeps
+
 /-! ## Classified commands -/
 
 /-- How a source command relates to the set of exposed declarations. -/

@@ -3,80 +3,26 @@ import LMLExposition.Collect
 /-!
 # Tests for `LMLExposition.Collect`
 
-This module audits the *pure* logic of `Collect.lean`, with an emphasis on the functions that
-build and propagate the dependency lists of a declaration:
+This module audits the *pure* logic of `Collect.lean`:
 
-* name classification feeding `shouldExpose` / dependency expansion
-  (`isPrefixWithDigitSuffix`, `isAuxComponent`, `isInternalName`, `hasPrefixName`);
-* the `Expr`-level constant collection those lists are built from
-  (`projStructureNames`, `exprUsedConstants`);
-* the dependency-graph passes that run on the collected `DeclInfo` array
-  (`topologicalClosure`, `attachReverseDeps`, `attachTransitiveDeps`, `attachDependsOnSorry`);
-* the small name/string helpers used to build hrefs and signatures.
+* the small name/string helpers used to build hrefs and signatures;
+* the dependency-graph passes as they apply to a collected `DeclInfo` array
+  (`attachReverseDeps`, `attachTransitiveDeps`, `attachDependsOnSorry`), i.e. the field plumbing
+  and the `graphDeps` edge choice — the passes themselves live in `LeanDeps` and are checked in
+  `Test/Deps.lean`, together with the rest of the dependency analysis;
+* the JSON round-trip of the collected data.
 
 Each check is a `#guard`, so any regression turns into a build error. Run with
 `lake build Test`.
 
-The functions that need a full `Environment` (`usedConstantsOf`, `expandThroughInternals`,
-`collectDecls`) are exercised separately/sparingly against a real project; they are not unit-tested
-here because constructing a synthetic `Environment` is impractical.
+`collectDecls` needs a full `Environment` and is exercised separately/sparingly against a real
+project; it is not unit-tested here because constructing a synthetic `Environment` is impractical.
 -/
 
 open Lean Std
 open LMLExposition
 
 namespace LMLExposition.Test
-
-/-! ## Name-classification helpers -/
-
--- `isPrefixWithDigitSuffix pfx s`: `pfx` then a non-empty run of digits.
-#guard isPrefixWithDigitSuffix "match_" "match_1"
-#guard isPrefixWithDigitSuffix "match_" "match_12"
-#guard !isPrefixWithDigitSuffix "match_" "match_"          -- empty suffix
-#guard !isPrefixWithDigitSuffix "match_" "match_x"         -- non-digit suffix
-#guard !isPrefixWithDigitSuffix "match_" "match_1a"        -- mixed suffix
-#guard !isPrefixWithDigitSuffix "match_" "prefix_1"        -- wrong prefix
-#guard isPrefixWithDigitSuffix "eq_" "eq_2"
-#guard isPrefixWithDigitSuffix "hcongr_" "hcongr_11"
-
--- `isAuxComponent`: a single name component that the compiler auto-generates.
-#guard isAuxComponent "_hyg"           -- underscore-led
-#guard isAuxComponent "_proof_3"
-#guard isAuxComponent "match_1"
-#guard isAuxComponent "eq_4"
-#guard isAuxComponent "eq_def"
-#guard isAuxComponent "eq_unfold"
-#guard isAuxComponent "hcongr_2"
-#guard !isAuxComponent "eq"            -- bare `eq` is a legitimate component
-#guard !isAuxComponent "matchup"       -- not the `match_<n>` pattern
-#guard !isAuxComponent "foo"
-
--- `isInternalName`: true if *any* component is auxiliary or a known compiler suffix.
-#guard isInternalName `Foo.match_1
-#guard isInternalName `Foo._proof_2
-#guard isInternalName `Foo.bar._hyg        -- internal in a non-leaf position
--- The recursor family, `casesOn`, and constructor companions like `injEq` are deliberately
--- *not* caught here: `shouldExpose` excludes them via environment metadata instead
--- (`isAuxRecursor`, `hasConstructorPrefix`, `ConstantInfo.recInfo`), since string-matching alone
--- can't distinguish them from a user declaration that happens to share the name.
-#guard !isInternalName `List.rec
-#guard !isInternalName `Foo.casesOn
-#guard !isInternalName `Foo.injEq
--- `mk` is *not* flagged syntactically: the real constructor is excluded via the environment
--- (`ctorInfo`) in `shouldExpose`, while a user `def Foo.mk` must remain exposed.
-#guard !isInternalName `Foo.mk
-#guard !isInternalName `Nat.add
-#guard !isInternalName `Foo.bar
-#guard !isInternalName `Foo.barRec        -- `rec` only matches as a whole component
-
--- `hasPrefixName n p`: `p` is `n` itself or one of its dotted ancestors (component-wise,
--- NOT a string prefix).
-#guard hasPrefixName `LML `LML
-#guard hasPrefixName `LML.Foo.Bar `LML
-#guard hasPrefixName `LML.Foo.Bar `LML.Foo
-#guard !hasPrefixName `LMLExtra.Foo `LML   -- must not match on a string prefix
-#guard !hasPrefixName `LML `LML.Foo        -- a descendant is not a prefix
-#guard !hasPrefixName `Other.LML `LML      -- prefix must be anchored at the root
 
 /-! ## Name / string helpers used for hrefs and signatures -/
 
@@ -113,23 +59,6 @@ namespace LMLExposition.Test
 #guard leanEditorUrl "https://x.io/LML/" `Foo.bar   -- trailing slash on the base is not doubled
   == "https://live.lean-lang.org/#url=https://x.io/LML/extracted/Foo___bar.lean"
 
--- `coercionSourceType?`: the type coerced *from* in a coercion-class application, seen through binders.
-#guard coercionSourceType? (mkApp2 (mkConst ``CoeFun) (mkConst ``Nat) (mkConst ``Nat)) == some `Nat
-#guard coercionSourceType?
-  (.forallE `x (mkConst ``Nat) (mkApp2 (mkConst ``CoeOut) (mkConst ``Int) (mkConst ``Int)) .default)
-  == some `Int
-#guard coercionSourceType? (mkConst ``Nat) == none   -- not a coercion-class application
-
--- `evalNameExpr?`: reconstruct the `Name` an `Expr` builds via `Name.anonymous`/`mkStr*`/`str`.
-#guard evalNameExpr? (mkConst ``Lean.Name.anonymous) == some Name.anonymous
-#guard evalNameExpr? (mkApp2 (mkConst ``Lean.Name.mkStr2) (mkStrLit "Foo") (mkStrLit "bar"))
-  == some `Foo.bar
-#guard evalNameExpr? (mkConst ``Nat.add) == none   -- not a name-building application
--- `collectEmbeddedNames` finds such names anywhere in the expression tree.
-#guard (collectEmbeddedNames
-  (mkApp (mkConst ``id) (mkApp2 (mkConst ``Lean.Name.mkStr2) (mkStrLit "A") (mkStrLit "b")))).contains
-  `A.b
-
 #guard slugify "Foo Bar" == "foo-bar"
 #guard slugify "Hello, World" == "hello-world"
 #guard slugify "  leading" == "leading"   -- leading separators are dropped
@@ -152,9 +81,11 @@ namespace LMLExposition.Test
 
 /-! ## Dependency-graph passes
 
-These run on an already-collected `Array DeclInfo`. We build small synthetic graphs and check the
-derived fields. `mkDecl` fills the structure with inert defaults so each test only specifies the
-fields that matter (`name`, `deps`, `typeDeps`, `kind`, `hasSorry`).
+These run on an already-collected `Array DeclInfo`, wrapping the graph passes of `LeanDeps`. What
+is checked here is the `DeclInfo` side: which field each pass writes, and which edges it follows
+(`graphDeps`: type-only for theorems). We build small synthetic graphs and check the derived
+fields. `mkDecl` fills the structure with inert defaults so each test only specifies the fields
+that matter (`name`, `deps`, `typeDeps`, `kind`, `hasSorry`).
 -/
 
 private def mkDecl (name : Name) (deps : Array Name := #[]) (typeDeps : Array Name := #[])
@@ -177,32 +108,6 @@ private def mkDecl (name : Name) (deps : Array Name := #[]) (typeDeps : Array Na
 /-- Look up one declaration's field after running a pass, for compact assertions. -/
 private def field {α : Type} (decls : Array DeclInfo) (name : Name) (f : DeclInfo → α) : Option α :=
   (decls.find? (·.name == name)).map f
-
-/-! ### `topologicalClosure` (depth-first post-order: every dependency before its users) -/
-
-private def diamond : HashMap Name (Array Name) :=
-  .ofList [(`A, #[`B, `C]), (`B, #[`D]), (`C, #[`D]), (`D, #[`E]), (`E, #[])]
-
--- Dependencies come out before the declarations that use them: `E` (deepest) first, the start
--- node `A` last. Each node appears exactly once.
-#guard topologicalClosure diamond #[`A] == #[`E, `D, `B, `C, `A]
-#guard topologicalClosure diamond #[`B, `C] == #[`E, `D, `B, `C]
-#guard topologicalClosure diamond #[`E] == #[`E]
-#guard topologicalClosure diamond #[] == (#[] : Array Name)
-
--- A cycle must terminate and visit each node exactly once.
-private def cyclic : HashMap Name (Array Name) :=
-  .ofList [(`A, #[`B]), (`B, #[`A])]
-#guard topologicalClosure cyclic #[`A] == #[`B, `A]
-
--- Unknown nodes are treated as leaves (no entry ⇒ no further deps).
-#guard topologicalClosure diamond #[`Z] == #[`Z]
-
--- The defining property: for the full ordering, every node precedes all nodes that depend on it.
--- Here `lib → util → core`, with an extra `app → lib`, so the order must be core, util, lib, app.
-private def layered : HashMap Name (Array Name) :=
-  .ofList [(`app, #[`lib]), (`lib, #[`util]), (`util, #[`core]), (`core, #[])]
-#guard topologicalClosure layered #[`app] == #[`core, `util, `lib, `app]
 
 /-! ### `attachReverseDeps` (`usedBy` = reverse of `deps`, restricted to exposed decls, sorted) -/
 
@@ -299,46 +204,6 @@ private def sorryViaExternal : Array DeclInfo := #[
   mkDecl `A (deps := #[`NotExposed])
 ]
 #guard field (attachDependsOnSorry sorryViaExternal) `A (·.dependsOnSorry) == some false
-
-/-! ## `Expr`-level constant collection
-
-`Expr.getUsedConstants` recurses *through* an `Expr.proj` node without ever reporting the
-structure name it carries, so a structure an elaborated term reaches only by projecting a field
-would be missing from the declaration's `deps`/`typeDeps`. `projStructureNames` recovers exactly
-those names and `exprUsedConstants` adds them to what core reports. See `projStructureNames` for
-why this is a guard rather than a fix for an observed failure — on real targets the recovered
-names are always upstream types, which the exposed-declaration filters drop regardless.
-
-Both are pure functions of an `Expr`, so — unlike `usedConstantsOf`, which needs an
-`Environment` — they can be checked here directly. -/
-
-private def natE : Expr := .const `Nat []
-private def zeroE : Expr := .const `Nat.zero []
-private def projA : Expr := .proj `A 0 (.bvar 0)
-
--- The gap being closed: core reports no constant at all for a projection of a bound variable.
-#guard Expr.getUsedConstants projA == (#[] : Array Name)
-#guard projStructureNames projA == #[`A]
-#guard exprUsedConstants projA == #[`A]
-
--- Projections are found under every structural node the walk descends into.
-#guard projStructureNames (.app projA (.proj `B 1 (.bvar 1))) == #[`A, `B]
-#guard projStructureNames (.lam `x natE projA .default) == #[`A]
-#guard projStructureNames (.forallE `x natE projA .default) == #[`A]
-#guard projStructureNames (.letE `x natE projA (.proj `B 0 (.bvar 0)) false) == #[`A, `B]
-#guard projStructureNames (.mdata {} projA) == #[`A]
-
--- Structurally identical subterms are walked once, so a shared projection is reported once...
-#guard projStructureNames (.app projA projA) == #[`A]
--- ...while two *different* projections of the same structure both report it (consumers dedup).
-#guard projStructureNames (.app projA (.proj `A 1 (.bvar 0))) == #[`A, `A]
-
--- With no projection anywhere, nothing is added and `exprUsedConstants` agrees with core.
-#guard projStructureNames (.app natE zeroE) == (#[] : Array Name)
-#guard exprUsedConstants (.app natE zeroE) == Expr.getUsedConstants (.app natE zeroE)
-
--- Ordinary constants and projected structures are both reported.
-#guard exprUsedConstants (.app zeroE projA) == #[`Nat.zero, `A]
 
 /-! ## JSON round-trip for collected data
 

@@ -1,0 +1,604 @@
+import Lean
+import Lean.Meta.Instances
+import Lean.Util.Sorry
+
+/-!
+# Dependency analysis for the declarations of a Lean project
+
+Computes, for every declaration of a project, which constants its *type* uses (`DeclDeps.typeDeps`)
+and which its type *and* body use (`DeclDeps.deps`), plus the graph-level passes that run on the
+result: reverse edges, transitive closure in topological order, and propagation of `sorry`.
+
+This module depends on Lean core only — no Lake, no document format, no notion of a "project
+directory" or of output — so it can be reused by any tool that needs to know what a declaration
+rests on.
+
+## Why not just `Expr.getUsedConstants`?
+
+The elaborated type and value of a declaration under-report what its *source* needs, in four ways
+this module compensates for:
+
+* **compiler-generated helpers** (`_proof_N`, `match_N`, structure field defaults, well-founded
+  recursion helpers) are constants of the project itself, but nobody wrote them; stopping at such a
+  name hides what it in turn depends on. `expandThroughInternals` recurses through them, and only
+  through them.
+* **`Expr.proj` nodes**: `Expr.foldConsts` walks *through* a projection without ever offering the
+  structure name it carries. `projStructureNames` recovers those names.
+* **notation**: a notation's macro stores the constants it expands to as pre-resolved `Name` *data*
+  inside embedded `Syntax`, invisible to a constant walk. `notationExpansionDeps` reconstructs them.
+* **coercions**: an elaborated term keeps only the underlying `@[coe]` function and drops the
+  instance, yet the instance is what makes the source's `↑`/`⇑` elaborate.
+  `coercionInstancesByType` recovers it.
+
+## Entry points
+
+`Context.of env rootPrefix` computes the project-wide tables once; `Context.declDeps` then answers
+per declaration, threading a memo cache. `declDepsOf` wraps both for the common
+"give me everything" case.
+
+The graph passes (`reverseDeps`, `transitiveDeps`, `taintedClosure`) are deliberately stated over
+plain `Name`-keyed maps rather than over any declaration record, so a caller can decide which edges
+count (e.g. type-only edges for theorems) before running them.
+-/
+
+open Lean
+open Lean.Meta
+
+namespace LeanDeps
+
+/-! ## Name classification
+
+Which constants are the project's own user-written declarations, and which are compiler output.
+This is what bounds the analysis: helper constants are expanded *through* (their dependencies are
+pulled in instead of the helper), and everything outside the project is left alone.
+-/
+
+/-- True if `s` is `pfx` followed by a non-empty sequence of digits, the naming convention used
+by the compiler for auto-generated declarations like `match_1`, `eq_2`, `hcongr_11`. -/
+def isPrefixWithDigitSuffix (pfx s : String) : Bool :=
+  s.startsWith pfx &&
+    let rest := s.drop pfx.length
+    !rest.isEmpty && rest.toString.toList.all Char.isDigit
+
+/-- True if `s` is a single name component the compiler generates: anything underscore-led
+(`_hyg`, `_proof_3`, `_private`, ...), a `match_<n>`/`eq_<n>`/`hcongr_<n>` helper, or the
+equation-lemma names `eq_def`/`eq_unfold`. -/
+def isAuxComponent (s : String) : Bool :=
+  s.startsWith "_"
+    || isPrefixWithDigitSuffix "match_" s
+    || isPrefixWithDigitSuffix "eq_" s || s == "eq_def" || s == "eq_unfold"
+    || isPrefixWithDigitSuffix "hcongr_" s
+
+/-- Auto-generated companion names that Lean exposes *no* dedicated environment predicate for, so
+they can only be recognized by their (stable) spelling. A name *any* of whose components matches is
+treated as internal, matched at every component (not just the last) so helpers nested under an
+already-internal name (e.g. `Foo.match_1.eq_1`) are caught too.
+
+This list is deliberately the residual left after `shouldExpose` first consults everything Lean
+*does* know directly:
+* the recursor family (`rec`, `recOn`, `casesOn`, `brecOn`, `below`, `binductionOn`, ...) →
+  `ConstantInfo.recInfo` and `isAuxRecursor`;
+* `noConfusion` → `isNoConfusion` (note: its `noConfusionType` sibling is *not* covered by that
+  predicate, hence it remains here);
+* constructor companions (`mk.inj`, `mk.injEq`, `mk.sizeOf_spec`, ...) → `hasConstructorPrefix`,
+  which keys on `ctorInfo` rather than on the string `mk`, so a user declaration named `Foo.mk`
+  (a structure whose real constructor was renamed to free up `mk`) or a legitimate theorem such as
+  `Kernel.prodMkLeft_inj` is never mistaken for compiler output.
+
+What is left here are companions Lean attaches to *ordinary* declarations (not just constructors)
+or to types without flagging them: `congr_simp` (added to defs and inductives alike), the `@[ext]`
+lemma `ext_iff`, the induction principle `ind`, the constructor-index helper `ctorIdx`, and
+`noConfusionType`.
+
+`noConfusionType`, `ctorIdx`, and `congr_simp` were each observed leaking on a Mathlib-backed test
+project when removed. `ind` and `ext_iff` were *not* exercised by that project (no Prop inductive's
+`.ind` nor any `@[ext]` structure surfaced one), but they are standard generated companions and are
+kept here so the analysis stays correct on projects that do use them. -/
+def internalComponentNames : List String :=
+  ["noConfusionType", "ind", "ctorIdx", "ext_iff", "congr_simp"]
+
+/-- True if any component of `name` is an auxiliary component (`isAuxComponent`) or one of the
+compiler's auto-generated companion names (`internalComponentNames`). -/
+partial def isInternalName : Name → Bool
+  | .anonymous => false
+  | .num p _ => isInternalName p
+  | .str p s =>
+      isAuxComponent s
+      || s ∈ internalComponentNames
+      || isInternalName p
+
+/-- True when some strict prefix of `name` is the name of a constructor in `env`, i.e. `name` lives
+inside a constructor's namespace. Everything Lean places there (`S.mk.inj`, `S.mk.injEq`,
+`S.mk.sizeOf_spec`, ...) is auto-generated and should be hidden.
+
+This keys on the environment's `ctorInfo` rather than on the spelling of the prefix, so it hides
+these companions for *any* constructor name (`mk`, a custom `intro`, ...) while leaving a user
+declaration that merely happens to be named like a constructor (its prefix is not a `ctorInfo`)
+untouched. -/
+partial def hasConstructorPrefix (env : Environment) (name : Name) : Bool :=
+  go name.getPrefix
+where
+  go : Name → Bool
+    | .anonymous => false
+    | n =>
+      (match env.find? n with
+       | some (.ctorInfo _) => true
+       | _ => false)
+      || go n.getPrefix
+
+/-- True if `prefixName` is `n` itself or one of its dotted ancestors. This is a *component-wise*
+test, not a string prefix: the name `LMLExtra.Foo` does *not* have prefix `LML`. -/
+def hasPrefixName (n prefixName : Name) : Bool :=
+  n == prefixName || match n with
+    | .str p _ => hasPrefixName p prefixName
+    | .num p _ => hasPrefixName p prefixName
+    | .anonymous => false
+
+/-- The module `name` was declared in, if `env` records one (declarations added to the current
+module, rather than imported, have no module index). -/
+def moduleNameOf (env : Environment) (name : Name) : Option Name := do
+  let idx ← env.getModuleIdxFor? name
+  env.header.moduleNames[idx.toNat]?
+
+/-- True if `name` is defined in a project module (one whose name has `rootPrefix` as a prefix).
+This is keyed on the declaration's *module*, not its name: a project's declaration names need not
+share the root module prefix (e.g. module `LeanMachineLearning.…` declaring `Bandits.foo`). -/
+def isProjectLocalConst (env : Environment) (rootPrefix : Name) (name : Name) : Bool :=
+  (moduleNameOf env name).any (hasPrefixName · rootPrefix)
+
+/-- Decides whether a declaration is one the project's author actually wrote, as opposed to
+compiler output (recursors, projections, constructor companions, hygienic helpers, ...) or a
+declaration from outside the project. This is both the set a consumer would display and the
+boundary at which dependency expansion stops (see `expandThroughInternals`). -/
+def shouldExpose (env : Environment) (rootPrefix : Name) (name : Name) (info : ConstantInfo) : Bool :=
+  if let some moduleName := moduleNameOf env name then
+    if !hasPrefixName moduleName rootPrefix then
+      false
+    else if env.isProjectionFn name then
+      false
+    else if isInternalName name || name.isInternal || name.isImplementationDetail then
+      false
+    else if isAuxRecursor env name || isNoConfusion env name then
+      false
+    else if hasConstructorPrefix env name then
+      false
+    else match info with
+      | .ctorInfo _ | .recInfo _ | .quotInfo _ => false
+      | _ => true
+  else if env.isProjectionFn name then
+    false
+  else
+    false
+
+/-- All constants belonging to modules whose name has `rootPrefix`, paired with their module
+name, gathered directly from `env.header.moduleData` so that the (typically much larger) set of
+constants from imported libraries is never iterated. -/
+def projectConstants (env : Environment) (rootPrefix : Name) : Array (Name × Name × ConstantInfo) :=
+  (Array.range env.header.modules.size).foldl (fun acc idx =>
+    let modName := env.header.modules[idx]!.module
+    if hasPrefixName modName rootPrefix then
+      let data := env.header.moduleData[idx]!
+      (Array.zip data.constNames data.constants).foldl
+        (fun acc2 (cname, cinfo) => acc2.push (cname, modName, cinfo)) acc
+    else acc) #[]
+
+/-! ## Constants used by an expression -/
+
+/-- Every structure name carried by an `Expr.proj` node inside `e`, in traversal order and
+possibly with repeats (all consumers dedup).
+
+`Expr.getUsedConstants` does *not* report these: its underlying `Expr.foldConsts` recurses through
+a `.proj S i b` node into `b` without ever offering `S`. So a structure that an elaborated term
+reaches only by projecting one of its fields — never by naming it — is absent from the constant
+list, and would be absent from a declaration's `deps`/`typeDeps`.
+
+This is a correctness guard, not a fix for an observed failure. Surface-level field access
+(`x.field`) elaborates to an application of the projection *function* (`S.field x`), which
+`getUsedConstants` reports normally; bare `.proj` nodes come from the compiler's own recursion
+machinery (`brecOn`, `._f`, `.wf._unary._proof_n`) and from upstream `Equiv`/`Subtype`-style
+bundled structures. Scanning the 438950-constant environment of a Mathlib-backed target found 14
+distinct names lost this way — `PProd`, `WellFoundedRelation`, `Equiv`, `Subtype`, `Zero`, ... —
+and **none** of them was a declaration of the target project itself. Such names are dropped
+anyway by consumers that keep only the project's own declarations, so recovering them changes no
+output today; they are simply the correct input to those filters if a project ever does elaborate
+a `.proj` of one of its own structures.
+
+The walk memoizes on the `Expr` nodes themselves so heavily-shared proof terms are not re-walked:
+`Hashable Expr` is the hash cached in the expression header and `BEq Expr` is the native
+`Expr.eqv`, so both are cheap. It is still ~3x the cost of core's `foldConsts` (which memoizes on
+a pointer set from unsafe code); that is immaterial here because only the target project's own
+constants are ever walked. -/
+partial def projStructureNames (e : Expr) : Array Name :=
+  (go e (#[], {})).1
+where
+  go (e : Expr) (st : Array Name × Std.HashSet Expr) : Array Name × Std.HashSet Expr :=
+    let (acc, seen) := st
+    if seen.contains e then
+      st
+    else
+      let seen := seen.insert e
+      match e with
+      | .app f a => go a (go f (acc, seen))
+      | .lam _ t b _ => go b (go t (acc, seen))
+      | .forallE _ t b _ => go b (go t (acc, seen))
+      | .letE _ t v b _ => go b (go v (go t (acc, seen)))
+      | .mdata _ b => go b (acc, seen)
+      | .proj s _ b => go b (acc.push s, seen)
+      | _ => (acc, seen)
+
+/-- Like `Expr.getUsedConstants`, but also reports the structure name of every `Expr.proj` node
+(see `projStructureNames` for why that name would otherwise be lost). -/
+def exprUsedConstants (e : Expr) : Array Name :=
+  e.getUsedConstants ++ projStructureNames e
+
+/-- One-level "used constants" for a declaration's type (and, if `includeValue`, also its
+value/body), handling inductive constructor types and structure field-default functions: for
+inductives/structures, `info.type` alone does not mention constructor field types, so those are
+pulled in from the constructors' types and (for structures) field-default functions. -/
+def usedConstantsOf (env : Environment) (name : Name) (info : ConstantInfo)
+    (includeValue : Bool) : Array Name :=
+  let typeUsed :=
+    match info with
+    | .inductInfo val =>
+      val.ctors.foldl (fun acc ctorName =>
+        match env.find? ctorName with
+        | some ctorInfo => acc ++ exprUsedConstants ctorInfo.type
+        | none => acc) (exprUsedConstants info.type)
+    | _ => exprUsedConstants info.type
+  if !includeValue then
+    typeUsed
+  else
+    let valueUsed :=
+      match info with
+      | .defnInfo val => exprUsedConstants val.value
+      | .thmInfo val => exprUsedConstants val.value
+      | .inductInfo _ =>
+        if (getStructureInfo? env name).isNone then
+          #[]
+        else
+          (getStructureFields env name).foldl (fun acc fieldName =>
+            match getDefaultFnForField? env name fieldName with
+            | some defaultFn =>
+              match env.find? defaultFn >>= ConstantInfo.value? with
+              | some value => acc ++ exprUsedConstants value
+              | none => acc
+            | none => acc) #[]
+      | _ => #[]
+    typeUsed ++ valueUsed
+
+/-! ## Dependencies the elaborated term does not mention: notation -/
+
+/-- The `String` a string-literal `Expr` holds, if `e` is one. -/
+private def exprStrLit? (e : Expr) : Option String :=
+  match e with
+  | .lit (.strVal s) => some s
+  | _ => none
+
+/-- Reconstructs the `Name` value that `e` builds, if `e` is a `Name.anonymous`/`Name.str`/
+`Name.mkStr1..4` application. Notation and macro definitions store the constants they expand to as
+pre-resolved `Name` *data* built this way (inside the embedded `Syntax`), so these references are
+invisible to `Expr.getUsedConstants`; reconstructing them is how we recover the dependency. -/
+partial def evalNameExpr? (e : Expr) : Option Name := do
+  match e.getAppFnArgs with
+  | (``Lean.Name.anonymous, _) => some .anonymous
+  | (``Lean.Name.mkStr1, #[a]) => some (.str .anonymous (← exprStrLit? a))
+  | (``Lean.Name.mkStr2, #[a, b]) =>
+    some (.str (.str .anonymous (← exprStrLit? a)) (← exprStrLit? b))
+  | (``Lean.Name.mkStr3, #[a, b, c]) =>
+    some (.str (.str (.str .anonymous (← exprStrLit? a)) (← exprStrLit? b)) (← exprStrLit? c))
+  | (``Lean.Name.mkStr4, #[a, b, c, d]) =>
+    some (.str (.str (.str (.str .anonymous (← exprStrLit? a)) (← exprStrLit? b)) (← exprStrLit? c))
+      (← exprStrLit? d))
+  | (``Lean.Name.str, #[p, s]) => some (.str (← evalNameExpr? p) (← exprStrLit? s))
+  | _ => none
+
+/-- Every `Name` value embedded anywhere in `e` (reconstructed via `evalNameExpr?`). -/
+partial def collectEmbeddedNames (e : Expr) : Array Name := Id.run do
+  let mut acc : Array Name := #[]
+  if let some n := evalNameExpr? e then acc := acc.push n
+  match e with
+  | .app f a => return acc ++ collectEmbeddedNames f ++ collectEmbeddedNames a
+  | .lam _ t b _ => return acc ++ collectEmbeddedNames t ++ collectEmbeddedNames b
+  | .forallE _ t b _ => return acc ++ collectEmbeddedNames t ++ collectEmbeddedNames b
+  | .letE _ t v b _ =>
+    return acc ++ collectEmbeddedNames t ++ collectEmbeddedNames v ++ collectEmbeddedNames b
+  | .mdata _ b => return acc ++ collectEmbeddedNames b
+  | .proj _ _ b => return acc ++ collectEmbeddedNames b
+  | _ => return acc
+
+/-- True if `n` names a notation/syntax parser (its type is `Lean.ParserDescr`/`TrailingParserDescr`). -/
+def isNotationKind (env : Environment) (n : Name) : Bool :=
+  match env.find? n with
+  | some info => info.type.isConstOf ``Lean.ParserDescr || info.type.isConstOf ``Lean.TrailingParserDescr
+  | none => false
+
+/-- Maps each notation parser to the constants its expansion references. A notation's macro definition
+embeds both its own parser kind and the constant(s) it abbreviates as pre-resolved `Name` data (see
+`evalNameExpr?`). Scanning the project's definitions, any whose body embeds a notation kind `K`
+contributes its other embedded (real) constants as dependencies of `K` — so a standalone rendering
+of `K` inlines what it stands for instead of failing with `unknown constant`. -/
+def notationExpansionDeps (env : Environment) (projectConsts : Array (Name × Name × ConstantInfo)) :
+    Std.HashMap Name (Array Name) := Id.run do
+  let mut m : Std.HashMap Name (Array Name) := {}
+  for (_, _, cinfo) in projectConsts do
+    if let .defnInfo v := cinfo then
+      let names := (collectEmbeddedNames v.value).filter (env.contains ·)
+      let kinds := names.filter (isNotationKind env ·)
+      unless kinds.isEmpty do
+        let realDeps := names.filter (!isNotationKind env ·)
+        for k in kinds do
+          m := m.insert k ((m.getD k #[]) ++ realDeps)
+  return m
+
+/-! ## Dependencies the elaborated term does not mention: coercions -/
+
+/-- Coercion type classes whose instances Lean unfolds at use sites: an elaborated term keeps only
+the underlying `@[coe]` function, never the instance, so a coercion's dependency on its instance is
+invisible to `getUsedConstants`. The instance must still be replayed for the source's `↑`/`⇑` to
+elaborate. -/
+def coercionClasses : List Name :=
+  [``CoeFun, ``CoeSort, ``Coe, ``CoeTC, ``CoeHead, ``CoeTail, ``CoeHTCT, ``CoeOut, ``CoeDep]
+
+/-- If `type` is, under its binders, a coercion-class application `Cls Src …`, the head constant of
+`Src` (the type coerced *from*). -/
+partial def coercionSourceType? (type : Expr) : Option Name :=
+  match type with
+  | .forallE _ _ b _ => coercionSourceType? b
+  | _ =>
+    let (fn, args) := type.getAppFnArgs
+    if coercionClasses.contains fn && args.size ≥ 1 then args[0]!.getAppFn.constName?
+    else none
+
+/-- Maps a type's head constant to the exposed coercion instances coercing *from* it. A declaration
+mentioning such a type needs these instances replayed so its source coercions still elaborate (the
+instances themselves never appear in the elaborated term; see `coercionClasses`). -/
+def coercionInstancesByType (env : Environment) (exposed : Std.HashSet Name)
+    (projectConsts : Array (Name × Name × ConstantInfo)) : Std.HashMap Name (Array Name) := Id.run do
+  let mut m : Std.HashMap Name (Array Name) := {}
+  for (cname, _, cinfo) in projectConsts do
+    if exposed.contains cname && Lean.Meta.isInstanceCore env cname then
+      if let some src := coercionSourceType? cinfo.type then
+        m := m.insert src ((m.getD src #[]).push cname)
+  return m
+
+/-! ## Expansion through compiler-generated helpers -/
+
+/-- Memo table for the one-level expansion of internal helpers, shared across the declarations of
+one run (see `expandThroughInternals`). -/
+abbrev Cache := Std.HashMap Name (Array Name)
+
+/-- Expands `start` by following constants that are project-local (share `rootPrefix`) but are
+not themselves exposed declarations — i.e. compiler-generated helpers such as `_proof_N`,
+`match_..`, or structure field-default functions — recursively pulling in whatever *they* depend
+on instead of stopping at their (uninformative) name. Exposed declarations and external
+(non-project) constants are kept as-is without further expansion.
+
+This mirrors the recursive dependency-collection idea from
+https://github.com/mattrobball/lean-informal/blob/main/Informal/Deps.lean, bounded to the
+project's own constants so it doesn't walk into upstream library internals. `cache` memoizes the
+one-level expansion of internal helpers across declarations. -/
+partial def expandThroughInternals (env : Environment) (rootPrefix : Name)
+    (exposed : Std.HashSet Name) (cache : Cache) (start : Array Name) : Array Name × Cache :=
+  go cache {} #[] start.toList
+where
+  go (cache : Cache) (visited : Std.HashSet Name) (acc : Array Name) :
+      List Name → Array Name × Cache
+    | [] => (acc, cache)
+    | n :: rest =>
+      if visited.contains n then
+        go cache visited acc rest
+      else
+        let visited := visited.insert n
+        let isInternalHelper := !exposed.contains n && isProjectLocalConst env rootPrefix n
+        if !isInternalHelper then
+          go cache visited (acc.push n) rest
+        else
+          match cache.get? n with
+          | some deps => go cache visited acc (rest ++ deps.toList)
+          | none =>
+            match env.find? n with
+            | none => go cache visited acc rest
+            | some info =>
+              let deps := usedConstantsOf env n info true
+              go (cache.insert n deps) visited acc (rest ++ deps.toList)
+
+/-! ## `sorry` detection -/
+
+/-- True if a `sorryAx` occurs directly in the declaration's own type or value. -/
+def hasSorryIn (info : ConstantInfo) : Bool :=
+  info.type.hasSorry || info.value?.any Expr.hasSorry
+
+/-- True if `name` is incomplete because of a `sorry`, looking *through* project-local
+compiler-generated helpers (`_proof_N`, `match_..`, field defaults, ...) the same way
+`expandThroughInternals` surfaces hidden dependencies. A direct `sorryAx` in the declaration's own
+type/value, or in any such helper it transitively reaches, counts.
+
+Exposed declarations and external (non-project) constants are *not* followed: a `sorry` reachable
+only through an exposed declaration is surfaced separately, at the graph level, by `taintedClosure`,
+and upstream library constants are assumed sorry-free. This closes the gap where `hasSorryIn` alone
+would miss a `sorry` that the elaborator lifted into an auxiliary `_proof_N` lemma. -/
+partial def usesSorryThroughInternals (env : Environment) (rootPrefix : Name)
+    (exposed : Std.HashSet Name) (name : Name) (info : ConstantInfo) : Bool :=
+  hasSorryIn info || go {} (usedConstantsOf env name info true).toList
+where
+  go (visited : Std.HashSet Name) : List Name → Bool
+    | [] => false
+    | n :: rest =>
+      if visited.contains n then
+        go visited rest
+      else
+        let visited := visited.insert n
+        let isInternalHelper := !exposed.contains n && isProjectLocalConst env rootPrefix n
+        if !isInternalHelper then
+          go visited rest
+        else match env.find? n with
+          | none => go visited rest
+          | some info' =>
+            if hasSorryIn info' then
+              true
+            else
+              go visited (rest ++ (usedConstantsOf env n info' true).toList)
+
+/-! ## Per-declaration dependencies -/
+
+/-- What the analysis knows about one declaration. -/
+structure DeclDeps where
+  /-- Constants used by the declaration's *type*, expanded through compiler-generated helpers and
+  deduplicated. Never contains the declaration itself. -/
+  typeDeps : Array Name
+  /-- Constants used by the declaration's type *and* its value/body (plus, for a notation, what its
+  expansion references), expanded and deduplicated the same way. Never contains the declaration
+  itself. -/
+  deps : Array Name
+  /-- True if the declaration is itself incomplete because of a `sorry`, including one hidden in a
+  compiler-generated helper. Dependence on *another* declaration's `sorry` is a graph-level fact;
+  see `taintedClosure`. -/
+  hasSorry : Bool
+deriving Repr, Inhabited
+
+/-- The project-wide tables the per-declaration analysis needs, computed once by `Context.of` and
+reused for every declaration. -/
+structure Context where
+  env : Environment
+  /-- Root module prefix delimiting the project: a constant counts as project-local when the module
+  declaring it has this prefix (see `isProjectLocalConst`). -/
+  rootPrefix : Name
+  /-- Every constant declared by a project module, as `(name, module, info)`. -/
+  constants : Array (Name × Name × ConstantInfo)
+  /-- The project's user-written declarations (`shouldExpose`); expansion stops at these. -/
+  exposed : Std.HashSet Name
+  /-- Notation kind ↦ constants its expansion references (`notationExpansionDeps`). -/
+  notationDeps : Std.HashMap Name (Array Name)
+  /-- Type head constant ↦ coercion instances coercing from it (`coercionInstancesByType`). -/
+  coercionInstances : Std.HashMap Name (Array Name)
+
+/-- Scans `env` for the project rooted at `rootPrefix` and builds the tables `Context.declDeps`
+needs. Does the whole-environment work once, so a caller analysing many declarations should build
+this a single time. -/
+def Context.of (env : Environment) (rootPrefix : Name) : Context :=
+  let constants := projectConstants env rootPrefix
+  let exposed : Std.HashSet Name :=
+    constants.foldl (fun acc (name, _, info) =>
+      if shouldExpose env rootPrefix name info then acc.insert name else acc) {}
+  { env := env
+    rootPrefix := rootPrefix
+    constants := constants
+    exposed := exposed
+    notationDeps := notationExpansionDeps env constants
+    coercionInstances := coercionInstancesByType env exposed constants }
+
+/-- The dependencies of the single declaration `name` (whose `ConstantInfo` is `info`), threading
+the memo `cache` used by `expandThroughInternals`; the updated cache is returned alongside and
+should be passed to the next call. -/
+def Context.declDeps (ctx : Context) (cache : Cache) (name : Name) (info : ConstantInfo) :
+    DeclDeps × Cache :=
+  -- Adds, for every referenced type with coercion instances, those instances (see `coercionClasses`).
+  let addCoercionInsts (cs : Array Name) : Array Name :=
+    cs ++ cs.foldl (fun acc c => acc ++ ctx.coercionInstances.getD c #[]) #[]
+  let typeUsedConstants := addCoercionInsts (usedConstantsOf ctx.env name info false)
+  -- When this declaration *is* a notation, also depend on the constants it expands to (which are
+  -- stored as `Name` data inside its macro and so invisible to `getUsedConstants`); see
+  -- `notationExpansionDeps`. The reverse direction (a declaration whose *source* uses a notation)
+  -- is syntactic, and so is left to callers that have the source syntax at hand.
+  let allUsedConstants :=
+    addCoercionInsts (usedConstantsOf ctx.env name info true ++ ctx.notationDeps.getD name #[])
+  let (typeExpanded, cache) :=
+    expandThroughInternals ctx.env ctx.rootPrefix ctx.exposed cache typeUsedConstants
+  let (allExpanded, cache) :=
+    expandThroughInternals ctx.env ctx.rootPrefix ctx.exposed cache allUsedConstants
+  let dedup (cs : Array Name) : Array Name :=
+    cs.foldl (fun acc dep => if dep != name && !acc.contains dep then acc.push dep else acc) #[]
+  ({ typeDeps := dedup typeExpanded
+     deps := dedup allExpanded
+     hasSorry := usesSorryThroughInternals ctx.env ctx.rootPrefix ctx.exposed name info },
+   cache)
+
+/-- The dependencies of every exposed declaration of the project, in environment order, sharing one
+expansion cache. -/
+def Context.allDeclDeps (ctx : Context) : Array (Name × DeclDeps) := Id.run do
+  let mut cache : Cache := {}
+  let mut out : Array (Name × DeclDeps) := #[]
+  for (name, _, info) in ctx.constants do
+    if ctx.exposed.contains name then
+      let (deps, cache') := ctx.declDeps cache name info
+      cache := cache'
+      out := out.push (name, deps)
+  return out
+
+/-- One-shot entry point: the dependencies of every declaration the project rooted at `rootPrefix`
+declares itself. -/
+def declDepsOf (env : Environment) (rootPrefix : Name) : Array (Name × DeclDeps) :=
+  (Context.of env rootPrefix).allDeclDeps
+
+/-! ## Graph passes
+
+These operate on the dependency graph alone — an `Array (Name × Array Name)` of edges, or the same
+data as a `Std.HashMap` — so the caller chooses which edges count. A consumer that treats a
+theorem's proof as opaque, for instance, feeds `typeDeps` for theorems and `deps` for everything
+else, and every pass then agrees on that choice.
+-/
+
+/-- Reverses the edges of `nodes`, keeping only edges whose target is itself one of the `nodes`
+(a dependency on something outside the graph — an upstream library constant — has no reverse edge
+to record). Each entry lists its users in the order they appear in `nodes`. -/
+def reverseDeps (nodes : Array (Name × Array Name)) : Std.HashMap Name (Array Name) :=
+  let known : Std.HashSet Name := nodes.foldl (fun s (n, _) => s.insert n) {}
+  nodes.foldl
+    (fun acc (name, deps) =>
+      deps.foldl
+        (fun inner dep =>
+          if known.contains dep then
+            inner.insert dep ((inner.getD dep #[]).push name)
+          else
+            inner)
+        acc)
+    {}
+
+/-- Computes the declarations reachable from `start` via `depsMap`, in *topological* order: every
+declaration appears after all of the declarations it depends on (a depth-first post-order). This is
+the order in which the declarations could be emitted into a single self-contained Lean file, with
+each definition preceding its first use.
+
+Cycles (e.g. mutual recursion) are tolerated: a node is marked visited on entry, so the walk
+terminates, and the members of a cycle come out in some arbitrary but otherwise dependency-respecting
+order. -/
+partial def topologicalClosure (depsMap : Std.HashMap Name (Array Name)) (start : Array Name) :
+    Array Name :=
+  (start.foldl (fun (acc : Std.HashSet Name × Array Name) n => visit acc.1 acc.2 n) ({}, #[])).2
+where
+  visit (visited : Std.HashSet Name) (order : Array Name) (n : Name) :
+      Std.HashSet Name × Array Name :=
+    if visited.contains n then
+      (visited, order)
+    else
+      -- Mark `n` before recursing so a dependency cycle cannot loop forever.
+      let visited := visited.insert n
+      let (visited, order) :=
+        (depsMap.getD n #[]).foldl
+          (fun (acc : Std.HashSet Name × Array Name) d => visit acc.1 acc.2 d) (visited, order)
+      -- Emit `n` only after all of its dependencies have been emitted.
+      (visited, order.push n)
+
+/-- The transitive closure of `name`'s dependencies, topologically ordered (every dependency before
+the declarations that use it) and excluding `name` itself, so it is directly usable as the body of
+a minimal standalone file for `name`. -/
+def transitiveDeps (depsMap : Std.HashMap Name (Array Name)) (name : Name) : Array Name :=
+  (topologicalClosure depsMap (depsMap.getD name #[])).filter (· != name)
+
+/-- Propagates a property *upwards* along dependency edges: the result is `seeds` plus every node of
+`nodes` one of whose dependencies is in the set, iterated to a fixed point. Used to mark the
+declarations that transitively rest on a `sorry`. -/
+def taintedClosure (nodes : Array (Name × Array Name)) (seeds : Std.HashSet Name) :
+    Std.HashSet Name := Id.run do
+  let mut marked := seeds
+  let mut changed := true
+  while changed do
+    changed := false
+    for (name, deps) in nodes do
+      if !marked.contains name then
+        if deps.any (marked.contains ·) then
+          marked := marked.insert name
+          changed := true
+  return marked
+
+end LeanDeps
