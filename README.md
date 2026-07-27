@@ -92,6 +92,11 @@ scripts/check-extracted-compile.sh /path/to/target-repo /path/to/site-out/html-m
 The third, optional argument caps how many files are checked in parallel (defaults to the
 number of CPUs). The script exits non-zero if any file fails to compile.
 
+A small number of extracted files are known not to compile. [`KNOWN-ISSUES.md`](KNOWN-ISSUES.md)
+records the current pass rate across the projects this is tested against, the root cause of each
+remaining failure, and — importantly — the approaches that were tried and measured to be worse, so
+they are not retried.
+
 ## Options
 
 - `--root PREFIX`: root module prefix to expose (defaults to the first root library)

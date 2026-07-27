@@ -36,9 +36,9 @@ namespace LMLExposition
 inductive CmdClass where
   /-- Defines at least one exposed declaration. -/
   | decl
-  /-- A `namespace`/`end`/`open`/`variable`/`section`/`set_option`/`universe` command. -/
+  /-- A `namespace`/`end`/`open`/`variable`/`section`/`set_option`/`universe`/`attribute` command. -/
   | context
-  /-- Anything else (a non-exposed declaration, `#check`, an attribute command, …). -/
+  /-- Anything else (a non-exposed declaration, `#check`, …). -/
   | skip
   deriving Inhabited, BEq
 
@@ -73,6 +73,13 @@ structure CommandEntry where
   `openOnlyIdents` is empty for every other form of `open` (and for every other command kind). -/
   openOnlyNamespace? : Option String := none
   openOnlyIdents : Array String := #[]
+  /-- For a standalone `attribute [attrs] a b c` command, the names it targets (`a b c`), so it can
+  be dropped when one of them is a project declaration this target does not emit. Empty for every
+  other command. -/
+  attrTargets : Array String := #[]
+  /-- True when such a command applies a *translation* attribute (`to_additive`/`to_dual`). Only
+  these are replayed; see `isContextCmd`. -/
+  attrIsTranslation : Bool := false
   /-- Extra commands to emit right after this one — used for `instance … := sorry` replacements of a
   definition's `deriving` clause (which can't be re-derived in the minimal file). -/
   appended : Array String := #[]
@@ -105,30 +112,6 @@ partial def findDeclValStx? (root : Syntax) : Option Syntax := Id.run do
     for arg in stx.getArgs do
       worklist := worklist.push arg
   return none
-
-/-- The range of a declaration's value when that value is, in its entirety, a single tactic block
-(`def f … := by tac`), as opposed to a term that merely *contains* `by` proofs. Such a block is a
-direct child of the `declVal` node; an embedded proof sits deeper in the term.
-
-This case must be left alone rather than replaced by `sorry`, because for a **definition** Lean
-decides which section `variable`s to include from what the value actually mentions. A `sorry`
-mentions nothing, so every instance binder the real body relied on silently disappears from the
-signature: `def leftLimWithin (f : α → β) (s : Set α) (a : α) : β := by …` under
-`variable {α β : Type*} [LinearOrder α] [TopologicalSpace β]` becomes
-`{α β} → (α → β) → Set α → α → β` instead of
-`{α β} → [LinearOrder α] → [TopologicalSpace β] → (α → β) → Set α → α → β`, and every use site
-that passes those instances positionally (`@leftLimWithin αᵒᵈ β _ _ f s a`) fails to typecheck.
-
-Keeping the body is safe with respect to the closure: `graphDeps` follows `deps` (type *and* body)
-for everything that is not a theorem, so a definition's body dependencies are already inlined.
-Theorems are unaffected — they take the whole-proof `sorry` path above, and Lean's inclusion rule
-for a theorem does not depend on its proof term. -/
-def wholeValueTacticRange? (stx : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := do
-  let v ← findDeclValStx? stx
-  let tac ← v.getArgs.find? (·.getKind == ``Lean.Parser.Term.byTactic)
-  let s ← tac.getPos?
-  let e ← tac.getTailPos?
-  pure (s, e)
 
 /-- The byte range of the *value*/proof part of a declaration, if present. -/
 def findDeclVal? (root : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := do
@@ -183,12 +166,49 @@ partial def collectByBlocks (root : Syntax) : Array (String.Pos.Raw × String.Po
         worklist := worklist.push arg
   return acc
 
+/-- The byte ranges of `by …` blocks that constitute the *entire* value of something — either a
+definition's value (`def f … := by tac`) or one structure-instance field (`… where fld := by tac`,
+and the `{ fld := by tac }` spelling). Such a block is a direct child of `declValSimple` or of
+`Term.structInstFieldDef`; a proof embedded inside a larger term sits deeper.
+
+These must be kept rather than replaced by `sorry`, because for a **definition** Lean decides which
+section `variable`s to include from what the value actually mentions, and `sorry` mentions nothing.
+Both shapes were observed losing binders and so silently changing a signature:
+
+* `def leftLimWithin (f : α → β) (s : Set α) (a : α) : β := by classical …` under
+  `variable {α β : Type*} [LinearOrder α] [TopologicalSpace β]` dropped both instances, breaking
+  every use site that passes them positionally (`@leftLimWithin αᵒᵈ β _ _ f s a`);
+* `def ofSeq : MartDiffArray P where … mgdiff n i := by …` dropped the `hmgdiff` binder, so
+  `ofSeq` shed an argument and every call misaligned.
+
+Sparing only these two shapes is deliberate. Keeping *every* tactic block in a definition was
+measured and is far worse: it takes brownian-motion from 2 failures to 71, because a proof embedded
+in a larger term generally cannot run in the minimal file, which does not replay the `@[simp]` /
+`@[measurability]` registrations it depends on. -/
+partial def wholeValueTacticRanges (root : Syntax) : Array (String.Pos.Raw × String.Pos.Raw) :=
+  Id.run do
+  let mut acc : Array (String.Pos.Raw × String.Pos.Raw) := #[]
+  let mut worklist : Array Syntax := #[root]
+  while !worklist.isEmpty do
+    let stx := worklist.back!
+    worklist := worklist.pop
+    let k := stx.getKind
+    if k == ``Parser.Command.declValSimple || k == ``Lean.Parser.Term.structInstFieldDef then
+      for a in stx.getArgs do
+        if a.getKind == ``Lean.Parser.Term.byTactic then
+          match a.getPos?, a.getTailPos? with
+          | some s, some e => acc := acc.push (s, e)
+          | _, _ => pure ()
+    for a in stx.getArgs do
+      worklist := worklist.push a
+  return acc
+
 /-- The byte ranges of the `binderTactic` nodes inside `root`, i.e. binder/field defaults written
 `:= by tac`.
 
-This is deliberately separate from `collectByBlocks`: such a default is **not** a `Term.byTactic`
-node, so that walk never finds it. Its parser is `atomic (symbol " := " >> " by ") >> tacticSeq`,
-meaning the node's range covers the ` := by ` prefix as well as the tactic block — a replacement
+A default is **not** a `Term.byTactic` node, so a walk looking for those never finds it. Its parser
+is `atomic (symbol " := " >> " by ") >> tacticSeq`, meaning the node's range covers the ` := by `
+prefix as well as the tactic block — a replacement
 therefore has to supply the `:=` itself. -/
 partial def collectBinderTactics (root : Syntax) : Array (String.Pos.Raw × String.Pos.Raw) :=
   Id.run do
@@ -243,6 +263,11 @@ def isContextCmd (stx : Syntax) : Bool :=
   k == ``Parser.Command.namespace || k == ``Parser.Command.«end» || k == ``Parser.Command.«open»
     || k == ``Parser.Command.«variable» || k == ``Parser.Command.«section»
     || k == ``Parser.Command.«set_option» || k == ``Parser.Command.«universe»
+    -- A standalone `attribute [...] X` is a *side effect* on `X` rather than a declaration, so
+    -- dropping it silently loses whatever it registered. Classified as context here so it can be
+    -- considered; `assembleTarget` then replays only the ones carrying a `translationAttributes`
+    -- entry, which are the ones whose loss makes *other* declarations fail to elaborate.
+    || k == ``Parser.Command.«attribute»
     || isNotationCmd k
 
 /-- The substring of `source` between two byte positions. -/
@@ -436,6 +461,44 @@ partial def attributeStripEdits (source : String) (root : Syntax) (onStructure :
         worklist := worklist.push a
   return acc
 
+/-- Attributes that register a *translation* between a declaration and its multiplicative/additive
+or order-dual counterpart. A standalone `attribute [to_dual existing] MeasurableInf₂` is what
+teaches `to_dual` the `MeasurableSup₂ ↦ MeasurableInf₂` pairing; without it, later `@[to_dual]`
+commands translate that class to itself and emit an ill-typed statement.
+
+Only these are replayed. Other standalone `attribute` commands (`@[simp]`, `@[fun_prop]`,
+`@[measurability]`, …) affect *proof* elaboration, which is moot in a file whose proofs are all
+`sorry`, and replaying them was measured to be actively harmful: pulling in the module that carries
+them made every brownian-motion target include declarations it did not need, taking that corpus
+from 2 failures to 1623. -/
+def translationAttributes : List String := ["to_additive", "to_dual"]
+
+/-- For a standalone `attribute [attrs] a b c` command, the attributes as written and the names they
+target. The parser is `"attribute " "[" sepBy1 (eraseAttr <|> attrInstance) ", " "]" many1 ident`,
+so the attributes are the children of `stx[2]` and the targets those of `stx[4]`. -/
+def decomposeAttributeCmd? (source : String) (stx : Syntax) :
+    Option (Array String × Array String) := do
+  guard (stx.getKind == ``Parser.Command.«attribute» && stx.getArgs.size ≥ 5)
+  let attrs := stx[2].getArgs.filterMap fun a =>
+    if a.isAtom then none
+    else match a.getPos?, a.getTailPos? with
+      | some s, some e => some (slice source s e)
+      | _, _ => none
+  let targets := stx[4].getArgs.filterMap fun i =>
+    if i.isIdent then some i.getId.toString else none
+  pure (attrs, targets)
+
+/-- True if `attrSrc` (one attribute inside an `attribute`/`@[…]` list) is a `translationAttributes`
+entry, matched on its leading token so `to_dual existing` and `to_additive (attr := …)` both hit. -/
+def isTranslationAttribute (attrSrc : String) : Bool :=
+  let toks := (attrSrc.split fun c => c == ' ' || c == '\n' || c == '\t' || c == '\r').toArray
+    |>.filterMap fun w =>
+      let w := w.trimAscii.toString
+      if w.isEmpty then none else some w
+  match toks[0]? with
+  | some t => translationAttributes.contains t
+  | none => false
+
 /-- For a declaration wrapped in `omit … in`, its omitted binders as `(source text, identifiers
 referenced)` together with the byte position where the wrapped declaration itself starts.
 
@@ -529,14 +592,13 @@ def processFile (env : Environment) (source : String) (filePath : String)
               let byBlocks := match findDeclValStx? stx with
                 | some v => collectByBlocks v
                 | none => #[]
-              -- Keep a value that is *entirely* one tactic block: replacing it would drop the
-              -- instance binders the body pulled in, changing the declaration's signature. See
-              -- `wholeValueTacticRange?`.
-              let byBlocks := match wholeValueTacticRange? stx with
-                | some (ws, we) =>
-                  byBlocks.filter fun (r : String.Pos.Raw × String.Pos.Raw) =>
-                    r.1.byteIdx != ws.byteIdx || r.2.byteIdx != we.byteIdx
-                | none => byBlocks
+              -- Keep the blocks that *are* a value rather than sitting inside one: replacing those
+              -- would drop the `variable` binders the body mentions and change the declaration's
+              -- signature. See `wholeValueTacticRanges`.
+              let spared := wholeValueTacticRanges stx
+              let byBlocks := byBlocks.filter fun (r : String.Pos.Raw × String.Pos.Raw) =>
+                !spared.any fun (s : String.Pos.Raw × String.Pos.Raw) =>
+                  s.1.byteIdx == r.1.byteIdx && s.2.byteIdx == r.2.byteIdx
               byBlocks.map fun (bs, be) => (bs, be, "sorry")
           applyEdits source start declEnd (attrEdits ++ edits)
       let src := mkSrc cmdStart
@@ -571,9 +633,13 @@ def processFile (env : Environment) (source : String) (filePath : String)
             && stx[1].getKind == ``Parser.Command.openOnly && stx[1].getArgs.size ≥ 3 then
           (some stx[1][0].getId.toString, collectIdents stx[1][2])
         else (none, #[])
+      let (attrTargets, attrIsTranslation) :=
+        match decomposeAttributeCmd? source stx with
+        | some (attrs, targets) => (targets, attrs.any isTranslationAttribute)
+        | none => (#[], false)
       entries := entries.push
         { cls := .context, src := slice source cmdStart cmdEnd, kind, nsName?, qualifiedNsName?,
-          binders, openOnlyNamespace?, openOnlyIdents }
+          binders, openOnlyNamespace?, openOnlyIdents, attrTargets, attrIsTranslation }
     else
       entries := entries.push { cls := .skip, src := slice source cmdStart cmdEnd, kind := stx.getKind }
   return entries
@@ -797,7 +863,13 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
       -- Keep every context command (so `namespace`/`section`/`end` nesting stays balanced) and the
       -- declarations in the closure; other declarations become `skip`.
       let filtered := restrictToTarget entries keep
-      if filtered.any (·.cls == .decl) then
+      -- A module contributes either declarations, or — even with none in the closure — standalone
+      -- `attribute` commands, whose registrations the rest of the file may depend on (see
+      -- `isContextCmd`). Without the second case the module is skipped wholesale and the
+      -- registration is lost.
+      let hasAttribute := filtered.any fun e =>
+        e.cls == .context && e.kind == ``Parser.Command.«attribute» && e.attrIsTranslation
+      if filtered.any (·.cls == .decl) || hasAttribute then
         involved := involved.push (modName, filtered)
   -- Exposed declarations *not* emitted in this file: a `variable` binder referencing one of these
   -- would reference an undefined name, so such binders are dropped (see `pruneVariable`).
@@ -922,6 +994,20 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
           items := items.push (.openSection, e.src ++ "\n")
         else if e.kind == ``Parser.Command.«end» then
           items := items.push (.close, e.src ++ "\n")
+        else if e.kind == ``Parser.Command.«attribute» then
+          -- Replayed only for translation attributes (see `translationAttributes`), and only when
+          -- every name it targets actually exists here. The target test is stricter than
+          -- `pruneVariable`'s: it rejects any project-local constant outside `keep`, not just an
+          -- *exposed* one, since a non-exposed project declaration is never emitted either.
+          -- `.hard`, not `.soft`: the registration is real content, and the enclosing
+          -- `namespace`/`open` scope is what makes its target resolve.
+          let targetMissing (id : String) : Bool :=
+            let n := id.toName
+            activePrefixes.any fun pfx =>
+              let full := pfx ++ n
+              env.contains full && isProjectLocalConst env rootPrefix full && !keep.contains full
+          if e.attrIsTranslation && !e.attrTargets.any targetMissing then
+            items := items.push (.hard, e.src ++ "\n")
         else if e.kind == ``Parser.Command.«open» then
           -- Tokens after `open`/`scoped` name namespaces brought into scope.
           for tok in (e.src.replace "\n" " ").splitOn " " do
