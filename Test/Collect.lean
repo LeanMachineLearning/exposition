@@ -145,6 +145,62 @@ section, so the same defect showed up twice on the page. -/
 -- A type ascription is a bare `:` and must not be mistaken for the separator.
 #guard headBeforeAssignment "theorem foo : (x : ℕ) = x := rfl" == "theorem foo : (x : ℕ) = x"
 
+/-! ### Reading a declaration's keyword, including attribute-generated ones
+
+The keyword decides whether a result is labelled a lemma or a theorem, and therefore whether it
+appears on the Claims page as something the library asserts for its own sake. Getting it wrong for
+generated declarations put six of LML's eleven "claims" there: `@[to_dual min_le] lemma le_max …`
+records, for the generated `min_le`, a range covering only the attribute line, so cleaning it leaves
+nothing to read the keyword from. `to_additive` has the same shape. -/
+
+private def dualSource : Array String := #[
+  "/-- Doc. -/",
+  "@[to_dual min_le]",
+  "lemma le_max (x : ι) : f x ≤ max f := le_sup' _ (by simp)"
+]
+
+-- The original: its range covers the whole command, so nothing has to be looked up.
+#guard (keywordSnippet ⟨"f.lean", "f.lean", 2, 3⟩ dualSource).startsWith "lemma "
+-- The generated sibling: the range is the attribute line alone, and the keyword is on the next one.
+#guard (keywordSnippet ⟨"f.lean", "f.lean", 2, 2⟩ dualSource).startsWith "lemma "
+#guard isLemmaFromSource .theorem (some ⟨"f.lean", "f.lean", 2, 2⟩) dualSource
+
+-- A multi-line attribute block, and a doc comment on the generated declaration itself.
+private def multiAttr : Array String := #[
+  "@[to_dual (attr := fun_prop)",
+  "  measurable_argmin]",
+  "lemma measurable_argmax [MeasurableSpace ι] :"
+]
+#guard (keywordSnippet ⟨"f.lean", "f.lean", 1, 2⟩ multiAttr).startsWith "lemma "
+
+-- A generated declaration whose original is a genuine `theorem` stays a theorem: the keyword is
+-- inherited, not overridden.
+private def dualTheorem : Array String := #[
+  "@[to_additive add_foo]",
+  "theorem foo : P := by simp"
+]
+#guard !isLemmaFromSource .theorem (some ⟨"f.lean", "f.lean", 1, 1⟩) dualTheorem
+
+-- `instance` is read the same way, since a generated instance would otherwise be labelled a theorem
+-- and counted among the claims.
+private def dualInstance : Array String := #[
+  "@[to_dual existing]",
+  "instance foo : P := ⟨bar⟩"
+]
+#guard isInstanceFromSource .theorem (some ⟨"f.lean", "f.lean", 1, 1⟩) dualInstance
+
+-- The lookahead stops rather than running to the end of the file: an attribute that decorates
+-- something which is not a declaration must not adopt a keyword from far below.
+private def loneAttribute : Array String :=
+  #["attribute [to_dual existing] MeasurableInf₂"]
+#guard !isLemmaFromSource .theorem (some ⟨"f.lean", "f.lean", 1, 1⟩) loneAttribute
+
+-- The fallback signature is introduced by the keyword the author wrote, so the code block cannot
+-- say `theorem` under a card labelled "Lemma".
+#guard displaySignatureFallback .theorem `min_le "P" (isLemma := true) == "lemma min_le : P"
+#guard displaySignatureFallback .theorem `foo "P" == "theorem foo : P"
+#guard displaySignatureFallback .definition `f "ℕ" (isLemma := true) == "def f : ℕ"
+
 /-! ## Dependency-graph passes
 
 These run on an already-collected `Array DeclInfo`, wrapping the graph passes of `LeanDeps`. What

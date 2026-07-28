@@ -869,9 +869,16 @@ def declKeyword : DeclKind → String
   | .axiom => "axiom"
   | .instance => "instance"
 
-/-- Helper for displaySignatureFallback. -/
-def displaySignatureFallback (kind : DeclKind) (name : Name) (expandedSignature : String) : String :=
-  s!"{declKeyword kind} {name.getString!} : {expandedSignature}"
+/-- The signature to show when a declaration has no usable source of its own: its pretty-printed
+type, introduced by the keyword it was written with.
+
+`isLemma` matters because the fallback is exactly what an *attribute-generated* declaration gets —
+`to_dual` and `to_additive` leave the generated sibling with a source range covering only the
+attribute — and rendering `theorem foo : …` inside a card labelled "Lemma" contradicts the label. -/
+def displaySignatureFallback (kind : DeclKind) (name : Name) (expandedSignature : String)
+    (isLemma : Bool := false) : String :=
+  let keyword := if isLemma && kind == .theorem then "lemma" else declKeyword kind
+  s!"{keyword} {name.getString!} : {expandedSignature}"
 
 /-- Helper for stringContains. -/
 def stringContains (haystack needle : String) : Bool :=
@@ -947,6 +954,43 @@ partial def dropLeadingDecorations (lines : List String) : List String :=
 def cleanDeclSnippet (snippet : String) : String :=
   (String.trimAscii (String.intercalate "\n" (dropLeadingDecorations (snippet.splitOn "\n")))).toString
 
+/-- How far past a declaration's recorded range to look for its keyword. Bounded so that a range
+which cleans to nothing and is followed by no declaration cannot scan to the end of the file. -/
+def declKeywordLookahead : Nat := 40
+
+/-- The cleaned snippet to read a declaration's *keyword* from — the word that decides whether the
+site labels it `lemma`, `theorem` or `instance`.
+
+Usually this is just the cleaned source range. The exception, and the only reason this function
+looks past that range, is an **attribute-generated declaration**. Given
+
+```lean
+@[to_dual min_le]
+lemma le_max (x : ι) : f x ≤ max f := …
+```
+
+Lean records, for the generated `min_le`, a declaration range covering *only the attribute line*.
+Cleaning it strips the attribute and leaves nothing, so the `lemma` the author wrote is never seen
+and the declaration is labelled a theorem — which puts it on the Claims page, among the results the
+library is asserting for its own sake. `to_additive` produces exactly the same shape, as does any
+other attribute that generates a sibling declaration.
+
+Only the keyword is taken from the following lines, never the statement. A generated declaration
+says something *different* from the one it was generated from — `min_le` is not `le_max` — so its
+displayed signature must keep coming from its own pretty-printed type. That is why this is separate
+from `displaySignatureFromSource` rather than a fix inside it. -/
+def keywordSnippet (src : SourceInfo) (lines : Array String) : String :=
+  let cleaned := cleanDeclSnippet (sliceSourceSnippet lines src)
+  if !cleaned.isEmpty then
+    cleaned
+  else
+    let startIdx := src.line - 1
+    let endIdx := min (startIdx + declKeywordLookahead) lines.size
+    if endIdx ≤ startIdx then ""
+    else
+      let window := (List.range (endIdx - startIdx)).map fun i => lines[startIdx + i]!
+      (String.trimAscii (String.intercalate "\n" (dropLeadingDecorations window))).toString
+
 /-- Splits a declaration's source snippet at the `:=` separating its signature from its value, into
 the part before and the part after.
 
@@ -1020,7 +1064,7 @@ def isLemmaFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : Arra
     false
   else match src? with
     | none => false
-    | some src => (cleanDeclSnippet (sliceSourceSnippet lines src)).startsWith "lemma "
+    | some src => (keywordSnippet src lines).startsWith "lemma "
 
 /-- True if the cleaned source snippet for a `theorem`-kind declaration starts with the
 `instance` keyword (e.g. a `Prop`-valued instance whose `@[instance]` attribute was not picked
@@ -1030,7 +1074,7 @@ def isInstanceFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : A
     false
   else match src? with
     | none => false
-    | some src => (cleanDeclSnippet (sliceSourceSnippet lines src)).startsWith "instance "
+    | some src => (keywordSnippet src lines).startsWith "instance "
 
 /-- True if the declaration's source snippet starts with the `alias` keyword. Such declarations are
 emitted verbatim (`alias … := target`), so their dependency closure must follow value dependencies. -/
@@ -1525,12 +1569,16 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
             pure ls
     let kind := declKindOf env info name
     let expandedSignature ← ppExprString env info.type
-    let displaySignature :=
-      (displaySignatureFromSource kind source? lines).getD <|
-        displaySignatureFallback kind name expandedSignature
-    let proofText? := proofTextFromSource kind source? lines
     let isLemma := isLemmaFromSource kind source? lines
       || isSimpsGeneratedLemma env simpLemmaNames name info
+    -- Before the signature, not after: an attribute-generated declaration has no source of its own
+    -- to display and falls back to the pretty-printed type, which has to be introduced by the
+    -- keyword the author actually wrote or the code block says `theorem` under a card labelled
+    -- "Lemma".
+    let displaySignature :=
+      (displaySignatureFromSource kind source? lines).getD <|
+        displaySignatureFallback kind name expandedSignature (isLemma := isLemma)
+    let proofText? := proofTextFromSource kind source? lines
     let isInstanceDecl := isInstanceFromSource kind source? lines
     let isInstanceDecl := isInstanceDecl || (kind == .theorem && isInstanceName name)
     let doc? ← findDocString? env name
