@@ -3,7 +3,10 @@ name: Publish Referee Binary
 on:
   push:
     branches:
-      - master
+      # This repository's default branch. It read `master` until 2026-07-28, which is a branch that
+      # has never existed here, so the workflow had never once run on a push and no downstream
+      # project could obtain a binary.
+      - main
     tags:
       - "*"
   workflow_dispatch:

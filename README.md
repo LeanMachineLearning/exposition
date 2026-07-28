@@ -455,22 +455,41 @@ The `Publish Referee Binary` workflow runs on pushes to `master`, on tags, and o
 
 The archive is uploaded as a GitHub Actions artifact named `referee-linux-x86_64-<sha>` with a 90-day retention. On tag builds, the same files are attached to the corresponding GitHub release (creating it if it doesn't exist).
 
-Downstream CI can download a matching artifact with `gh`:
+### Consuming the binary downstream
+
+**Prefer a release over a run artifact.** Release assets of a public repository need no
+authentication and never expire; run artifacts need both a token and luck:
+
+- a cross-repository artifact download requires a PAT with `actions:read` on *this* repository. A
+  workflow's own `GITHUB_TOKEN` is scoped to the repository it runs in, so it cannot reach another
+  repository's artifacts even when that repository is public;
+- artifacts are deleted after the 90-day retention above, so a pinned commit stops resolving.
+
+So the supported route is a tag:
 
 ```bash
-SOURCE_SHA=<commit>
-REPO=<owner>/referee
-RUN_ID=$(gh run list \
-  -R "$REPO" \
-  --workflow "Publish Referee Binary" \
-  --event push \
-  --commit "$SOURCE_SHA" \
-  --status success \
-  --json databaseId \
-  --jq '.[0].databaseId')
-gh run download "$RUN_ID" -R "$REPO" \
-  -n "referee-linux-x86_64-$SOURCE_SHA" \
-  -D ./referee-artifact
-tar -xzf "./referee-artifact/referee-linux-x86_64-$SOURCE_SHA/referee-linux-x86_64-$SOURCE_SHA.tar.gz" \
-  -C ./referee-artifact
+gh release download v0.1.0 -R LeanMachineLearning/exposition \
+  --pattern 'referee-linux-x86_64-*.tar.gz' --dir ./referee-artifact
+tar -xzf ./referee-artifact/referee-linux-x86_64-*.tar.gz -C ./referee-artifact
+REFEREE=$(echo ./referee-artifact/referee-linux-x86_64-*/referee)
 ```
+
+Omitting the tag takes the most recent release.
+
+**Check the toolchain before running it.** `referee` is a Lean executable built with
+`supportInterpreter := true`, so it loads the shared library of the toolchain it was compiled
+against and must match the target project's. The archive carries `metadata.json` for exactly this
+check, and it is worth making a hard failure rather than debugging the symbol errors it prevents:
+
+```bash
+want=$(tr -d '[:space:]' < lean-toolchain)
+got=$(jq -r .lean_toolchain ./referee-artifact/referee-linux-x86_64-*/metadata.json)
+[ "$want" = "$got" ] || { echo "referee built for $got, project uses $want" >&2; exit 1; }
+```
+
+If you do reach for a run artifact anyway, note that `gh run download` extracts a *single* named
+artifact directly into `-D`, without a directory named after it — so the archive is at
+`./referee-artifact/referee-linux-x86_64-<sha>.tar.gz`, one level up from where you might expect.
+
+[`.github/workflows/`](.github/workflows/) in `alpha-rar` is a worked example: download, toolchain
+check, the four phases, and a `--baseline` taken from the previous run.
