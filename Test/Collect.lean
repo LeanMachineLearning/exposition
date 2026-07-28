@@ -117,6 +117,34 @@ its front *and* `lemma` went undetected, promoting the lemma to a claim. -/
 -- The declaration may begin on the same line as the closing bracket.
 #guard cleanDeclSnippet "@[specifies f,\n  simp] lemma foo : True" == "lemma foo : True"
 
+/-! ### Splitting a snippet into signature and value
+
+The separator is the first `:=` at bracket depth zero. Taking the first one outright truncated the
+statement of every theorem containing a named argument — and handed the severed tail to the proof
+section, so the same defect showed up twice on the page. -/
+
+#guard splitAtAssignment "theorem foo : True := trivial" == some ("theorem foo : True ", " trivial")
+#guard splitAtAssignment "axiom foo : True" == none
+
+-- A named argument. This is the case found on `AlphaRAR.estimatorSqrtNVec_joint_tendsto_…`, whose
+-- statement was cut at `Tendsto (β`.
+#guard headBeforeAssignment "theorem foo : Tendsto (β := ℝ) f atTop := by simp"
+  == "theorem foo : Tendsto (β := ℝ) f atTop"
+#guard (splitAtAssignment "theorem foo : Tendsto (β := ℝ) f atTop := by simp").map (·.2)
+  == some " by simp"
+
+-- A structure instance, an anonymous constructor, and a binder default: same shape, all bracketed.
+#guard headBeforeAssignment "theorem foo : P { x := 1 } := rfl" == "theorem foo : P { x := 1 }"
+#guard headBeforeAssignment "theorem foo : P ⟨a := 1⟩ := rfl" == "theorem foo : P ⟨a := 1⟩"
+#guard headBeforeAssignment "theorem foo (n : ℕ := 0) : P n := rfl" == "theorem foo (n : ℕ := 0) : P n"
+
+-- Nested brackets: the depth has to come back to zero before a `:=` counts.
+#guard headBeforeAssignment "theorem foo : P (f (g := ⟨x := 1⟩)) := rfl"
+  == "theorem foo : P (f (g := ⟨x := 1⟩))"
+
+-- A type ascription is a bare `:` and must not be mistaken for the separator.
+#guard headBeforeAssignment "theorem foo : (x : ℕ) = x := rfl" == "theorem foo : (x : ℕ) = x"
+
 /-! ## Dependency-graph passes
 
 These run on an already-collected `Array DeclInfo`, wrapping the graph passes of `LeanDeps`. What

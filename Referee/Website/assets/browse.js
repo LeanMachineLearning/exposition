@@ -31,6 +31,25 @@ document.addEventListener('DOMContentLoaded', () => {
   // project that never annotates produces no non-null counts and gets the table it had before.
   const hasSpecs = rows.some(r => r.specs != null && r.specs > 0);
 
+  // The change column exists only for a site built with --baseline, which is the only case where
+  // `change` is non-null. Without one there is no revision to speak of, and a column reading
+  // "unchanged" on every row would be noise.
+  const hasChanges = rows.some(r => r.change != null);
+
+  // Which change kinds mean "your earlier reading of this no longer covers it". Proof-only changes
+  // are deliberately not among them: the kernel rechecked the proof, and a proof cannot change what
+  // a theorem says.
+  const REAUDIT = new Set(['statement', 'body', 'indirect', 'added']);
+
+  const CHANGE_LABEL = {
+    statement: 'statement changed',
+    body: 'definition changed',
+    indirect: 'meaning changed indirectly',
+    added: 'new',
+    proof: 'proof changed',
+    unchanged: 'unchanged',
+  };
+
   root.innerHTML = `
     <div class="browse-controls">
       <input id="browse-q" type="search" placeholder="Filter by name or module" />
@@ -47,6 +66,16 @@ document.addEventListener('DOMContentLoaded', () => {
         <option value="none">No specification</option>
         <option value="some">Has a specification</option>
       </select>` : ''}
+      ${hasChanges ? `<select id="browse-change">
+        <option value="">Any revision status</option>
+        <option value="reaudit">Needs re-reading</option>
+        <option value="statement">Statement changed</option>
+        <option value="indirect">Invalidated indirectly</option>
+        <option value="body">Definition changed</option>
+        <option value="added">New</option>
+        <option value="proof">Proof only</option>
+        <option value="unchanged">Unchanged</option>
+      </select>` : ''}
       <button id="browse-reset" type="button">Reset</button>
     </div>
     <p class="browse-count" id="browse-count"></p>
@@ -60,6 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <th data-sort="deps" class="browse-sortable browse-num">Deps</th>
             <th data-sort="ext" class="browse-sortable browse-num">External</th>
             ${hasSpecs ? '<th data-sort="specs" class="browse-sortable browse-num">Spec</th>' : ''}
+            ${hasChanges ? '<th data-sort="change" class="browse-sortable">Changed</th>' : ''}
             <th data-sort="trust" class="browse-sortable">Status</th>
           </tr>
         </thead>
@@ -73,6 +103,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const chapter = document.getElementById('browse-chapter');
   const trust = document.getElementById('browse-trust');
   const spec = document.getElementById('browse-spec');
+  const change = document.getElementById('browse-change');
   const body = document.getElementById('browse-body');
   const count = document.getElementById('browse-count');
 
@@ -92,6 +123,19 @@ document.addEventListener('DOMContentLoaded', () => {
     return '<span class="browse-flag browse-flag-gap">none</span>';
   };
 
+  // Sorted by urgency rather than alphabetically: the point of sorting this column is to bring what
+  // needs re-reading to the top, and "added" before "indirect" before "statement" is not an order
+  // anyone wants.
+  const CHANGE_RANK = { statement: 0, indirect: 1, body: 2, added: 3, proof: 4, unchanged: 5 };
+
+  const changeCell = r => {
+    if (r.change == null || r.change === 'unchanged') {
+      return '<span class="browse-change-na">—</span>';
+    }
+    const cls = REAUDIT.has(r.change) ? 'browse-flag-warn' : 'browse-flag-ok';
+    return `<span class="browse-flag ${cls}">${esc(CHANGE_LABEL[r.change] || r.change)}</span>`;
+  };
+
   const statusCell = r => {
     if (r.dependsOnSorry) return '<span class="browse-flag browse-flag-warn">depends on sorry</span>';
     if (r.extraAxioms) return '<span class="browse-flag browse-flag-warn">extra axioms</span>';
@@ -105,6 +149,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (chapter.value && r.chapter !== chapter.value) return false;
       if (trust.value && trustOf(r) !== trust.value) return false;
       if (spec && spec.value && specOf(r) !== spec.value) return false;
+      if (change && change.value) {
+        if (change.value === 'reaudit') {
+          if (!REAUDIT.has(r.change)) return false;
+        } else if (r.change !== change.value) return false;
+      }
       if (needle && !(`${r.name} ${r.module}`.toLowerCase().includes(needle))) return false;
       return true;
     });
@@ -112,7 +161,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function sorted(list) {
     const dir = sortAsc ? 1 : -1;
-    const value = r => (sortKey === 'trust' ? trustOf(r) : r[sortKey]);
+    const value = r => {
+      if (sortKey === 'trust') return trustOf(r);
+      if (sortKey === 'change') return CHANGE_RANK[r.change] ?? 9;
+      return r[sortKey];
+    };
     return list.slice().sort((a, b) => {
       // Rows that cannot have a specification sink to the bottom in *both* directions: they are
       // not a value on this scale, and letting them sort along with the rest would bury the
@@ -141,6 +194,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <td class="browse-num">${r.deps}</td>
         <td class="browse-num">${r.ext}</td>
         ${hasSpecs ? `<td class="browse-num">${specCell(r)}</td>` : ''}
+        ${hasChanges ? `<td>${changeCell(r)}</td>` : ''}
         <td>${statusCell(r)}</td>
       </tr>`).join('');
     count.textContent = found.length === rows.length
@@ -162,12 +216,13 @@ document.addEventListener('DOMContentLoaded', () => {
       const key = th.dataset.sort;
       if (key === sortKey) sortAsc = !sortAsc;
       // Counts are most useful largest-first; names read best A-Z.
+      // Counts read best largest-first; names and the change ranking read best in their own order.
       else { sortKey = key; sortAsc = !(key === 'deps' || key === 'ext'); }
       render();
     });
   }
 
-  for (const control of [q, kind, chapter, trust, spec].filter(Boolean)) {
+  for (const control of [q, kind, chapter, trust, spec, change].filter(Boolean)) {
     control.addEventListener('input', render);
     control.addEventListener('change', render);
   }
@@ -175,6 +230,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('browse-reset').addEventListener('click', () => {
     q.value = ''; kind.value = ''; chapter.value = ''; trust.value = '';
     if (spec) spec.value = '';
+    if (change) change.value = '';
     sortKey = 'name'; sortAsc = true;
     render();
   });

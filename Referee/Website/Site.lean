@@ -13,6 +13,7 @@ public import VersoManual.ExternalLean
 public import SubVerso.Highlighting
 public import SubVerso.Module
 public import Referee.Collect
+public import Referee.Diff
 public import Referee.Extract
 public import Referee.ExtractFlat
 public import Referee.Highlight
@@ -302,6 +303,116 @@ block_extension Block.graph (_payload : GraphData) where
       {{Html.tag "script" #[("id", "graph-data"), ("type", "application/json")] (.text false (ToJson.toJson payload).compress)}}
     }}
 
+/-- The parts of a rendered change shared by the Changes page and the per-declaration banner: the
+aligned statements, what moved underneath it, and any trust delta.
+
+Written once because the two renderings differ only in their chrome, and a reader who meets the
+same change in both places should not have to reconcile two presentations of it.
+
+(A plain comment, not a docstring: this is a helper for the two `block_extension`s below, which do
+not take one.) -/
+private def changeBodyHtml (row : ChangeRowData) : Html :=
+  let diffHtml :=
+    if row.diff.tokens.isEmpty then .empty
+    else
+      let spans := row.diff.tokens.map fun tok =>
+        {{<span class={{s!"stmt-tok stmt-tok--{tok.kind}"}}>{{Html.text true tok.text}}" "</span>}}
+      let coarseNote :=
+        if row.diff.coarse then
+          {{<p class="change-note">"Statement too long to align word by word; the whole changed
+            region is marked."</p>}}
+        else .empty
+      {{<div><pre class="stmt-diff"><code>{{spans}}</code></pre>{{coarseNote}}</div>}}
+  let statementHtml :=
+    if row.statement.isEmpty then .empty
+    else {{<pre class="stmt-plain"><code>{{Html.text true row.statement}}</code></pre>}}
+  let causesHtml :=
+    if row.causes.isEmpty then .empty
+    else
+      let links := row.causes.map fun cause =>
+        match cause.href? with
+        | some href => {{<li><a href={{href}}><code>{{cause.label}}</code></a></li>}}
+        | none => {{<li><code>{{cause.label}}</code></li>}}
+      {{<div class="change-causes">
+          <p class="change-note">"Its statement rests on these, and they changed:"</p>
+          <ul class="change-causes-list">{{links}}</ul>
+        </div>}}
+  let trustHtml :=
+    if row.trustNotes.isEmpty then .empty
+    else
+      {{<ul class="change-trust">
+          {{row.trustNotes.map fun note => {{<li>{{Html.text true note}}</li>}}}}
+        </ul>}}
+  {{<div class="change-body">{{diffHtml}}{{statementHtml}}{{causesHtml}}{{trustHtml}}</div>}}
+
+/- A list of changes: one section of the Changes page.
+
+Not a `declIndex`. That renders one link per line, which is right for a closure listing nobody reads
+in full and wrong here: whether a statement change matters is a question about the *statements*, so
+each row carries the aligned pair and the reader decides without following a link.
+
+(A plain comment, not a docstring: `block_extension` does not take one.) -/
+block_extension Block.changeList (_payload : ChangeListData) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI _goB _id data _ => do
+    let .ok (payload : ChangeListData) := FromJson.fromJson? data
+      | Verso.reportError s!"Could not decode change list data from {data.compress}"
+        pure .empty
+    let rows := payload.entries.map fun row =>
+      let nameHtml :=
+        if row.href.isEmpty then {{<span class="change-name"><code>{{row.name}}</code></span>}}
+        else {{<a class="change-name" href={{row.href}}><code>{{row.name}}</code></a>}}
+      let moduleHtml :=
+        if row.module.isEmpty then .empty
+        else {{<span class="change-module"><code>{{row.module}}</code></span>}}
+      -- The count of what rests on the declaration is the whole reason to read the sections in the
+      -- order the page puts them in, so it sits in the header rather than under the statements.
+      let dependentsHtml :=
+        if row.dependents == 0 then .empty
+        else
+          let rest := if row.dependents == 1 then "1 result rests on it"
+            else s!"{row.dependents} results rest on it"
+          {{<span class="change-dependents">{{rest}}</span>}}
+      {{
+        <li class={{s!"change-item change-item--{row.kind}"}}>
+          <div class="change-head">
+            {{nameHtml}}
+            <span class={{s!"change-chip change-chip--{row.kind}"}}>{{row.label}}</span>
+            {{moduleHtml}}
+            {{dependentsHtml}}
+          </div>
+          {{changeBodyHtml row}}
+        </li>
+      }}
+    pure {{<ul class="change-list">{{rows}}</ul>}}
+
+/- The banner at the top of a declaration page whose meaning moved.
+
+Above the declaration card rather than below it: a reader who accepted this declaration in the
+baseline has to know that before reading it again, not after.
+
+(A plain comment, not a docstring: `block_extension` does not take one.) -/
+block_extension Block.changeBanner (_payload : ChangeRowData) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI _goB _id data _ => do
+    let .ok (row : ChangeRowData) := FromJson.fromJson? data
+      | Verso.reportError s!"Could not decode change banner data from {data.compress}"
+        pure .empty
+    pure {{
+      <aside class={{s!"change-banner change-banner--{row.kind}"}}>
+        <div class="change-head">
+          <span class={{s!"change-chip change-chip--{row.kind}"}}>{{row.label}}</span>
+          {{if row.since.isEmpty then .empty
+            else {{<span class="change-banner-since">{{s!"since {row.since}"}}</span>}}}}
+        </div>
+        {{changeBodyHtml row}}
+      </aside>
+    }}
+
 end
 @[expose] public section
 
@@ -571,6 +682,18 @@ private structure SiteContext where
   not auditing. Once one annotation exists the author has opted in, and silence about the rest
   becomes information. -/
   usesSpecs : Bool := false
+  /-- The comparison against an earlier `collect` output, when `--baseline` was given.
+
+  Gated exactly as `usesSpecs` is, and for the same reason: a site built without a baseline must not
+  acquire a Changes page, a Browse column, or a badge saying "unchanged" on every declaration. There
+  is no revision to speak of, so the site says nothing about revisions. -/
+  diff? : Option DiffReport := none
+  /-- Declaration ↦ how it changed, empty without a baseline. -/
+  changes : Std.HashMap Name DeclChange := {}
+  /-- Declaration ↦ how many other declarations' *meaning* rests on it: the reverse of `transDeps`,
+  counted once rather than per lookup. Built only when there is a baseline, since nothing else on
+  the site asks for it. -/
+  dependentCounts : Std.HashMap Name Nat := {}
 
 /-- Renders one declaration card with docs, statement, links, and dependencies.
 
@@ -999,6 +1122,61 @@ private def mkSpecBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Ma
     blocks := blocks.push <| .other (Block.specList { entries := specTargetRows decl ctx }) #[]
   return blocks
 
+/-! ## Revisions
+
+Everything below is gated on `SiteContext.diff?`, i.e. on `--baseline` having been given. See
+`Referee/Diff.lean` for what is compared and what the comparison costs. -/
+
+/-- How many declarations' *meaning* rests on this one: the size of the re-reading a change to it
+forces on someone who has already worked through the library.
+
+The reverse of `transDeps`, which follows `graphDeps`, so it counts the declarations whose
+statements this one is part of and not the ones whose proofs merely call it. -/
+private def dependentCount (name : Name) (ctx : SiteContext) : Nat :=
+  ctx.dependentCounts.getD name 0
+
+/-- Turns one change into the row both the Changes page and the declaration banner render. -/
+private def changeRowOf (change : DeclChange) (ctx : SiteContext) (since : String := "")
+    : ChangeRowData :=
+  let decl? := ctx.declByName.get? change.name
+  let statementDiff? := do
+    let old ← change.oldStatement?
+    let decl ← decl?
+    pure (statementDiff old decl.expandedSignature)
+  {
+    name := change.name.toString
+    href := (ctx.declPageHrefs.get? change.name).getD ""
+    module := (decl?.map (·.modulePath)).getD ""
+    kind := change.kind.slug
+    label := change.kind.label
+    diff := statementDiff?.getD {}
+    -- An addition has no baseline version to align against, so its statement is shown whole — and
+    -- as the author wrote it rather than as elaborated, which for a Mathlib-heavy statement is the
+    -- difference between three lines and twenty-five of instance binders. The *comparison* still
+    -- runs on the elaborated type; only what is displayed here changes.
+    statement := if change.kind == .added then (decl?.map (·.displaySignature)).getD "" else ""
+    causes := change.causes.filterMap fun cause =>
+      ctx.declPageHrefs.get? cause |>.map fun href =>
+        { label := cause.toString, href? := some href }
+    trustNotes := change.trustNotes
+    dependents := dependentCount change.name ctx
+    since := since
+  }
+
+/-- The banner at the top of a declaration page whose meaning moved since the baseline.
+
+Nothing is rendered for a declaration that did not change, and nothing at all without a baseline: a
+badge reading "unchanged" on 1400 pages is noise, and it is the changed ones a returning reader is
+looking for. A proof-only change *is* shown, because it explains why the source no longer matches
+the reader's notes — but it says in the same breath that no re-reading follows from it. -/
+private def mkChangeBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
+  match ctx.diff?, ctx.changes.get? decl.name with
+  | some report, some change =>
+    if change.isNoteworthy then
+      #[.other (Block.changeBanner (changeRowOf change ctx (since := report.baselineLabel))) #[]]
+    else #[]
+  | _, _ => #[]
+
 /-- The minimal dependency file, inline.
 
 This is the artifact the whole tool exists to produce: one self-contained Lean file holding
@@ -1104,6 +1282,9 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   -- link here whose relative path resolved *underneath* the declaration page and 404'd, and the
   -- page ended up advertising the same artifact three times.
   let mut blocks : Array (Block Manual) := #[]
+  -- Above the card, not below it: a reader who accepted this declaration in the baseline has to
+  -- learn that their reading is void *before* re-reading it, not after.
+  blocks := blocks ++ mkChangeBlocks decl ctx
   blocks := blocks.push (mkDeclBlock decl ctx)
   blocks := blocks ++ mkAuditBlocks decl ctx
   -- Before the dependency machinery, because it answers a different and prior question. The
@@ -1288,7 +1469,7 @@ rule dropped 6 of those 11 for the sole reason that something else used them onc
 The corollary for a *reader*: this page inherits the project's discipline. A library that writes
 `theorem` everywhere gets a page that says "all results", which is still true, just less useful. -/
 private def claimsOf (decls : Array DeclInfo) : Array DeclInfo :=
-  decls.filter fun d => d.kind == .theorem && !d.isLemma && !d.isInstanceDecl
+  decls.filter (·.isClaim)
 
 /-- Builds the page listing every claim, grouped by chapter. -/
 private def mkClaimsPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manual :=
@@ -1324,6 +1505,177 @@ private def mkClaimsPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
       file := some "claims"
       shortTitle := some "Claims"
       tag := some (.provided "claims")
+      number := false
+    }
+    content := blocks
+    subParts := #[]
+  }
+
+/-- Builds the Changes page: what a reader who worked through the baseline has to read again.
+
+Ordered by what it costs that reader, never alphabetically and never by module. The sections are,
+in order: statements that changed, results invalidated indirectly, definitions whose bodies moved,
+what was removed, what is new, where the trust surface shifted, and — collapsed, with the reason
+given — the proof-only changes that need no re-reading at all.
+
+That last section is half the value of the page. The bulk of any real revision lands in it, and
+telling a referee what they may skip is as useful as telling them what they may not. -/
+private def mkChangesPart (report : DiffReport) (ctx : SiteContext) : Part Manual := Id.run do
+  let rowsOf (changes : Array DeclChange) : Array ChangeRowData :=
+    -- Largest blast radius first: a changed statement forty results rest on is a different size of
+    -- problem from one nothing uses, and the ordering is the only thing that says so.
+    let sorted := changes.qsort fun a b => dependentCount a.name ctx > dependentCount b.name ctx
+    sorted.map (changeRowOf · ctx)
+  let listOf (changes : Array DeclChange) : Option (Block Manual) :=
+    if changes.isEmpty then none
+    else some (.other (Block.changeList { entries := rowsOf changes }) #[])
+  let statements := report.ofKind .statementChanged
+  let bodies := report.ofKind .bodyChanged
+  let indirect := report.ofKind .indirect
+  let added := report.ofKind .added
+  let proofs := report.ofKind .proofOnly
+  -- Only the declarations no earlier section lists. Every row already carries its own trust notes,
+  -- so a theorem whose statement changed *and* which gained a `sorry` says both things where it is
+  -- first listed; repeating it here would duplicate the bulkiest rows on the page.
+  let trustMoved := report.changes.filter fun c =>
+    c.trustMoved && (c.kind == .unchanged || c.kind == .proofOnly)
+  let newClaims := added.filter fun c =>
+    (ctx.declByName.get? c.name).map (·.isClaim) |>.getD false
+  let mut blocks : Array (Block Manual) := #[]
+  let against :=
+    if report.baselineLabel.isEmpty then "the baseline" else report.baselineLabel
+  blocks := blocks.push <| .para #[
+    .text s!"Compared against {against}: {report.oldCount} declarations then, {report.newCount} \
+      now. This page is for a reader who has already worked through that revision and needs to know \
+      what their reading no longer covers."
+  ]
+  if report.isEmpty then
+    blocks := blocks.push <| .para #[
+      .bold #[.text "Nothing changed. "],
+      .text "Every declaration in the baseline is still here, with the same statement, the same \
+        definitions underneath it, and the same trust surface."
+    ]
+  -- Stated before anything else on the page, because if it is true then nothing else on the page
+  -- means what it appears to mean.
+  if report.looksLikeToolchainChurn then
+    blocks := blocks.push <| .para #[
+      .bold #[.text "This diff looks like a toolchain change, not an edit. "],
+      .text s!"{statements.size} of the {(report.changes.filter (·.kind != .added)).size} \
+        declarations that survive from the baseline are reported as changed, which no ordinary \
+        revision does. Statements are compared as pretty-printed elaborated types, so a \
+        Lean or Mathlib upgrade between the two collections can change every one of them at once \
+        without any of them meaning anything different. Treat the counts below as unreliable until \
+        both sides have been collected on the same toolchain."
+    ]
+  if let some list := listOf statements then
+    blocks := blocks.push <| .other (Block.sectionHeading
+      s!"Statements changed ({statements.size})") #[]
+    blocks := blocks.push <| .para #[
+      .text "These say something different from what they said. Any reading of them is void, \
+        including the proofs elsewhere in the library that rest on them. Read in full."
+    ]
+    blocks := blocks.push list
+  if let some list := listOf indirect then
+    blocks := blocks.push <| .other (Block.sectionHeading
+      s!"Invalidated indirectly ({indirect.size})") #[]
+    blocks := blocks.push <| .para #[
+      .text "Not one character of these changed. What changed is a definition their statements are \
+        about, so they now mean something different while reading identically — the one class of \
+        change a textual diff of the repository cannot show. Each row names what moved underneath \
+        it."
+    ]
+    blocks := blocks.push list
+  if let some list := listOf bodies then
+    blocks := blocks.push <| .other (Block.sectionHeading
+      s!"Definitions changed ({bodies.size})") #[]
+    blocks := blocks.push <| .para #[
+      .text "Their types are unchanged but their bodies are not, and a definition's body is what it \
+        means. Everything stated about them is in the section above."
+    ]
+    blocks := blocks.push list
+  if !report.removed.isEmpty then
+    let withdrawn := report.removed.filter (·.wasClaim)
+    let entries := report.removed.map fun rem =>
+      let renamedTo := report.renamed.filterMap fun (from_, to) =>
+        if from_ == rem.name then some to else none
+      {
+        name := rem.name.toString
+        module := rem.modulePath
+        kind := "removed"
+        label := if rem.wasClaim then "claim withdrawn" else "removed"
+        statement := rem.statement
+        -- Offered as evidence, not as a conclusion: two declarations sharing a statement is a
+        -- fact, and whether it is a rename is the reader's call.
+        trustNotes := renamedTo.map fun to =>
+          s!"a new declaration, {to}, has an identical statement"
+        : ChangeRowData
+      }
+    blocks := blocks.push <| .other (Block.sectionHeading
+      s!"Removed ({report.removed.size})") #[]
+    blocks := blocks.push <| .para <|
+      if withdrawn.isEmpty then
+        #[.text "Gone from the library. Nothing in it can rest on these any more, so what needs \
+          checking is whether something the reader was relying on has quietly gone away."]
+      else
+        #[.text "Gone from the library, ",
+          .bold #[.text (if withdrawn.size == 1 then "including one stated with the "
+            else s!"including {withdrawn.size} stated with the ")],
+          .code "theorem", .bold #[.text " keyword"],
+          .text ". A withdrawn claim is the removal worth reading first."]
+    blocks := blocks.push <| .other (Block.changeList { entries }) #[]
+  if let some list := listOf added then
+    blocks := blocks.push <| .other (Block.sectionHeading s!"New ({added.size})") #[]
+    blocks := blocks.push <| .para <|
+      #[.text "Not in the baseline, so not covered by any earlier reading"] ++
+        (if newClaims.isEmpty then #[.text "."]
+         else if newClaims.size == 1 then
+           #[.text ". One of them is stated as a ", .code "theorem",
+             .text ": a new claim, not new machinery."]
+         else
+           #[.text s!". {newClaims.size} of them are stated as ", .code "theorem",
+             .text "s: new claims, not new machinery."])
+    blocks := blocks.push list
+  if let some list := listOf trustMoved then
+    blocks := blocks.push <| .other (Block.sectionHeading
+      s!"Trust surface moved ({trustMoved.size})") #[]
+    blocks := blocks.push <| .para #[
+      .text "A ", .code "sorry", .text ", an axiom, or a specification appeared or disappeared \
+        beneath these while nothing about the declarations themselves moved — the gap is in \
+        something they rest on, so not a character of them had to change for it to open. Where a \
+        statement changed as well, that is noted on its row in the sections above rather than \
+        repeated here."
+    ]
+    blocks := blocks.push list
+  if let some list := listOf proofs then
+    blocks := blocks.push <| .other (Block.sectionHeading
+      s!"Proof-only changes ({proofs.size})") #[]
+    blocks := blocks.push <| .para #[
+      .bold #[.text "No re-reading follows from these. "],
+      .text "Their statements are identical and the kernel has rechecked the new proofs. A proof \
+        cannot change what a theorem says, so a reader who accepted these in the baseline still \
+        accepts them — the same argument the ", .link #[.text "Trust"] "trust/",
+      .text " page makes about upstream proofs, applied across revisions instead of across the \
+        dependency graph."
+    ]
+    blocks := blocks.push <| .other (Block.details
+      { summary := if proofs.size == 1 then "Show the one proof-only change"
+          else s!"Show the {proofs.size} proof-only changes" }) #[list]
+  blocks := blocks.push <| .para #[
+    .bold #[.text "What this comparison can and cannot see. "],
+    .text "Statements are compared as elaborated types, so reformatting and renamed bound variables \
+      do not count as changes and an edited ", .code "variable", .text " line does. Bodies have no \
+      elaborated form here and are compared as source text, which over-reports: reindenting a \
+      definition counts. That is the deliberate direction — the cost is a page of extra reading \
+      rather than a missed invalidation. Whether an extracted file still compiles is not compared \
+      at all, since that lives in the build output rather than in the collected data."
+  ]
+  return {
+    title := #[.text "Changes"]
+    titleString := "Changes"
+    metadata := some {
+      file := some "changes"
+      shortTitle := some "Changes"
+      tag := some (.provided "changes")
       number := false
     }
     content := blocks
@@ -1431,6 +1783,9 @@ private def mkBrowsePart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
       -- Left `none` for anything a specification cannot be about, so the table can offer "has no
       -- specification" as a filter without sweeping in every theorem in the library.
       specs := if decl.isDefinitionLike then some decl.specifiedBy.size else none
+      -- `none` throughout when no baseline was given, which is what makes the column disappear.
+      change := if ctx.diff?.isNone then none
+        else some ((ctx.changes.get? decl.name).map (·.kind.slug) |>.getD "unchanged")
       : BrowseRow
     }
   {
@@ -1445,7 +1800,8 @@ private def mkBrowsePart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
     content := #[
       .para #[.text s!"Every one of the {decls.size} exposed declarations. Sort by any column, \
         and filter by kind, chapter, trust, \
-        {if ctx.usesSpecs then "specification, " else ""}or name."],
+        {if ctx.usesSpecs then "specification, " else ""}\
+        {if ctx.diff?.isSome then "revision status, " else ""}or name."],
       .para #[
         .text "“Deps” counts the project declarations in a declaration's closure and “External” \
           the distinct constants outside the project it bottoms out in — together, how much a \
@@ -1458,6 +1814,14 @@ private def mkBrowsePart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
           specification. Sorting it ascending, or filtering to “no specification”, lists the \
           definitions nothing in the project says the meaning of; ",
         .link #[.text "Specifications"] "specifications/", .text " does the same with more context."
+      ]
+    ]) ++ (if ctx.diff?.isNone then #[] else #[
+      .para #[
+        .text "“Changed” is relative to the baseline this site was built against. Filtering it to \
+          “needs re-reading” gives the queue for a reader returning to a revised library, across \
+          the whole project rather than one module at a time; ",
+        .link #[.text "Changes"] "changes/",
+        .text " groups the same declarations by what happened to them, largest consequence first."
       ]
     ]) ++ #[
       .other (Block.browseTable { rows }) #[]
@@ -1685,7 +2049,8 @@ private def mkLandingBlocks (rootPrefix : Name) (decls : Array DeclInfo) (ctx : 
         #[.code "sorry", .text " anywhere"]
     else
       #[.text s!" and proves {decls.size - sorried.size} of its {decls.size} declarations; \
-        {sorried.size} still rest on a "] ++ #[.code "sorry"]
+        {sorried.size} still {if sorried.size == 1 then "rests" else "rest"} on a "] ++
+        #[.code "sorry"]
   let claimed : Array (Inline Manual) := #[
     .code rootPrefix.toString,
     .text s!" states {claims.size} \
@@ -1723,6 +2088,23 @@ private def mkLandingBlocks (rootPrefix : Name) (decls : Array DeclInfo) (ctx : 
     .text "Every declaration here carries what it claims, what it rests on, and a single \
       self-contained Lean file holding everything you would have to read to check it."
   ]
+  -- For a reader coming back to a revised library this is the only sentence on the page they need,
+  -- so it goes above the claims listing rather than below it.
+  if let some report := ctx.diff? then
+    let reaudit := report.needingReaudit
+    let against :=
+      if report.baselineLabel.isEmpty then "the baseline" else report.baselineLabel
+    blocks := blocks.push <| .para <|
+      if reaudit.isEmpty then
+        #[.bold #[.text s!"Nothing needs re-reading since {against}. "],
+          .link #[.text "Changes"] "changes/",
+          .text " says what did move, including the proofs the kernel has already rechecked."]
+      else
+        #[.bold #[.text "Read this before you read anything else. "],
+          .text s!"{reaudit.size} \
+            {if reaudit.size == 1 then "declaration needs" else "declarations need"} reading again \
+            since {against} — ",
+          .link #[.text "what changed and why"] "changes/", .text "."]
   blocks := blocks.push <| .para #[
     .bold #[.text "The results, largest first by how much machinery they rest on."]
   ]
@@ -1749,10 +2131,13 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
     content := mkLandingBlocks rootPrefix decls ctx
       ++ mkDashboardBlocks groups
       ++ overviewBlocks
-    -- The Specifications page exists only for a project that annotates: see
-    -- `SiteContext.usesSpecs`. It sits next to Claims because they are the same kind of thing —
-    -- what the library says about itself — as opposed to Trust, which is what it rests on.
-    subParts := #[mkClaimsPart decls ctx]
+    -- Changes comes first when there is a baseline: a returning reader's first question is what
+    -- their earlier reading no longer covers, and every other page answers a question they have
+    -- already asked once. Absent `--baseline` the page does not exist at all.
+    subParts := (match ctx.diff? with
+        | some report => #[mkChangesPart report ctx]
+        | none => #[])
+      ++ #[mkClaimsPart decls ctx]
       ++ (if ctx.usesSpecs then #[mkSpecificationsPart decls ctx] else #[])
       ++ #[mkBrowsePart decls ctx, mkModulesPart groups ctx, mkTrustPart decls ctx]
       ++ (groups.map fun group => mkGroupPart group ctx)
@@ -1935,6 +2320,30 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
       Run the `highlight` subcommand for interactive Lean."
   else
     IO.println s!"Loaded highlighting for {declHighlights.size} declarations"
+  -- The baseline comparison. A pure function of the two JSON files, so it belongs here with the
+  -- other render-time flags rather than in a phase of its own; see `Referee/Diff.lean`.
+  let diff? ← match cfg.baselinePath with
+    | none => pure none
+    | some path => do
+      let baseline ← loadCollectedData path
+      let label := cfg.baselineLabel.getD (System.FilePath.mk path).fileName.get!
+      let report := diff baseline data label
+      IO.println s!"Baseline {path}: {report.needingReaudit.size} of {data.decls.size} \
+        declarations need re-reading ({(report.ofKind .statementChanged).size} statement, \
+        {(report.ofKind .bodyChanged).size} definition, {(report.ofKind .indirect).size} indirect, \
+        {(report.ofKind .added).size} new); {(report.ofKind .proofOnly).size} proof-only and \
+        {report.removed.size} removed"
+      if report.looksLikeToolchainChurn then
+        IO.eprintln "warning: almost every statement is reported as changed, which is the shape a \
+          toolchain upgrade produces rather than an edit. Statements are compared as \
+          pretty-printed elaborated types; collect both revisions on the same toolchain for a \
+          meaningful diff."
+      pure (some report)
+  -- Reverse `transDeps`, counted once. Only when there is a baseline: nothing else asks for it.
+  let dependentCounts : Std.HashMap Name Nat :=
+    if diff?.isNone then {}
+    else data.decls.foldl (init := {}) fun acc decl =>
+      decl.transDeps.foldl (init := acc) fun acc dep => acc.insert dep (acc.getD dep 0 + 1)
   let ctx : SiteContext := {
     repoUrl? := cfg.repoUrl
     siteUrl? := cfg.siteUrl
@@ -1949,6 +2358,9 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     externalPackages := data.externalPackages.foldl (fun acc (c, pkg) => acc.insert c pkg) {}
     trusted := trustClosure data.packages cfg.trustedPackages
     usesSpecs := data.decls.any (!·.specifies.isEmpty)
+    diff? := diff?
+    changes := (diff?.map (·.byName)).getD {}
+    dependentCounts := dependentCounts
   }
   let overviewBlocks := mkProjectOverviewBlocks data.readmeText cfg.repoUrl
   let root := mkRootPart cfg data.rootPrefix groups data.decls ctx overviewBlocks

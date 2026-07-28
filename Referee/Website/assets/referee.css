@@ -37,6 +37,15 @@
   --site-warn-soft: #fbf1de;
   --site-warn-border: #e4c68a;
 
+  /* Statement diffs. Not red/green: the two sides of a changed statement are the previous and the
+     current wording, neither of which is an error, and a red statement reads as a broken one.
+     Colour carries the distinction, and the strike-through carries it again for anyone who cannot
+     use the colour. */
+  --site-del: #8c3f52;
+  --site-del-soft: #fbecef;
+  --site-ins: #2f6b4f;
+  --site-ins-soft: #e8f4ed;
+
   /* Declaration kinds. Muted enough to sit under text without shouting. */
   --site-kind-theorem: #3f6fa8;
   --site-kind-definition: #4a7c6f;
@@ -102,6 +111,11 @@
     --site-warn-soft: #241d10;
     --site-warn-border: #5a4620;
 
+    --site-del: #e08a9c;
+    --site-del-soft: #2a151a;
+    --site-ins: #7fc3a1;
+    --site-ins-soft: #142219;
+
     --site-kind-theorem: #7fa9d8;
     --site-kind-definition: #74b3a2;
     --site-kind-structure: #ab93c6;
@@ -142,6 +156,11 @@
   --site-warn: #e0b25e;
   --site-warn-soft: #241d10;
   --site-warn-border: #5a4620;
+
+  --site-del: #e08a9c;
+  --site-del-soft: #2a151a;
+  --site-ins: #7fc3a1;
+  --site-ins-soft: #142219;
 
   --site-kind-theorem: #7fa9d8;
   --site-kind-definition: #74b3a2;
@@ -838,6 +857,153 @@ body.hide-theorems [data-decl-group="theorem"] {
 }
 
 .browse-spec-na { color: var(--site-ink-3); }
+.browse-change-na { color: var(--site-ink-3); }
+
+/* --------------------------------------------------------------- changes --- */
+
+/* The Changes page and the banner on a declaration whose meaning moved. Both are read by someone
+   who has already worked through an earlier revision and wants to know what their reading no
+   longer covers, so the visual weight follows severity: a changed statement is bordered in the
+   removal colour, a proof-only change is unbordered and quiet. */
+
+.change-list {
+  display: flex;
+  flex-direction: column;
+  gap: .7rem;
+  list-style: none;
+  margin: .8rem 0 1.4rem;
+  padding: 0;
+}
+
+.change-item {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-left: 3px solid var(--site-border-strong);
+  border-radius: var(--site-radius-sm);
+  padding: .6rem .8rem;
+}
+
+.change-item--statement,
+.change-item--indirect,
+.change-item--body { border-left-color: var(--site-del); }
+.change-item--removed { border-left-color: var(--site-warn); }
+.change-item--added { border-left-color: var(--site-ins); }
+.change-item--proof,
+.change-item--unchanged { border-left-color: var(--site-border-strong); }
+
+.change-head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+
+.change-name { text-decoration: none; }
+.change-name code { overflow-wrap: anywhere; }
+
+.change-module,
+.change-dependents { color: var(--site-ink-3); font-size: .8rem; }
+
+/* Pushed to the far end of the header: it is the number that decides which of these rows to read
+   first, and it should line up down the page rather than float after names of varying length. */
+.change-dependents { margin-left: auto; white-space: nowrap; }
+
+.change-chip {
+  border-radius: 999px;
+  font-size: .72rem;
+  padding: .05rem .45rem;
+  white-space: nowrap;
+}
+
+.change-chip--statement,
+.change-chip--indirect,
+.change-chip--body {
+  background: var(--site-del-soft);
+  color: var(--site-del);
+}
+
+.change-chip--added {
+  background: var(--site-ins-soft);
+  color: var(--site-ins);
+}
+
+.change-chip--removed {
+  background: var(--site-warn-soft);
+  border: 1px solid var(--site-warn-border);
+  color: var(--site-warn);
+}
+
+.change-chip--proof,
+.change-chip--unchanged {
+  border: 1px solid var(--site-border-strong);
+  color: var(--site-ink-3);
+}
+
+.change-body:empty { display: none; }
+
+.stmt-diff,
+.stmt-plain {
+  background: var(--site-surface-2);
+  border-radius: var(--site-radius-sm);
+  font-size: .82rem;
+  margin: .5rem 0 0;
+  overflow-x: auto;
+  padding: .5rem .6rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.stmt-tok--del {
+  background: var(--site-del-soft);
+  color: var(--site-del);
+  text-decoration: line-through;
+}
+
+.stmt-tok--ins {
+  background: var(--site-ins-soft);
+  color: var(--site-ins);
+}
+
+.change-note {
+  color: var(--site-ink-3);
+  font-size: .8rem;
+  margin: .4rem 0 0;
+}
+
+.change-causes-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  list-style: none;
+  margin: .25rem 0 0;
+  padding: 0;
+}
+
+.change-causes-list li { font-size: .82rem; }
+
+.change-trust {
+  color: var(--site-warn);
+  font-size: .82rem;
+  margin: .5rem 0 0;
+  padding-left: 1.1rem;
+}
+
+/* The banner sits above the declaration card, so it has to read as an interruption of the page
+   rather than as its first section. */
+.change-banner {
+  background: var(--site-surface-2);
+  border: 1px solid var(--site-border);
+  border-left: 3px solid var(--site-del);
+  border-radius: var(--site-radius-sm);
+  margin: 0 0 1rem;
+  padding: .7rem .9rem;
+}
+
+.change-banner--proof,
+.change-banner--unchanged { border-left-color: var(--site-border-strong); }
+.change-banner--added { border-left-color: var(--site-ins); }
+
+.change-banner-since { color: var(--site-ink-3); font-size: .8rem; }
 
 /* ------------------------------------------------------------------ graph */
 

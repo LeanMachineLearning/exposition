@@ -67,6 +67,14 @@ structure Cli where
   sets, which is the point — "what if I have not audited LML" should not need re-importing the
   project. -/
   trustedPackages : Array Name := #[]
+  /-- An earlier `collect` output to diff the current one against (`--baseline`).
+
+  A render-time flag for the same reason `--trust` is one: the comparison is a pure function of the
+  two JSON files, so a reader can ask "what changed since v0.2" without re-importing anything. With
+  none given, the site says nothing about revisions at all. -/
+  baselinePath : Option String := none
+  /-- What to call the baseline on the page (`--baseline-label`). Defaults to the file name. -/
+  baselineLabel : Option String := none
 deriving Repr
 
 /-- Classification of exposed Lean declarations. -/
@@ -195,6 +203,10 @@ structure BrowseRow where
   specification cannot be about (see `DeclInfo.isDefinitionLike`), which is what lets the table
   distinguish "no specification" from "not the sort of thing that has one". -/
   specs : Option Nat := none
+  /-- How it changed since the baseline (`ChangeKind.slug`), or `none` when the site was built
+  without `--baseline`. The column and its filter exist only in the `some` case, so a site with no
+  baseline is exactly the site it was before the field existed. -/
+  change : Option String := none
 deriving Repr, ToJson, FromJson, Inhabited
 
 /-- Data container for BrowseData. -/
@@ -339,6 +351,25 @@ def DeclInfo.isDefinitionLike (decl : DeclInfo) : Bool :=
     match decl.kind with
     | .definition | .structure | .typeclass | .inductive | .opaque => true
     | .theorem | .axiom | .instance => false
+
+/-- Whether this is one of the library's *claims*: a result written with the `theorem` keyword
+rather than `lemma`.
+
+The one piece of editorial intent the tool cannot derive — Lean records both keywords as the same
+kind — so it is read from the author's own signal and taken at face value. See `claimsOf` in
+`Website/Site.lean` for what rests on it and why a derived rule was rejected. -/
+def DeclInfo.isClaim (decl : DeclInfo) : Bool :=
+  decl.kind == .theorem && !decl.isLemma && !decl.isInstanceDecl
+
+/-- Whether a declaration's *body* is part of what it means, as opposed to being a proof the kernel
+has already checked.
+
+The same rule `trustDepsOf` applies to dependency edges, applied here across revisions instead:
+changing a definition's body changes the meaning of every statement about it, while changing a
+theorem's proof changes nothing a reader has to re-read. An `alias` counts as a definition for this
+purpose for the reason recorded on `DeclInfo.isAlias` — its body is kept verbatim. -/
+def DeclInfo.bodyIsMeaning (decl : DeclInfo) : Bool :=
+  decl.kind != .theorem || decl.isAlias
 
 /-- Exposed declarations grouped by Lean module. -/
 structure ModuleInfo where
@@ -487,6 +518,11 @@ def usage : String :=
     "  --trust PKG          Treat this upstream package, and everything it depends on, as",
     "                       audited. Repeatable. Anything left untrusted is reported on the",
     "                       trust page and on the pages of the declarations that rest on it",
+    "  --baseline PATH      An earlier `collect` output to compare against. Adds a Changes page,",
+    "                       a badge on every declaration, and a Browse column saying what a",
+    "                       reader of that revision has to read again. Omit it and the site says",
+    "                       nothing about revisions",
+    "  --baseline-label S   What to call the baseline on the page (default: its file name)",
     "  --module NAME        Internal: the module `highlight-module` should process",
     "  --input FILE         Internal: the file `highlight-file` should process",
   ]
@@ -532,6 +568,12 @@ def parseArgs : List String → Except String Cli
   | "--trust" :: name :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with trustedPackages := cfg.trustedPackages.push name.toName }
+  | "--baseline" :: path :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with baselinePath := some path }
+  | "--baseline-label" :: label :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with baselineLabel := some label }
   | flag :: _ =>
       .error s!"Unknown or incomplete option: {flag}\n\n{usage}"
 
@@ -899,11 +941,42 @@ partial def dropLeadingDecorations (lines : List String) : List String :=
 def cleanDeclSnippet (snippet : String) : String :=
   (String.trimAscii (String.intercalate "\n" (dropLeadingDecorations (snippet.splitOn "\n")))).toString
 
-/-- Helper for headBeforeAssignment. -/
+/-- Splits a declaration's source snippet at the `:=` separating its signature from its value, into
+the part before and the part after.
+
+The separator is the first `:=` **at bracket depth zero**, not simply the first one, and the
+distinction is not academic. A statement may contain any number of `:=` tokens inside brackets — a
+named argument (`Tendsto (β := ProbabilityMeasure …)`), a structure instance (`{ x := 1 }`), a
+binder default (`(n : ℕ := 0)`) — and splitting on the first of them truncates the statement
+mid-expression while handing its tail to the proof section. Depth counting is enough to tell them
+apart, since the proof separator is the only one a declaration can have outside every bracket.
+
+Returns `none` when there is no top-level `:=` at all, which is the ordinary case for an `axiom` or
+a declaration whose value is given by `where` clauses. -/
+def splitAtAssignment (snippet : String) : Option (String × String) := Id.run do
+  let chars := snippet.toList
+  let arr := chars.toArray
+  let mut depth : Int := 0
+  let mut cut : Option Nat := none
+  for i in [0:arr.size] do
+    if cut.isNone then
+      let c := arr[i]!
+      if c == '(' || c == '[' || c == '{' || c == '⟨' then
+        depth := depth + 1
+      else if c == ')' || c == ']' || c == '}' || c == '⟩' then
+        depth := depth - 1
+      else if c == ':' && depth == 0 && i + 1 < arr.size && arr[i + 1]! == '=' then
+        cut := some i
+  match cut with
+  | none => return none
+  | some k => return some (String.ofList (chars.take k), String.ofList (chars.drop (k + 2)))
+
+/-- The signature part of a snippet: everything before the top-level `:=`, or the whole snippet
+when it has none. -/
 def headBeforeAssignment (snippet : String) : String :=
-  match snippet.splitOn ":=" with
-  | first :: _ => (String.trimAscii first).toString
-  | [] => (String.trimAscii snippet).toString
+  match splitAtAssignment snippet with
+  | some (head, _) => (String.trimAscii head).toString
+  | none => (String.trimAscii snippet).toString
 
 /-- Helper for headBeforeWhere. -/
 def headBeforeWhere (snippet : String) : String :=
@@ -1114,11 +1187,9 @@ def proofTextFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : Ar
       -- lands on a `:=` *inside an attribute* — `@[to_additive (attr := simp)]` made the "Proof"
       -- section start with `simp)]` followed by the entire declaration.
       let snippet := cleanDeclSnippet (sliceSourceSnippet lines src)
-      match snippet.splitOn ":=" with
-      | _prefix :: rest@(_ :: _) =>
-          some <| (String.trimAscii (String.intercalate ":=" rest)).toString
-      | _ =>
-          some snippet
+      match splitAtAssignment snippet with
+      | some (_, proof) => some (String.trimAscii proof).toString
+      | none => some snippet
   | _, _ => none
 
 /-- Computes module IndexMap. -/

@@ -30,6 +30,12 @@ Features:
 - a specifications page, for projects that annotate their theorems with
   [`@[specifies]`](LeanSpec/): which definitions their author said something about, which they
   said nothing about, and — on each definition's own page — the properties themselves
+- **revisions**: given an earlier `collect` output (`--baseline`), a Changes page saying what a
+  reader who already worked through that revision has to read again. Statement changes, and — the
+  case no textual diff of the repository can show — the results *invalidated indirectly*, whose own
+  statements are untouched but whose meaning rests on a definition that moved. Proof-only changes
+  are collapsed and stated to need no re-reading, on the same ground the trust page gives for
+  upstream proofs: the kernel rechecked them
 - per-declaration standalone Lean files (under `extracted/`), each self-contained with its transitive
   dependencies inlined and theorem proofs replaced by `sorry`, optionally linked into the
   [live.lean-lang.org](https://live.lean-lang.org) web editor (see `--site-url`)
@@ -186,6 +192,12 @@ file for the declarations whose readable version does not compile. See
   everything else. Anything left untrusted is listed on the trust page, with how many declarations
   have its definitions in their statements, and named on each of those declarations' pages. With no
   `--trust` at all, every upstream package counts as unaudited and the page says so
+- `--baseline PATH`: an earlier `collect` output to compare this one against. A render-time flag,
+  like `--trust`: the comparison is a pure function of the two JSON files, so "what changed since
+  v0.2" costs one flag and no re-import. Adds a Changes page, a banner on every declaration whose
+  meaning moved, and a Browse column and filter. Omit it and the site says nothing about revisions
+  at all
+- `--baseline-label S`: what to call the baseline on the page (default: its file name)
 - `--title TITLE`: override the site title
 - `--output DIR`: output directory passed through to Verso
 - `--exclude-lib NAME`: root library to skip when importing the target project
@@ -215,6 +227,11 @@ file for the declarations whose readable version does not compile. See
   `Lean.collectAxioms`, i.e. the same answer `#print axioms` gives. `@[specifies]` annotations are
   read here too and reversed by `attachSpecifiedBy`, the one field on `DeclInfo` that is not
   derived from the environment but taken from the author.
+- `Referee/Diff.lean` — the revision comparison (`--baseline`): a pure function of two
+  `CollectedData` values, with no environment and no notion of a page. Classifies each declaration
+  as statement-changed, body-changed, indirectly invalidated, proof-only, added or unchanged,
+  propagating meaning changes along `transDeps` and nothing else along anything. Fully unit-tested
+  in `Test/Diff.lean`, which is affordable precisely because it is pure.
 - `Referee/Extract.lean` — the standalone `.lean` file extraction (see `KNOWN-ISSUES.md`).
 - `Referee/Highlight.lean` — source-text highlighting. Runs the Lean frontend over a file and
   returns SubVerso `Highlighted` per command, tagged with the names each command defines, plus any
@@ -279,6 +296,54 @@ its statement, everything else its body too, since a definition's body is part o
 difference is not cosmetic. On `AlphaRAR`, following proofs reported 172 declarations as resting on
 `batteries`; following statements reports none, because no statement in the project mentions a
 Batteries definition — every one of those 172 was a kernel-checked proof detail needing no audit.
+
+## Comparing Revisions
+
+Refereeing is iterative: a reader works through the library, the author revises it, and the reader
+must not start over. `--baseline` is what makes that possible — an earlier `collect` output to
+compare the current one against:
+
+```bash
+"$REFEREE" build-site --data data.json --baseline v0.2/data.json --baseline-label v0.2 \
+  --output "$OUT"
+```
+
+It is a render-time flag like `--trust`, because the comparison is a pure function of the two JSON
+files: no environment, no source tree, no re-import. Publishing `data.json` beside each released
+site is therefore the only thing an author has to do to make the next revision diffable.
+
+The classification is the site's own meaning/trust split (`graphDeps`) applied across time rather
+than across the dependency graph:
+
+- a **statement change** invalidates any reading of the declaration;
+- a **body change** invalidates one only where the body *is* the meaning — for a definition, not
+  for a theorem, whose proof the kernel has rechecked;
+- an **indirect invalidation** is the case the feature exists for. A theorem whose own statement is
+  untouched, but whose statement mentions a definition that changed, now means something different
+  while reading byte-identically. No textual diff of the repository can show it; closing the changed
+  set over `transDeps` finds it exactly.
+- **proof-only changes** need no re-reading at all, and the page says so — this is where the bulk of
+  any real revision lands, and telling a referee what they may skip is half the value.
+
+Three things bound what the comparison claims, all of them stated on the page itself:
+
+- **Statements are compared as elaborated types** (`expandedSignature`), which is the only field
+  that is right in both directions: reformatting and renamed bound variables do not count, and an
+  edited `variable` line does — it changes a theorem's statement without touching a character of its
+  own source text.
+- **Bodies are compared as source text**, because nothing elaborated is recorded for them. That
+  over-reports: reindenting a definition counts as a change. The direction is deliberate — the cost
+  is a page of extra reading rather than a missed invalidation.
+- **A toolchain upgrade between the two collections invalidates the whole comparison**, since it can
+  change how every type pretty-prints at once. `build-site` warns when the diff has that shape
+  (nearly every statement reported as changed) and the page says so rather than telling the reader
+  to re-audit the library.
+
+Extraction compile status is not compared: it lives in the `extracted-highlighting/` output rather
+than in `data.json`, so it is out of range for a diff of two collected-data files.
+
+[`PROPOSED-TOOLS.md`](PROPOSED-TOOLS.md) records the design, including the parts deliberately not
+built.
 
 ## What The Tool Assumes About Your Library
 

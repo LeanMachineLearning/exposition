@@ -36,7 +36,7 @@ lean_lib Referee where
   needs := #[websiteAssets]
 
 lean_lib Test where
-  globs := #[`Test, `Test.Collect, `Test.Deps, `Test.Extract, `Test.Spec]
+  globs := #[`Test, `Test.Collect, `Test.Deps, `Test.Diff, `Test.Extract, `Test.Spec]
 
 @[default_target]
 lean_exe referee where
