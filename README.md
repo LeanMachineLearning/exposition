@@ -136,10 +136,15 @@ Verso writes the site into the chosen output directory, typically under `html-mu
 ## Verifying Extracted Files Compile
 
 Each file under `extracted/` is self-contained (it inlines its transitive dependencies and
-replaces theorem proofs with `sorry`), but nothing checks that it actually compiles until
-something tries to. `scripts/check-extracted-compile.sh` does that check: it runs `lake env
-lean` on every extracted `.lean` file from inside the target project (so imports like Mathlib
-resolve), in parallel, and reports which files fail with their error output.
+replaces theorem proofs with `sorry`), and its header imports the project's external dependency
+frontier — less `LeanSpec`, whose `@[specifies]` annotations the extraction strips, so nothing in
+the file needs it and the web editor (which has Mathlib and nothing else) is not asked for a
+package it cannot resolve.
+
+Nothing checks that a file actually compiles until something tries to.
+`scripts/check-extracted-compile.sh` does that check: it runs `lake env lean` on every extracted
+`.lean` file from inside the target project (so imports like Mathlib resolve), in parallel, and
+reports which files fail with their error output.
 
 ```bash
 scripts/check-extracted-compile.sh /path/to/target-repo /path/to/site-out/html-multi/extracted

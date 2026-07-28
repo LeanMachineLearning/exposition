@@ -1,7 +1,7 @@
 # Known issues in `extract`
 
 > There is a second, independent extraction path, `extract-flat`, which trades readability for
-> robustness and currently compiles **3159 / 3159 (100%)** on the same corpora. See
+> robustness and currently compiles **3164 / 3164 (100%)** on the same corpora. See
 > [Fallback: `extract-flat`](#fallback-extract-flat) at the end of this file. The issues below are
 > specific to `extract` and remain the reason the readable tier needs a fallback at all.
 
@@ -15,14 +15,20 @@ whole corpus; none of it is estimated.
 |---|---|---|
 | brownian-motion | 1671 / 1677 | 6 |
 | LML (`LeanMachineLearning`) | 696 / 698 | 2 |
-| alpha-rar | 779 / 784 | 5 |
-| **total** | **3146 / 3159 (99.59%)** | **13** |
+| alpha-rar | 784 / 789 | 5 |
+| **total** | **3151 / 3164 (99.59%)** | **13** |
 
 > brownian-motion went from 4 failures to 6 when the dependency analysis was corrected (see
 > [issue 4](#4-to_additive-existing-needs-a-declaration-the-term-never-mentions)). The two extra
 > files were never *correctly* extracted; they compiled because spurious dependency edges happened
 > to drag in the declaration they needed. Removing 188 impossible edges removed that accident too.
-> Only brownian-motion has been re-measured since; the LML and alpha-rar rows predate the change.
+> Only brownian-motion has been re-measured since; the LML row predates the change.
+
+> alpha-rar was re-measured after `LeanSpec` was dropped from the import block (see
+> `excludedImports`): 789 declarations now, up 5, with the same 5 failures — all of them
+> [issue 1](#1-private-declarations-are-unreachable-5-files-alpha-rar). It is the only corpus that
+> uses `@[specifies]`, so it is the one where withholding that import could have shown up, and
+> nothing in it did.
 
 Reproduce with, per project:
 
@@ -176,8 +182,8 @@ Fully qualified names, `@`-explicit applications, `sorry` for every proof; no `v
 |---|---|---|
 | brownian-motion | 1677 / 1677 | 0 |
 | LML (`LeanMachineLearning`) | 698 / 698 | 0 |
-| alpha-rar | 784 / 784 | 0 |
-| **total** | **3159 / 3159 (100%)** | **0** |
+| alpha-rar | 789 / 789 | 0 |
+| **total** | **3164 / 3164 (100%)** | **0** |
 
 Reproduce exactly as for `extract`, substituting the subcommand and the output directory:
 
