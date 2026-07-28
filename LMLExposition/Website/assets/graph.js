@@ -25,6 +25,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const UNIT = graph.unit || 'declaration';
   const UNITS = UNIT + 's';
   const hasFocus = allNodes.some(n => n.focus);
+  // Package graphs carry trust verdicts rather than chapters and `sorry` flags, so the
+  // legend has to describe a different picture.
+  const hasUntrusted = allNodes.some(n => n.status === 'untrusted');
 
   // ---------------------------------------------------------------- constants
 
@@ -58,6 +61,10 @@ document.addEventListener('DOMContentLoaded', () => {
     theme.focusInk = css('--site-surface', '#ffffff');
     theme.ink = css('--site-ink', '#14161a');
     theme.sorry = css('--site-warn', '#8a5a10');
+    /* Package graphs mark an unaudited dependency. Deliberately not `theme.sorry`: on this
+       site amber-dashed means "depends on sorry", and an unaudited package is a different
+       claim — the code may be perfectly correct, nobody has vouched for it. */
+    theme.untrusted = css('--site-ink-3', '#7c838e');
     theme.band = isDark() ? 'rgba(255,255,255,.035)' : 'rgba(20,22,26,.028)';
   };
   readTheme();
@@ -80,9 +87,13 @@ document.addEventListener('DOMContentLoaded', () => {
       down to what uses it. Edges implied by a longer path are not drawn, so what you see is the
       essential structure rather than every direct edge. Scroll to zoom, drag to pan, click a node
       to focus it, double-click to open its page.</p>
-    <p class="graph-legend">${groups.length > 1 ? 'Colour marks the chapter. ' : ''}${hasFocus
+    <p class="graph-legend">${UNIT === 'package'
+      ? 'A grey dashed outline marks a package nobody has vouched for. '
+      : `${groups.length > 1 ? 'Colour marks the chapter. ' : ''}${hasFocus
       ? 'The filled node is the declaration this page is about. '
-      : ''}An amber dashed outline marks something that depends on <code>sorry</code>. A
+      : ''}An amber dashed outline marks something that depends on <code>sorry</code>. ${hasUntrusted
+      ? 'A grey dashed outline marks a declaration from an unaudited upstream package: it has no page here, and trusting this result means trusting it. '
+      : ''}`}A
       violet dashed edge curving back upwards belongs to a dependency <em>cycle</em>: those
       ${UNITS} refer to each other, so no ordering of rows can place both below everything they
       depend on.</p>
@@ -365,7 +376,7 @@ document.addEventListener('DOMContentLoaded', () => {
       .attr('class', 'graph-row-label')
       .text(i => (i === 0 ? 'no deps' : String(i)));
 
-    const edgeSel = edgeLayer.selectAll('path').data(routed, r => r.edge.source + ' ' + r.edge.target);
+    const edgeSel = edgeLayer.selectAll('path').data(routed, r => r.edge.source + '\0' + r.edge.target);
     edgeSel.exit().remove();
     edgeSel.enter().append('path')
       .attr('stroke-width', 1.5)
@@ -396,9 +407,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const c = d3.color(colorOf(n.groupKey)); c.opacity = 0.13; return c.formatRgb();
       })
       .attr('stroke', n => (n.focus ? theme.focusFill
-        : n.status === 'sorry' ? theme.sorry : colorOf(n.groupKey)))
+        : n.status === 'sorry' ? theme.sorry
+        : n.status === 'untrusted' ? theme.untrusted : colorOf(n.groupKey)))
       .attr('stroke-width', n => (n.focus ? 2 : 1.3))
-      .attr('stroke-dasharray', n => (n.status === 'sorry' && !n.focus ? '4 3' : null));
+      .attr('stroke-dasharray', n =>
+        ((n.status === 'sorry' || n.status === 'untrusted') && !n.focus ? '4 3' : null));
     all.select('text.graph-label')
       .attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
       .attr('fill', n => (n.focus ? theme.focusInk : theme.ink))
@@ -416,7 +429,12 @@ document.addEventListener('DOMContentLoaded', () => {
         highlight(state.sel);
         updatePanel();
       })
-      .on('dblclick', (event, n) => { event.preventDefault(); window.location.href = n.href; });
+      // Nodes without an href — upstream declarations, packages — have no page here, so a
+      // double-click must do nothing rather than navigate to the site root.
+      .on('dblclick', (event, n) => {
+        event.preventDefault();
+        if (n.href) window.location.href = n.href;
+      });
 
     updatePanel();
     fit();
@@ -455,7 +473,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!ids || !ids.length) return `<p><strong>${title}:</strong> none shown here.</p>`;
     const items = ids.slice(0, 10).map(i => {
       const n = state.byId.get(i);
-      return n ? `<li><a href="${esc(n.href)}"><code>${esc(n.label)}</code></a></li>` : '';
+      if (!n) return '';
+      return n.href
+        ? `<li><a href="${esc(n.href)}"><code>${esc(n.label)}</code></a></li>`
+        : `<li><code>${esc(n.label)}</code></li>`;
     }).join('');
     const more = ids.length > 10 ? `<p>Showing 10 of ${ids.length}.</p>` : '';
     return `<p><strong>${title}:</strong></p><ul class="graph-neighbor-list">${items}</ul>${more}`;
@@ -476,7 +497,9 @@ document.addEventListener('DOMContentLoaded', () => {
        where it is. */
     const n = state.byId.get(state.sel);
     const warn = n.status === 'sorry'
-      ? '<p class="graph-panel-warn">⚠ depends on <code>sorry</code></p>' : '';
+      ? '<p class="graph-panel-warn">⚠ depends on <code>sorry</code></p>'
+      : n.status === 'untrusted'
+      ? '<p class="graph-panel-warn">⚠ not audited</p>' : '';
     const sig = n.signature ? `<pre class="graph-panel-code">${esc(n.signature)}</pre>` : '';
     const doc = n.doc
       ? `<p class="graph-panel-doc">${esc(n.doc)}</p>`
@@ -487,7 +510,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ${warn}
       ${sig}
       ${doc}
-      <p><a class="decl-card-action" href="${esc(n.href)}">Open declaration</a></p>
+      ${n.href ? `<p><a class="decl-card-action" href="${esc(n.href)}">Open declaration</a></p>` : ''}
       ${neighbourList('Depends on', state.up.get(n.id))}
       ${neighbourList('Used by', state.down.get(n.id))}`;
   }

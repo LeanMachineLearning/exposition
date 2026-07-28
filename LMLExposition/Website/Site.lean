@@ -174,10 +174,14 @@ block_extension Block.declIndex (_payload : DeclIndexData) where
         pure .empty
     let rows := payload.entries.map fun entry =>
       -- Not named `meta`: that is a keyword in the module system.
-      let metaText :=
-        match entry.deps with
-        | some n => s!"{entry.kind} · {n} deps"
-        | none => entry.kind
+      -- Annotated: without it the `Coe String Html` at the use site below makes `base` an `Html`
+      -- and the string interpolation stops elaborating.
+      let metaText : String :=
+        let base :=
+          match entry.deps with
+          | some n => s!"{entry.kind} · {n} deps"
+          | none => entry.kind
+        if entry.note.isEmpty then base else s!"{base} · {entry.note}"
       let flag :=
         if entry.dependsOnSorry then
           {{<span class="decl-index-flag">"depends on sorry"</span>}}
@@ -190,6 +194,47 @@ block_extension Block.declIndex (_payload : DeclIndexData) where
         </li>
       }}
     pure {{<ul class="decl-index">{{rows}}</ul>}}
+
+/- A specification listing: the theorems an author declared to be part of a definition's
+specification, or the definitions a theorem specifies.
+
+Deliberately not a `declIndex`. That renders one link per line, which is right for "everything this
+rests on" — a list nobody reads in full — and wrong here: a specification is three or four
+properties, and whether they pin the definition down is a question about the *statements*. So each
+row carries the statement and the author's note, and the reader decides without leaving the page.
+
+(A plain comment, not a docstring: `block_extension` does not take one.) -/
+block_extension Block.specList (_payload : SpecListData) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI _goB _id data _ => do
+    let .ok (payload : SpecListData) := FromJson.fromJson? data
+      | Verso.reportError s!"Could not decode specification data from {data.compress}"
+        pure .empty
+    let rows := payload.entries.map fun entry =>
+      let nameHtml :=
+        if entry.href.isEmpty then
+          {{<span class="spec-item-name"><code>{{entry.name}}</code></span>}}
+        else
+          {{<a class="spec-item-name" href={{entry.href}}><code>{{entry.name}}</code></a>}}
+      let comment :=
+        if entry.comment.isEmpty then .empty
+        else {{<p class="spec-item-comment">{{entry.comment}}</p>}}
+      let statement :=
+        if entry.signature.isEmpty then .empty
+        else {{<pre class="spec-item-statement"><code>{{entry.signature}}</code></pre>}}
+      {{
+        <li class="spec-item">
+          <div class="spec-item-head">
+            {{nameHtml}}
+            <span class="spec-item-kind">{{entry.kind}}</span>
+          </div>
+          {{comment}}
+          {{statement}}
+        </li>
+      }}
+    pure {{<ul class="spec-list">{{rows}}</ul>}}
 
 /- A heading inside a page's content.
 
@@ -475,6 +520,21 @@ private def loadMinimalFiles (dir : System.FilePath) :
     }
   return acc
 
+/-- The `anchorIdOf` stems for which `extract` wrote a standalone `.lean` file.
+
+Read from the output directory rather than assumed, because `extract` is a separate phase that a
+given run may not have gone through — and because the raw file is what the download and web-editor
+links point at, so offering them for a file that is not there would be a dead link. -/
+private def loadExtractedStems (dir : System.FilePath) : IO (Std.HashSet String) := do
+  if !(← dir.pathExists) then
+    return {}
+  let mut acc : Std.HashSet String := {}
+  for entry in (← dir.readDir) do
+    if entry.path.extension == some "lean" then
+      if let some stem := entry.path.fileStem then
+        acc := acc.insert stem
+  return acc
+
 /-- Shared lookup tables and configuration threaded through page-building helpers. -/
 private structure SiteContext where
   repoUrl? : Option String
@@ -486,6 +546,31 @@ private structure SiteContext where
   declHighlights : Std.HashMap Name Highlighted := {}
   /-- `anchorIdOf` stem ↦ the declaration's minimal file, empty without `highlight-extracted`. -/
   minimalFiles : Std.HashMap String MinimalFile := {}
+  /-- The workspace's packages and their dependency edges. -/
+  packages : Array PackageInfo := #[]
+  /-- The packages with code loaded in the environment, which bounds every closure exactly. -/
+  loadedPackages : Std.HashSet Name := {}
+  /-- Upstream constant ↦ its package, for the constants project statements name. Lets a dependency
+  graph show the upstream declarations a statement rests on, not merely count their packages. -/
+  externalPackages : Std.HashMap Name Name := {}
+  /-- The packages the reader is told to take on trust: `--trust`, closed over dependencies, plus
+  the toolchain. Everything else the project reaches is unaudited upstream code. -/
+  trusted : Std.HashSet Name := {}
+  /-- `anchorIdOf` stems with a standalone `.lean` file on disk, empty without `extract`.
+
+  Kept separate from `minimalFiles` because the two phases are independent: `extract` writes the
+  files, `highlight-extracted` renders them interactively. Conflating them cost the site every
+  pointer to the extracted files whenever highlighting was skipped — the files were written,
+  published and reachable by URL, with nothing on any page linking to them. -/
+  extractedStems : Std.HashSet String := {}
+  /-- Whether the project carries any `@[specifies]` annotation at all.
+
+  Every specification rendering is gated on this. A project that has never heard of the attribute
+  must not be told on each of its definition pages that it has no specification, nor given a
+  Specifications page listing every definition it owns as a gap — that is nagging about a feature,
+  not auditing. Once one annotation exists the author has opted in, and silence about the rest
+  becomes information. -/
+  usesSpecs : Bool := false
 
 /-- Renders one declaration card with docs, statement, links, and dependencies.
 
@@ -578,6 +663,55 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
       else
         none)) #[]
   { nodes, edges }
+
+/-- Adds the declarations from unaudited upstream packages that `decls` name in their statements.
+
+The picture is otherwise project-internal, which for an audit is the wrong boundary: a graph whose
+bottom row is "external constants, not shown" hides the very thing a referee has not checked. These
+nodes are where the reader's trust actually has to start, so they belong in the drawing — visibly
+distinct, unclickable (this site exposes no page for them), and sitting in the top row because
+nothing in the graph precedes them.
+
+Only *unaudited* packages, and only what a statement names. Including trusted upstream would put
+several hundred Mathlib nodes on every page; including proof-only references would add constants the
+kernel has already checked. On `AlphaRAR` this comes to at most 9 extra nodes on any page, and 0 on
+most — the whole trust surface into `LeanMachineLearning` is 15 declarations. -/
+private def withUpstreamNodes (data : GraphData) (decls : Array DeclInfo) (ctx : SiteContext)
+    (depsOf : DeclInfo → Array Name) : GraphData :=
+  let shown : Std.HashSet String := data.nodes.foldl (fun acc n => acc.insert n.id) {}
+  let untrustedOf (dep : Name) : Option Name := do
+    let pkg ← ctx.externalPackages.get? dep
+    if ctx.trusted.contains pkg then none else some pkg
+  -- One entry per constant however many declarations name it, so a definition used throughout the
+  -- page is one node with several edges rather than several nodes.
+  let refs := decls.foldl (init := ({} : Std.HashMap Name Name)) fun acc decl =>
+    (depsOf decl).foldl (init := acc) fun acc dep =>
+      if ctx.declByName.contains dep then acc
+      else match untrustedOf dep with
+        | some pkg => acc.insert dep pkg
+        | none => acc
+  let nodes := refs.toArray.qsort (fun a b => Name.lt a.1 b.1) |>.filterMap fun (name, pkg) =>
+    if shown.contains name.toString then none
+    else some {
+      id := name.toString
+      label := name.getString!
+      kind := "Upstream declaration"
+      status := "untrusted"
+      -- Its own group, so the fill distinguishes it from any chapter of the project.
+      groupKey := pkg.toString
+      moduleName := pkg.toString
+      -- No page on this site; `graph.js` renders an hrefless node unclickable.
+      href := ""
+      signature := name.toString
+      doc := s!"From {pkg}, which is not marked audited. This site exposes {pkg} only as far as the \
+        declarations here name it."
+    }
+  let edges := decls.foldl (init := #[]) fun acc decl =>
+    acc ++ (depsOf decl).filterMap fun dep =>
+      if refs.contains dep && !shown.contains dep.toString then
+        some { source := dep.toString, target := decl.name.toString }
+      else none
+  { data with nodes := data.nodes ++ nodes, edges := data.edges ++ edges }
 
 /-- All nodes reachable from `start` via one or more edges of `adj`, tolerant of cycles (a node
 already on the current path contributes nothing further rather than looping forever). Threads a
@@ -702,7 +836,8 @@ private def closureSize (decl : DeclInfo) (ctx : SiteContext) : Nat :=
 
 /-- A list of declarations rendered one per line with closure size, module, and trust status. The
 workhorse index rendering: used for module contents, claims, and the trust checklist. -/
-private def declIndexList (decls : Array DeclInfo) (ctx : SiteContext) : Option (Block Manual) :=
+private def declIndexList (decls : Array DeclInfo) (ctx : SiteContext)
+    (noteOf : DeclInfo → String := fun _ => "") : Option (Block Manual) :=
   let entries := decls.filterMap fun decl => do
     let href ← ctx.declPageHrefs.get? decl.name
     pure {
@@ -711,10 +846,43 @@ private def declIndexList (decls : Array DeclInfo) (ctx : SiteContext) : Option 
       kind := decl.displayKind
       group := declGroupOfFields decl.kind.label decl.isLemma decl.isInstanceDecl
       deps := some (closureSize decl ctx)
+      note := noteOf decl
       dependsOnSorry := decl.dependsOnSorry
       : DeclIndexEntry
     }
   if entries.isEmpty then none else some (.other (Block.declIndex { entries }) #[])
+
+/-! ## Upstream trust
+
+Everything else on this site measures the project. This measures what the project *rests* on, which
+for a Mathlib-based development is the larger half by far — and which no amount of `sorry`-checking
+inside the project can speak to. See the note in `Collect.lean` for why the analysis is
+package-granular and why closing over the Lake graph is sound. -/
+
+/-- The upstream packages a declaration's *statement* reaches into, closed over the Lake dependency
+graph and bounded by what was actually loaded.
+
+"Statement" rather than "closure": see the note in `Collect.lean`. An upstream proof is rechecked by
+the kernel and needs no trust; an upstream definition a statement is about does. -/
+private def restsOnPackages (decl : DeclInfo) (ctx : SiteContext) : Array Name :=
+  (trustClosure ctx.packages decl.upstreamPackages).toArray.filter (fun name =>
+    ctx.loadedPackages.contains name &&
+      !(ctx.packages.any fun pkg => pkg.name == name && (pkg.isProject || pkg.isToolchain)))
+    |>.qsort Name.lt
+
+/-- The unaudited packages whose definitions appear in a declaration's statement: what a reader is
+asked to take on faith beyond the project and the toolchain. Empty when everything the statement
+reaches has been vouched for. -/
+private def untrustedPackagesOf (decl : DeclInfo) (ctx : SiteContext) : Array Name :=
+  (restsOnPackages decl ctx).filter (!ctx.trusted.contains ·)
+
+/-- The packages the project actually reaches, closed over the Lake graph, project excluded. -/
+private def reachedPackages (decls : Array DeclInfo) (ctx : SiteContext) : Array Name :=
+  let direct := decls.foldl (init := #[]) fun acc decl => acc ++ decl.upstreamPackages
+  (trustClosure ctx.packages direct).toArray.filter (fun name =>
+    ctx.loadedPackages.contains name &&
+      !(ctx.packages.any fun pkg => pkg.name == name && pkg.isProject))
+    |>.qsort Name.lt
 
 /-- The audit-surface and trust summary shown near the top of a declaration page. -/
 private def mkAuditBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
@@ -749,6 +917,86 @@ private def mkAuditBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block M
     blocks := blocks.push <| .para <|
       #[.bold #[.text "Extra axioms: "]] ++
         joinInlines (unusual.toList.map fun a => #[.code a.toString]) #[.text " · "]
+  -- Upstream trust. Only reported as a gap, and phrased as one about *meaning*: the proofs upstream
+  -- are kernel-checked, so what is left to take on faith is what the statement is about.
+  let untrusted := untrustedPackagesOf decl ctx
+  if !untrusted.isEmpty then
+    blocks := blocks.push <| .para <|
+      #[.bold #[.text "Statement rests on unaudited definitions from: "]] ++
+        joinInlines (untrusted.toList.map fun p => #[.code p.toString]) #[.text " · "] ++
+        #[.text ". See ", .link #[.text "Trust"] "trust/", .text "."]
+  return blocks
+
+/-! ## Specifications
+
+The one thing on the site that is not derived. Everything else here — closures, `sorry` chains,
+axioms — is computed from the environment and is true whether or not anyone thought about it. A
+specification is a *claim*: the author saying "these properties are what this definition means".
+The tool can only carry it, check that it points somewhere real, and — the part that does the
+auditing work — show where it is absent.
+
+All of it is gated on `SiteContext.usesSpecs`; see the note there. -/
+
+/-- The theorems put forward as `decl`'s specification, with their statements. -/
+private def specTheoremRows (decl : DeclInfo) (ctx : SiteContext) : Array SpecRow :=
+  decl.specifiedBy.map fun link =>
+    match ctx.declByName.get? link.name with
+    | some thm => {
+        name := link.name.toString
+        href := ctx.declPageHrefs.getD link.name ""
+        kind := thm.displayKind
+        comment := link.comment
+        -- The statement is the point: a reader judges whether these properties pin the definition
+        -- down by reading them, not by counting them.
+        signature := thm.displaySignature
+      }
+    | none => { name := link.name.toString, kind := "Theorem", comment := link.comment }
+
+/-- The definitions `decl` is declared to specify.
+
+No statements here, unlike the other direction. The reader is on the theorem's page and already has
+its statement above; what they are missing is which definition it speaks for — and a definition's
+"statement" can be a whole structure body, which would swamp the note it is meant to carry. The
+target may also be outside the project (a `Mathlib` definition), in which case there is no page to
+link to and the name is shown plain. -/
+private def specTargetRows (decl : DeclInfo) (ctx : SiteContext) : Array SpecRow :=
+  decl.specifies.map fun link =>
+    let target? := ctx.declByName.get? link.name
+    { name := link.name.toString
+      href := ctx.declPageHrefs.getD link.name ""
+      kind := (target?.map (·.displayKind)).getD "Definition"
+      comment := link.comment }
+
+/-- The specification section of a declaration page: two directions and one absence.
+
+The absence is the reason this is worth rendering at all. A definition with a specification gets a
+list a reader can check; a definition without one gets told so, in the same place, because "nobody
+has said what this means" is exactly the finding an auditor is looking for and it is invisible
+otherwise. -/
+private def mkSpecBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
+  Id.run do
+  if !ctx.usesSpecs then
+    return #[]
+  let mut blocks : Array (Block Manual) := #[]
+  if !decl.specifiedBy.isEmpty then
+    blocks := blocks.push <|
+      .other (Block.sectionHeading s!"Specification ({decl.specifiedBy.size})") #[]
+    blocks := blocks.push <| .para #[
+      .text "What the author offers as evidence that ", .code decl.name.toString,
+      .text " is the intended definition. Each of these theorems is marked ", .code "@[specifies]",
+      .text " in the source, so this list is the author's claim rather than anything derived."
+    ]
+    blocks := blocks.push <| .other (Block.specList { entries := specTheoremRows decl ctx }) #[]
+  else if decl.isDefinitionLike then
+    blocks := blocks.push <| .para #[
+      .bold #[.text "No specification. "],
+      .text "No theorem in this project is marked as part of what ", .code decl.name.toString,
+      .text " means, so nothing here settles whether it is the intended definition — that is a \
+        judgement the reader has to make from the body."
+    ]
+  if !decl.specifies.isEmpty then
+    blocks := blocks.push <| .para #[.bold #[.text "Part of a specification"]]
+    blocks := blocks.push <| .other (Block.specList { entries := specTargetRows decl ctx }) #[]
   return blocks
 
 /-- The minimal dependency file, inline.
@@ -797,34 +1045,52 @@ private def mkMinimalFilePart (decl : DeclInfo) (ctx : SiteContext) : Option (Pa
       subParts := #[]
     }
 
-/-- The declaration-page pointer to its minimal file.
+/-- The declaration-page pointers to its minimal file: the on-site page, the raw download, and the
+web editor.
 
-The file itself is a separate page rather than inline. That is a concession to size, not a change
-of intent: highlighting carries a pretty-printed type for every token, which measured **46×** the
-size of the Lean source it describes (10 MB of extracted files became 478 MB of highlighting).
+The on-site page is a subpage rather than inline content. That is a concession to size, not a
+change of intent: highlighting carries a pretty-printed type for every token, which measured **46×**
+the size of the Lean source it describes (10 MB of extracted files became 478 MB of highlighting).
 Inlining that on every declaration page would have undone the page-size work entirely. One click,
-on-site, fully interactive is the affordable version of "the minimal file is the point". -/
+on-site, fully interactive is the affordable version of "the minimal file is the point".
+
+Three offers, each with its own condition, because they are three different artifacts:
+
+* the **on-site page** needs `highlight-extracted`, which is what renders it;
+* the **raw download** needs only `extract`, which wrote the file;
+* the **web editor** needs `--site-url`, since `live.lean-lang.org` fetches the file over the
+  network and so has to be told where the site is actually published.
+
+They used to be one paragraph gated on the first condition alone, with the download and the editor
+sharing a slot as either/or. Both halves of that were wrong. A run without highlighting published
+every extracted file and linked none of them, and a run *with* `--site-url` silently dropped the
+download — the editor is not a substitute for it, being a round trip through a third-party site
+that cannot open a file the reader has no URL for. -/
 private def mkMinimalFileLink (decl : DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
-  match ctx.minimalFiles.get? (anchorIdOf decl.name) with
-  | none => #[]
-  | some file =>
+  Id.run do
+  let stem := anchorIdOf decl.name
+  let mut offers : Array (Array (Inline Manual)) := #[]
+  if let some file := ctx.minimalFiles.get? stem then
+    -- Root-relative, because Verso puts a `<base href>` on every page pointing at the site root. A
+    -- bare `minimal/` therefore resolved to `<root>/minimal/` — which is why this link led nowhere
+    -- — rather than to the subpage of the declaration it is written on.
+    let pageUrl := (ctx.declPageHrefs.getD decl.name "") ++ "minimal/"
     let note :=
       if file.errors.isEmpty then
-        #[.text " — self-contained, with types on hover; verified to compile."]
+        #[.text " (types on hover; verified to compile)"]
       else
-        #[.text " — self-contained, with types on hover. ",
-          .bold #[.text "⚠ does not currently compile"], .text "."]
-    -- Both links are root-relative, because Verso puts a `<base href>` on every page pointing at
-    -- the site root. A bare `minimal/` therefore resolved to `<root>/minimal/` — which is why this
-    -- link led nowhere — rather than to the subpage of the declaration it is written on.
-    let pageUrl := (ctx.declPageHrefs.getD decl.name "") ++ "minimal/"
-    let rawUrl :=
-      match ctx.siteUrl? with
-      | some base => leanEditorUrl base decl.name
-      | none => s!"extracted/{anchorIdOf decl.name}.lean"
-    let rawLabel := if ctx.siteUrl?.isSome then "open in the Lean web editor" else "download the raw file"
-    #[.para <| #[.link #[.bold #[.text "Read the minimal Lean file"]] pageUrl] ++ note
-        ++ #[.text " Or ", .link #[.text rawLabel] rawUrl, .text "."]]
+        #[.text " (types on hover; ", .bold #[.text "⚠ does not currently compile"], .text ")"]
+    offers := offers.push <|
+      #[.link #[.bold #[.text "Read the minimal Lean file"]] pageUrl] ++ note
+  if ctx.extractedStems.contains stem then
+    offers := offers.push #[.link #[.text "download the raw file"] s!"extracted/{stem}.lean"]
+    if let some base := ctx.siteUrl? then
+      offers := offers.push
+        #[.link #[.text "open it in the Lean web editor"] (leanEditorUrl base decl.name)]
+  if offers.isEmpty then
+    return #[]
+  return #[.para <| #[.text "Self-contained, with its dependencies inlined and proofs replaced by ",
+    .code "sorry", .text ": "] ++ joinInlines offers.toList #[.text " · "] ++ #[.text "."]]
 
 /-- Builds a dedicated detail page for one declaration: its own card, its audit surface and trust
 summary, its local dependency graph, and compact listings of what it rests on.
@@ -840,6 +1106,9 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   let mut blocks : Array (Block Manual) := #[]
   blocks := blocks.push (mkDeclBlock decl ctx)
   blocks := blocks ++ mkAuditBlocks decl ctx
+  -- Before the dependency machinery, because it answers a different and prior question. The
+  -- closures below say what a declaration costs to accept; the specification says what it means.
+  blocks := blocks ++ mkSpecBlocks decl ctx
   blocks := blocks ++ mkMinimalFileLink decl ctx
   if pageDecls.size > 1 then
     blocks := blocks.push (.para #[.bold #[.text "Dependency graph"]])
@@ -849,7 +1118,8 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
     -- structure — every removed edge is still a real dependency, reachable along the path that
     -- remains.
     blocks := blocks.push (.other (Block.graph (transitiveReduce
-      (mkGraphData pageDecls ctx.declPageHrefs graphDeps (focus? := decl.name)))) #[])
+      (withUpstreamNodes (mkGraphData pageDecls ctx.declPageHrefs graphDeps (focus? := decl.name))
+        pageDecls ctx graphDeps))) #[])
   -- Layer 2 of the audit: what the *statement* mentions. This is where "does this say what I
   -- think it says" is decided, so it is shown expanded and before the rest of the closure.
   let directTypeDeps := decl.typeDeps.filter ctx.declByName.contains
@@ -1060,6 +1330,83 @@ private def mkClaimsPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
     subParts := #[]
   }
 
+/-- Builds the Specifications page: which definitions their author said something about, and —
+the half that does the auditing work — which they did not.
+
+The counterpart to the Trust page. Trust answers "is this proved"; this answers "is this the right
+thing to have proved", to the extent anyone has committed to an answer. Both are lists of gaps, and
+both are only useful because the gap is visible without reading the source.
+
+Rendered only for a project that uses `@[specifies]`, see `SiteContext.usesSpecs`. For any other
+project the entire page would be one list containing every definition it owns, marked as a gap:
+true, and worthless. -/
+private def mkSpecificationsPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manual :=
+  Id.run do
+  let definitions := decls.filter (·.isDefinitionLike)
+  let specified := definitions.filter (!·.specifiedBy.isEmpty)
+  let unspecified := definitions.filter (·.specifiedBy.isEmpty)
+  let annotations := decls.foldl (fun n decl => n + decl.specifies.size) 0
+  let annotated := (decls.filter (!·.specifies.isEmpty)).size
+  let properties (n : Nat) : String := if n == 1 then "1 property" else s!"{n} properties"
+  let mut blocks : Array (Block Manual) := #[
+    .para #[
+      .text "The kernel checks proofs, not definitions. Whether a definition says what its name \
+        suggests is settled by a handful of theorems about it, and which theorems those are is \
+        something only its author can say. This page collects what they said — every theorem \
+        marked ", .code "@[specifies]", .text " — and where they said nothing."
+    ],
+    .para #[
+      .bold #[.text s!"{specified.size} of {definitions.size} definitions "],
+      .text s!"carry a specification, from {annotations} \
+        {if annotations == 1 then "annotation" else "annotations"} on {annotated} \
+        {if annotated == 1 then "theorem" else "theorems"}. ",
+      .text "Theorems, axioms and instances are not counted: a theorem's meaning is its statement, \
+        an axiom is itself an assumption and belongs on ", .link #[.text "Trust"] "trust/",
+      .text ", and instances are plumbing."
+    ]
+  ]
+  -- Ranked by how much of the library rests on them, rather than alphabetically: an unspecified
+  -- definition that forty other declarations use is a different size of gap from one used once,
+  -- and the ordering is the only thing on the page that says so.
+  let ranked := unspecified.qsort fun a b => a.usedBy.size > b.usedBy.size
+  if let some list := declIndexList ranked ctx (noteOf := fun d => s!"used by {d.usedBy.size}") then
+    blocks := blocks.push <| .other (Block.sectionHeading
+      s!"Without a specification ({unspecified.size})") #[]
+    blocks := blocks.push <| .para #[
+      .text "Nothing in the project states what these mean, so a reader has only the name and the \
+        body to go on. Ordered by how many declarations use them directly — the ones near the top \
+        are the ones the rest of the library rests on."
+    ]
+    blocks := blocks.push list
+  if let some list := declIndexList (specified.qsort fun a b => a.name.lt b.name) ctx
+      (noteOf := fun d => properties d.specifiedBy.size) then
+    blocks := blocks.push <| .other (Block.sectionHeading
+      s!"With a specification ({specified.size})") #[]
+    blocks := blocks.push <| .para #[
+      .text "Each definition's own page lists the properties, with their statements."
+    ]
+    blocks := blocks.push list
+  blocks := blocks.push <| .para #[
+    .bold #[.text "What this page does not tell you. "],
+    .text "That a definition has a specification does not mean the specification is ", .emph #[.text "enough"],
+    .text ". Nothing checks that the listed properties determine the definition uniquely, or that \
+      they are the properties that matter — only that the author put them forward and that they \
+      are about the definition they name. Judging whether they pin it down is the reading the page \
+      is meant to make possible, not one it can do for you."
+  ]
+  return {
+    title := #[.text "Specifications"]
+    titleString := "Specifications"
+    metadata := some {
+      file := some "specifications"
+      shortTitle := some "Specifications"
+      tag := some (.provided "specifications")
+      number := false
+    }
+    content := blocks
+    subParts := #[]
+  }
+
 /-- Builds the Browse page: every declaration in one sortable, filterable table.
 
 The uncurated entry point. Claims and Trust are curated views for readers who know what they are
@@ -1081,6 +1428,9 @@ private def mkBrowsePart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
       ext := (externalConstants decl ctx).size
       dependsOnSorry := decl.dependsOnSorry
       extraAxioms := decl.axioms.any fun a => !ordinary.contains a && a != ``sorryAx
+      -- Left `none` for anything a specification cannot be about, so the table can offer "has no
+      -- specification" as a filter without sweeping in every theorem in the library.
+      specs := if decl.isDefinitionLike then some decl.specifiedBy.size else none
       : BrowseRow
     }
   {
@@ -1094,13 +1444,22 @@ private def mkBrowsePart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
     }
     content := #[
       .para #[.text s!"Every one of the {decls.size} exposed declarations. Sort by any column, \
-        and filter by kind, chapter, trust, or name."],
+        and filter by kind, chapter, trust, \
+        {if ctx.usesSpecs then "specification, " else ""}or name."],
       .para #[
         .text "“Deps” counts the project declarations in a declaration's closure and “External” \
           the distinct constants outside the project it bottoms out in — together, how much a \
           reader must accept in order to believe it. Sorting by them ascending finds the results \
           that are cheapest to audit."
-      ],
+      ]
+    ] ++ (if !ctx.usesSpecs then #[] else #[
+      .para #[
+        .text "“Spec” counts the theorems the author marked as part of a definition's \
+          specification. Sorting it ascending, or filtering to “no specification”, lists the \
+          definitions nothing in the project says the meaning of; ",
+        .link #[.text "Specifications"] "specifications/", .text " does the same with more context."
+      ]
+    ]) ++ #[
       .other (Block.browseTable { rows }) #[]
     ]
     subParts := #[]
@@ -1140,6 +1499,116 @@ private def mkModulesPart (groups : Array GroupInfo) (ctx : SiteContext) : Part 
     subParts := #[]
   }
 
+/-- The package dependency graph: one node per package the project reaches, an edge from a
+dependency to the package that requires it, and `status` carrying the trust verdict.
+
+Reuses the declaration graph's renderer, so the layering that puts "depends on nothing" at the top
+does the right thing here too: the toolchain sits at the top and the project at the bottom, which is
+the order a reader builds trust in. Nodes are not links — a package has no page on this site — so
+`href` is left empty and `graph.js` renders them unclickable. -/
+private def mkPackageGraphData (decls : Array DeclInfo) (ctx : SiteContext) : GraphData :=
+  let reached := reachedPackages decls ctx
+  let projectNames := ctx.packages.filterMap fun pkg =>
+    if pkg.isProject then some pkg.name else none
+  let shown := projectNames ++ reached
+  let byName : Std.HashMap Name PackageInfo :=
+    ctx.packages.foldl (fun acc pkg => acc.insert pkg.name pkg) {}
+  let restingCount (name : Name) : Nat :=
+    (decls.filter fun decl => (restsOnPackages decl ctx).contains name).size
+  let nodes : Array GraphNode := shown.map fun name =>
+    let pkg? := byName.get? name
+    let isProject := pkg?.any (·.isProject)
+    let isToolchain := pkg?.any (·.isToolchain)
+    let trusted := ctx.trusted.contains name
+    let summary :=
+      if isProject then "This project. Everything else on this site is about its contents."
+      else if isToolchain then "The Lean toolchain: the compiler and kernel that checked \
+        everything else. Trusted by construction."
+      else if trusted then s!"Trusted. {restingCount name} project declarations rest on it."
+      else s!"Not audited. {restingCount name} project declarations rest on it."
+    { id := name.toString
+      label := name.toString
+      kind := if isProject then "Project" else if isToolchain then "Toolchain" else "Package"
+      -- `untrusted` is what `graph.js` styles as the warning case here, in place of the `sorry`
+      -- flag it uses on declaration graphs.
+      status := if isProject then "project" else if trusted then "trusted" else "untrusted"
+      groupKey := if trusted || isProject then "trusted" else "untrusted"
+      moduleName := ""
+      href := ""
+      doc := summary }
+  let shownSet : Std.HashSet Name := shown.foldl (·.insert ·) {}
+  let edges := shown.foldl (init := #[]) fun acc name =>
+    match byName.get? name with
+    | none => acc
+    | some pkg => acc ++ pkg.deps.filterMap fun dep =>
+        if shownSet.contains dep then
+          some { source := dep.toString, target := name.toString }
+        else none
+  { nodes, edges, unit := "package" }
+
+/-- The upstream-trust section of the trust page: the package graph, the verdict, and what to do
+about it.
+
+Written to be honest about the default. With no `--trust`, every upstream package is unaudited and
+the section says so rather than showing a reassuring green graph; that is the accurate reading of a
+site whose author has not said what they vouch for. -/
+private def mkUpstreamTrustBlocks (decls : Array DeclInfo) (ctx : SiteContext) :
+    Array (Block Manual) :=
+  Id.run do
+  let reached := reachedPackages decls ctx
+  let upstream := reached.filter fun name =>
+    !(ctx.packages.any fun pkg => pkg.name == name && pkg.isToolchain)
+  if upstream.isEmpty then
+    return #[]
+  let untrusted := upstream.filter (!ctx.trusted.contains ·)
+  let trustedUpstream := upstream.filter (ctx.trusted.contains ·)
+  let mut blocks : Array (Block Manual) := #[
+    .other (Block.sectionHeading "What it rests on") #[],
+    .para #[
+      .text "Nothing above this point leaves the project, and most of what lies beyond it needs no \
+        trust: upstream ", .emph #[.text "proofs"],
+      .text " were rechecked by the kernel, and anything left unproved in one arrives here as a ",
+      .code "sorry", .text " or an extra axiom — both already counted above, upstream included."
+    ],
+    .para #[
+      .text "What does not come for free is an upstream ", .emph #[.text "definition"],
+      .text " that a statement is about. A theorem mentioning a definition from another package \
+        means what it means only if that definition is the intended one, and no proof settles \
+        that — it is the gap the ",
+      .link #[.text "Specifications"] "specifications/",
+      .text " page records, one package up. So what follows counts statements, not proofs."
+    ],
+    .para #[
+      .text "The graph is the dependency order: the toolchain at the top, this project at the \
+        bottom, an edge from each package to the one that requires it."
+    ]
+  ]
+  let verdict : Array (Inline Manual) :=
+    if untrusted.isEmpty then
+      #[.bold #[.text "All "], .text s!"{upstream.size} upstream packages are marked trusted."]
+    else if trustedUpstream.isEmpty then
+      #[.bold #[.text s!"None of the {upstream.size} upstream packages are marked trusted."],
+        .text " The site was built without ", .code "--trust", .text ", so every upstream package \
+          below counts as unaudited. That is the honest default rather than a finding: pass ",
+        .code "--trust PKG", .text " for each package you have audited, and it will vouch for what \
+          that package rests on too."]
+    else
+      #[.bold #[.text s!"{trustedUpstream.size} of {upstream.size} upstream packages are trusted."],
+        .text " The rest are unaudited, and every declaration whose statement reaches into one says \
+          so on its own page."]
+  blocks := blocks.push (.para verdict)
+  blocks := blocks.push (.other (Block.graph (mkPackageGraphData decls ctx)) #[])
+  if !untrusted.isEmpty then
+    let rows := untrusted.map fun name =>
+      let resting := (decls.filter fun decl => (restsOnPackages decl ctx).contains name).size
+      Verso.Doc.ListItem.mk #[.para #[
+        .code name.toString,
+        .text s!" — {resting} of {decls.size} declarations have its definitions in their statements"
+      ]]
+    blocks := blocks.push <| .para #[.bold #[.text "Unaudited upstream packages"]]
+    blocks := blocks.push (.ul rows)
+  return blocks
+
 /-- Builds the trust page: everything incomplete or resting on an unusual assumption. -/
 private def mkTrustPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manual :=
   Id.run do
@@ -1175,6 +1644,7 @@ private def mkTrustPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manu
     blocks := blocks.push list
   else
     blocks := blocks.push <| .para #[.text "No declaration rests on an axiom beyond the ordinary three."]
+  blocks := blocks ++ mkUpstreamTrustBlocks decls ctx
   return {
     title := #[.text "Trust"]
     titleString := "Trust"
@@ -1224,6 +1694,17 @@ private def mkLandingBlocks (decls : Array DeclInfo) (ctx : SiteContext) : Array
     .text ". Each declaration's page carries its minimal self-contained Lean file, the ",
     .text "definitions its statement rests on, and what it would cost to accept it."
   ]
+  -- Only for a project that annotates; see `SiteContext.usesSpecs`.
+  if ctx.usesSpecs then
+    let definitions := decls.filter (·.isDefinitionLike)
+    let specified := definitions.filter (!·.specifiedBy.isEmpty)
+    blocks := blocks.push <| .para #[
+      .bold #[.text "What it means. "],
+      .text s!"{specified.size} of {definitions.size} definitions carry a specification — theorems \
+        the author marked as the properties that pin the definition down. ",
+      .link #[.text "Specifications"] "specifications/",
+      .text " lists them, and the definitions that have none."
+    ]
   return blocks
 
 /-- Builds the root site part with chapter pages and utility sections. -/
@@ -1245,8 +1726,12 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
       ++ mkLandingBlocks decls ctx
       ++ mkDashboardBlocks groups
       ++ overviewBlocks
-    subParts := #[mkClaimsPart decls ctx, mkBrowsePart decls ctx, mkModulesPart groups ctx,
-        mkTrustPart decls ctx]
+    -- The Specifications page exists only for a project that annotates: see
+    -- `SiteContext.usesSpecs`. It sits next to Claims because they are the same kind of thing —
+    -- what the library says about itself — as opposed to Trust, which is what it rests on.
+    subParts := #[mkClaimsPart decls ctx]
+      ++ (if ctx.usesSpecs then #[mkSpecificationsPart decls ctx] else #[])
+      ++ #[mkBrowsePart decls ctx, mkModulesPart groups ctx, mkTrustPart decls ctx]
       ++ (groups.map fun group => mkGroupPart group ctx)
   }
 
@@ -1315,8 +1800,10 @@ build pages later without re-importing the project. Also prints the diagnostics 
 show today, and writes `excluded-declarations.txt` under `cfg.outputDir` when given. -/
 private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Workspace)
     (rootPrefix : Name) (env : Environment) : IO CollectedData := do
-  let decls ← collectDecls projectDir rootPrefix ws.root env
+  let packages := packageInfosOf ws rootPrefix
+  let decls ← collectDecls projectDir rootPrefix ws.root env packages
   let decls := decls |> dropUnsafeDeps |> attachReverseDeps |> attachTransitiveDeps
+    |> attachSpecifiedBy |> attachUpstreamPackages
   let excludedNames :=
     (projectConstants env rootPrefix).filterMap fun (name, _, info) =>
       if shouldExpose env rootPrefix name info then none else some name
@@ -1334,6 +1821,27 @@ private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Wo
     IO.eprintln s!"No declarations exposed under module filtering. Declarations with matching name prefix: {namedCount}"
   else
     IO.println s!"Collected {decls.size} declarations under {rootPrefix}"
+  -- Reported only when the project actually uses `@[specifies]`: a project that has never heard of
+  -- it should not be told about a count of zero on every run.
+  let annotations : Nat := decls.foldl (fun n decl => n + decl.specifies.size) 0
+  if annotations > 0 then
+    let definitions := decls.filter (·.isDefinitionLike)
+    let specified := (definitions.filter fun decl => !decl.specifiedBy.isEmpty).size
+    IO.println s!"Specifications: {annotations} `@[specifies]` annotations; \
+      {specified} of {definitions.size} definitions have one"
+  -- Attribution has to be complete for a trust claim over it to mean anything, so an uncovered
+  -- module is reported rather than folded into some package.
+  let touched := decls.foldl (init := ({} : Std.HashSet Name)) fun acc decl =>
+    decl.upstreamPackages.foldl (init := acc) (·.insert ·)
+  let loadedPackages := loadedPackagesOf env packages
+  let externalPackages := externalPackageMap env packages rootPrefix decls
+  IO.println s!"Upstream packages: {touched.size} referenced by name, \
+    {loadedPackages.size} with code loaded, {packages.size} in the workspace"
+  let unattributed := (moduleIndexMap decls).toArray.filterMap fun (moduleName, _) =>
+    if (modulePackageOf packages moduleName).isNone then some moduleName else none
+  if !unattributed.isEmpty then
+    IO.eprintln s!"warning: {unattributed.size} project modules match no package library root; \
+      upstream attribution may be incomplete"
   let order ← moduleOrderMap projectDir rootPrefix
   let moduleNames := moduleIndexMap decls |>.toArray.map Prod.fst
   let moduleDocs := moduleNames.map fun name => (name, moduleDocBlocks env name)
@@ -1344,6 +1852,9 @@ private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Wo
     moduleOrder := order.toArray
     moduleDocs
     readmeText
+    packages
+    loadedPackages
+    externalPackages
   }
 
 /-- Reads and decodes a `CollectedData` JSON file written by `collect`. -/
@@ -1380,6 +1891,22 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
   if !minimalFiles.isEmpty then
     let broken := minimalFiles.fold (fun n _ f => if f.errors.isEmpty then n else n + 1) 0
     IO.println s!"Loaded {minimalFiles.size} minimal files ({broken} do not compile)"
+  -- Under `html-multi/`, unlike the highlighting directories: the extracted files are *published*
+  -- (the download link and the web editor both fetch them by URL), not inputs to this phase.
+  -- A misspelled `--trust` would otherwise silently vouch for nothing, which reads on the page as
+  -- an audited dependency that is in fact unaudited.
+  let unknownTrusted := unknownTrustedPackages data.packages cfg.trustedPackages
+  if !unknownTrusted.isEmpty then
+    IO.eprintln s!"warning: --trust names no package in this workspace: \
+      {String.intercalate ", " (unknownTrusted.toList.map toString)}. Known packages: \
+      {String.intercalate ", " (data.packages.toList.map (toString ·.name))}"
+  let extractedDir := System.FilePath.mk (cfg.outputDir.getD ".") / "html-multi" / "extracted"
+  let extractedStems ← loadExtractedStems extractedDir
+  if extractedStems.isEmpty then
+    IO.println s!"No extracted files found at {extractedDir}; declaration pages will not offer \
+      the standalone Lean file. Run the `extract` subcommand to write them."
+  else
+    IO.println s!"Found {extractedStems.size} extracted files to link"
   if declHighlights.isEmpty then
     IO.println s!"No highlighting found at {highlightingDir}; rendering plain code. \
       Run the `highlight` subcommand for interactive Lean."
@@ -1393,6 +1920,12 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     declPageHrefs := declPageHrefMap data.decls
     declHighlights := declHighlights
     minimalFiles := minimalFiles
+    extractedStems := extractedStems
+    packages := data.packages
+    loadedPackages := data.loadedPackages.foldl (·.insert ·) {}
+    externalPackages := data.externalPackages.foldl (fun acc (c, pkg) => acc.insert c pkg) {}
+    trusted := trustClosure data.packages cfg.trustedPackages
+    usesSpecs := data.decls.any (!·.specifies.isEmpty)
   }
   let overviewBlocks := mkProjectOverviewBlocks data.readmeText cfg.repoUrl
   let root := mkRootPart cfg data.rootPrefix groups data.decls ctx overviewBlocks

@@ -10,6 +10,9 @@ document.addEventListener('DOMContentLoaded', () => {
      a "Graph" link outlived the graph page. */
   const utilityLinks = [
     { slug: 'claims', label: 'Claims' },
+    /* Only built for a project that uses `@[specifies]`; the derive-from-the-entry rule above is
+       what makes listing it here safe for every other project. */
+    { slug: 'specifications', label: 'Specifications' },
     { slug: 'browse', label: 'Browse' },
     { slug: 'modules', label: 'Modules' },
     { slug: 'trust', label: 'Trust' }

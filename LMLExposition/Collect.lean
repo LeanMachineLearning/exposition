@@ -10,6 +10,7 @@ public import MD4Lean
 public import VersoManual
 public import VersoManual.Markdown
 public import LeanDeps
+public import LeanSpec
 
 @[expose] public section
 
@@ -58,6 +59,14 @@ structure Cli where
   inputPath : Option String := none
   /-- Maximum number of worker processes to run at once. Defaults to the CPU count. -/
   jobs : Option Nat := none
+  /-- Packages the reader is told to take on trust (`--trust`), each standing for itself *and
+  everything it depends on*: trusting `mathlib` trusts `batteries` and `aesop` with it, because
+  Mathlib's own correctness already rests on them.
+
+  A render-time flag, like `--repo-url`: the same `data.json` can be rendered with different trust
+  sets, which is the point — "what if I have not audited LML" should not need re-importing the
+  project. -/
+  trustedPackages : Array Name := #[]
 deriving Repr
 
 /-- Classification of exposed Lean declarations. -/
@@ -129,12 +138,38 @@ structure DeclIndexEntry where
   group : String
   /-- Project declarations in its closure, where that is worth showing. -/
   deps : Option Nat := none
+  /-- An extra fact about this row, shown after the kind and dependency count. Empty for most
+  listings; used by the specification page to say how many properties a definition has. -/
+  note : String := ""
   dependsOnSorry : Bool := false
 deriving Repr, ToJson, FromJson, Inhabited
 
 /-- Data container for DeclIndexData. -/
 structure DeclIndexData where
   entries : Array DeclIndexEntry
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- One row of a specification listing: on a definition's page a theorem offered as part of its
+specification, on a theorem's page a definition the theorem specifies.
+
+Unlike `DeclIndexEntry` this carries the statement and the author's comment, because that is the
+whole point of the listing: a reader should be able to judge whether the properties pin the
+definition down without following a single link. -/
+structure SpecRow where
+  name : String
+  /-- Empty when the declaration at the other end is not exposed and so has no page of its own. -/
+  href : String := ""
+  /-- The label shown to the reader (`displayKindLabel`). -/
+  kind : String
+  /-- The author's note on why this belongs in the specification. Empty when they wrote none. -/
+  comment : String := ""
+  /-- The statement, source form. Empty where the row is a bare link. -/
+  signature : String := ""
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- Data container for SpecListData. -/
+structure SpecListData where
+  entries : Array SpecRow
 deriving Repr, ToJson, FromJson, Inhabited
 
 /-- One row of the Browse table: every exposed declaration, with the columns a reader sorts and
@@ -156,6 +191,10 @@ structure BrowseRow where
   dependsOnSorry : Bool
   /-- Rests on an axiom beyond `Classical.choice`/`propext`/`Quot.sound`. -/
   extraAxioms : Bool
+  /-- Theorems declared to be part of this declaration's specification. `none` for anything a
+  specification cannot be about (see `DeclInfo.isDefinitionLike`), which is what lets the table
+  distinguish "no specification" from "not the sort of thing that has one". -/
+  specs : Option Nat := none
 deriving Repr, ToJson, FromJson, Inhabited
 
 /-- Data container for BrowseData. -/
@@ -201,6 +240,17 @@ structure GraphData where
   unit : String := "declaration"
 deriving Repr, ToJson, FromJson
 
+/-- One end of a specification link, as written with the `@[specifies]` attribute of the `LeanSpec`
+package: the declaration at the other end and the author's note on why the theorem belongs in the
+specification (empty when they wrote none).
+
+Used in both directions — on a theorem the `name` is the definition being specified, on a
+definition it is a theorem specifying it — because both ends want the same comment. -/
+structure SpecLink where
+  name : Name
+  comment : String := ""
+deriving Repr, BEq, ToJson, FromJson, Inhabited
+
 /-- Fully collected metadata for one exposed declaration. -/
 structure DeclInfo where
   name : Name
@@ -239,6 +289,31 @@ structure DeclInfo where
   `Classical.choice`/`propext`/`Quot.sound` these are assumptions a reader is being asked to
   grant, so they are reported rather than collapsed into a flag. -/
   axioms : Array Name := #[]
+  /-- For a theorem carrying `@[specifies …]`: the definitions its author declared it to be part of
+  the specification of, in the order written.
+
+  Almost everything else on `DeclInfo` is derived from the environment; this is not. It is the
+  author's editorial claim about which properties pin a definition down, read back from the
+  environment extension the `LeanSpec` package writes, and there is no way to infer it. Empty for
+  every declaration of a project that does not use that package — which is why nothing downstream
+  treats its absence as an error. The named definition need not be exposed, or even belong to this
+  project. -/
+  specifies : Array SpecLink := #[]
+  /-- For a definition: the exposed theorems that carry `@[specifies thisDeclaration …]`, in
+  declaration order. The reverse index of `specifies`, computed by `attachSpecifiedBy`. -/
+  specifiedBy : Array SpecLink := #[]
+  /-- The upstream packages this declaration *directly* references, after `attachUpstreamPackages`
+  has propagated them along the project's own dependency edges.
+
+  "Directly" is the important word: these are the packages some constant of the declaration's
+  project-level closure names, not the full set it rests on. The site closes them over the Lake
+  dependency graph to get that — see the note on upstream packages above for why the two agree.
+
+  Follows `graphDeps`: a theorem contributes what its *statement* mentions, not what its proof
+  calls. An upstream proof is not a trust dependency — the kernel rechecked it, and anything left
+  unproved in it surfaces as a `sorry` or an extra axiom, both of which `axioms` already reports
+  transitively. What cannot be checked for you is an upstream *definition* your statement is about. -/
+  upstreamPackages : Array Name := #[]
   deps : Array Name
   typeDeps : Array Name := #[]
   usedBy : Array Name := #[]
@@ -249,6 +324,21 @@ deriving Repr, ToJson, FromJson
 /-- The kind label to show for this declaration; see `displayKindLabel`. -/
 def DeclInfo.displayKind (decl : DeclInfo) : String :=
   displayKindLabel decl.kind.label decl.isLemma decl.isInstanceDecl
+
+/-- Whether this declaration is the kind of thing a specification can be *about*: something whose
+meaning is chosen rather than proved.
+
+Drives every "definitions without a specification" count, so what it excludes matters as much as
+what it includes. Theorems are excluded because their meaning is their statement. Axioms are
+excluded because an axiom *is* an assumption and the trust page already reports it as one.
+Instances are excluded because a library has a great many of them, they are overwhelmingly
+plumbing, and listing each one as an unspecified definition would bury the definitions that
+actually want a specification. -/
+def DeclInfo.isDefinitionLike (decl : DeclInfo) : Bool :=
+  !decl.isInstanceDecl &&
+    match decl.kind with
+    | .definition | .structure | .typeclass | .inductive | .opaque => true
+    | .theorem | .axiom | .instance => false
 
 /-- Exposed declarations grouped by Lean module. -/
 structure ModuleInfo where
@@ -265,6 +355,56 @@ structure GroupInfo where
   modules : Array ModuleInfo
 deriving Repr, ToJson, FromJson
 
+/-! ## Upstream packages
+
+The project is not the whole of what a reader is asked to trust. `AlphaRAR` rests on
+`LeanMachineLearning`, which rests on `mathlib`, and a referee may well have audited one and not the
+other. Nothing else on the site says so: every measure here stops at the project boundary and
+treats everything beyond it as given.
+
+What is and is not a trust dependency upstream is worth being precise about, because the obvious
+answer is wrong. An upstream *proof* needs no trust at all: the kernel rechecked it, and anything
+left unproved in it arrives as a `sorry` or an extra axiom, both of which `axioms` and
+`dependsOnSorry` already report transitively — through upstream packages included. So a theorem
+whose proof calls a `LeanMachineLearning` lemma has learned nothing it needs to take on faith from
+that call.
+
+What does need trust is an upstream *definition* that a statement is about. If a theorem's statement
+mentions `Learning.IsAlgEnvSeq`, then what the theorem *means* depends on that definition being the
+intended one, and no proof anywhere settles that — it is the same gap `@[specifies]` exists to
+record, one package up. That is why the edges followed here are `graphDeps`: a theorem contributes
+its statement, everything else contributes its body too, since a definition's body is its meaning.
+
+What is recorded is deliberately package-granular rather than constant-granular, and the reason is
+cost. `Lean.collectAxioms` gets away with a full closure walk per declaration only because axioms
+for imported constants are precomputed in an environment extension, so the walk stops at the project
+boundary; a genuine walk into Mathlib, 784 times over, is not affordable. Package granularity is
+also *sound* to close transitively, which is what makes the cheap version correct rather than merely
+cheap: a constant can only reference what its own package imports, so if a declaration's closure
+reaches package `Q`, then `Q` is reachable in the Lake dependency graph from a package the
+declaration references directly. Recording the directly-referenced packages and closing over the
+Lake graph at render time therefore cannot miss a dependency — the direction that matters, since
+under-reporting here would mean telling a reader they do not rest on code they do.
+-/
+
+/-- A package of the target's Lake workspace, as much of it as the audit needs.
+
+`Lean` is the pseudo-package standing for the toolchain (`Init`, `Std`, `Lean`, `Lake`), which
+belongs to no Lake package. Modelling it as one keeps module attribution uniform — it is matched by
+root prefix like any other — and gives the trust graph a root to bottom out in. -/
+structure PackageInfo where
+  name : Name
+  /-- Direct dependencies, by name, as declared in the workspace. -/
+  deps : Array Name := #[]
+  /-- The library roots the package declares, which is how a module is attributed to it. -/
+  roots : Array Name := #[]
+  /-- True for the project being exposed, which is never "upstream" of itself. -/
+  isProject : Bool := false
+  /-- True for the `Lean` pseudo-package. Always trusted: it is the compiler that checked
+  everything else, so trusting it is not a choice a site can offer. -/
+  isToolchain : Bool := false
+deriving Repr, BEq, ToJson, FromJson, Inhabited
+
 /-- Data container for MarkdownSection. -/
 structure MarkdownSection where
   title : String
@@ -277,8 +417,10 @@ decode error when handed a JSON file written by an older `collect`.
 
 - 1: initial
 - 2: adds `DeclInfo.hasOwnSorry` and `DeclInfo.axioms`
-- 3: adds `DeclInfo.docText?` -/
-def collectedDataVersion : Nat := 3
+- 3: adds `DeclInfo.docText?`
+- 4: adds `DeclInfo.specifies` and `DeclInfo.specifiedBy`
+- 5: adds `CollectedData.packages` and `DeclInfo.upstreamPackages` -/
+def collectedDataVersion : Nat := 5
 
 /-- The full result of the `collect` subcommand's analysis, persisted as JSON so `extract`
 and `build-site` can run without re-importing the target project. `moduleOrder` and
@@ -291,6 +433,14 @@ structure CollectedData where
   moduleOrder : Array (Name × Nat)
   moduleDocs : Array (Name × Array (Block Manual))
   readmeText : Option String
+  /-- The workspace's packages and their dependency edges, the graph `--trust` closes over. -/
+  packages : Array PackageInfo := #[]
+  /-- The packages with code actually loaded in the imported environment. See `loadedPackagesOf`:
+  this is what stops a declared-but-unused dependency from being reported as trusted-or-not. -/
+  loadedPackages : Array Name := #[]
+  /-- Upstream constant ↦ its package, for the constants project statements name. Lets a dependency
+  graph draw the upstream declarations a statement rests on. See `externalPackageMap`. -/
+  externalPackages : Array (Name × Name) := #[]
 deriving ToJson, FromJson
 
 /-- Command-line usage text shown for invalid arguments. -/
@@ -334,6 +484,9 @@ def usage : String :=
     "                       (default: <output>/highlighting)",
     "  --jobs N             Worker processes to run at once in the highlighting phases",
     "                       (default: CPU count)",
+    "  --trust PKG          Treat this upstream package, and everything it depends on, as",
+    "                       audited. Repeatable. Anything left untrusted is reported on the",
+    "                       trust page and on the pages of the declarations that rest on it",
     "  --module NAME        Internal: the module `highlight-module` should process",
     "  --input FILE         Internal: the file `highlight-file` should process",
   ]
@@ -376,6 +529,9 @@ def parseArgs : List String → Except String Cli
         | .error s!"--jobs expects a number, got: {n}"
       let cfg ← parseArgs rest
       pure { cfg with jobs := some n }
+  | "--trust" :: name :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with trustedPackages := cfg.trustedPackages.push name.toName }
   | flag :: _ =>
       .error s!"Unknown or incomplete option: {flag}\n\n{usage}"
 
@@ -673,18 +829,52 @@ def displaySignatureFallback (kind : DeclKind) (name : Name) (expandedSignature 
 def stringContains (haystack needle : String) : Bool :=
   (haystack.splitOn needle).length > 1
 
-/-- Strips InlineAttributePrefix. -/
-def stripInlineAttributePrefix (line : String) : String :=
-  let trimmed := (String.trimAscii line).toString
-  if !trimmed.startsWith "@[" then
-    trimmed
-  else
-    match trimmed.splitOn "]" with
-    | _attr :: rest@(_ :: _) =>
-        (String.trimAscii (String.intercalate "]" rest)).toString
-    | _ => ""
+/-- Scans one line of an `@[…]` attribute that is still open, given the bracket `depth` reached so
+far and whether the scan is inside a string literal.
 
-/-- Drops LeadingDecorations. -/
+Returns `.inl (depth, inString)` if the attribute is still unclosed at the end of the line, or
+`.inr remainder` with what follows the `]` that closed it.
+
+Counting depth, and tracking string literals, is what makes this correct rather than a search for
+the first `]`: an attribute argument can contain a bracket (`@[specifies f "the a[i] case"]`), and
+one that closes early would leave the tail of the attribute glued to the front of the statement. -/
+def scanAttributeLine (chars : List Char) (depth : Nat) (inString : Bool) :
+    (Nat × Bool) ⊕ String :=
+  match chars with
+  | [] => .inl (depth, inString)
+  | c :: rest =>
+    if inString then
+      -- An escape consumes the next character, so `"\""` does not end the literal. At end of line
+      -- this leaves the scan inside the string, which is also what Lean's string gap (`\` then a
+      -- newline) needs.
+      if c == '\\' then
+        match rest with
+        | [] => .inl (depth, true)
+        | _ :: rest => scanAttributeLine rest depth true
+      else scanAttributeLine rest depth (c != '"')
+    else if c == '"' then scanAttributeLine rest depth true
+    else if c == '[' then scanAttributeLine rest (depth + 1) false
+    else if c == ']' then
+      if depth ≤ 1 then .inr (String.ofList rest) else scanAttributeLine rest (depth - 1) false
+    else scanAttributeLine rest depth false
+
+/-- Drops a leading `@[…]` attribute from `lines`, which may span several of them, and returns what
+follows it. -/
+partial def dropAttributeBlock (lines : List String) : List String :=
+  go lines 0 false
+where
+  go (lines : List String) (depth : Nat) (inString : Bool) : List String :=
+    match lines with
+    | [] => []
+    | line :: rest =>
+      match scanAttributeLine line.toList depth inString with
+      | .inl (depth, inString) => go rest depth inString
+      | .inr remainder => if remainder.trimAscii.isEmpty then rest else remainder :: rest
+
+/-- Drops the docstrings and attributes preceding a declaration, so that what is left starts at the
+declaration keyword. Everything downstream reads that first word: the displayed signature, and the
+`lemma`/`instance`/`alias` detection that decides how a declaration is labelled and whether it
+counts as a claim. -/
 partial def dropLeadingDecorations (lines : List String) : List String :=
   let lines := lines.dropWhile (fun line => line.trimAscii.isEmpty)
   match lines with
@@ -701,11 +891,7 @@ partial def dropLeadingDecorations (lines : List String) : List String :=
                 dropCommentBlock remaining
         dropLeadingDecorations (dropCommentBlock (line :: rest))
       else if trimmed.startsWith "@[" then
-        let remainder := stripInlineAttributePrefix line
-        if remainder.isEmpty then
-          dropLeadingDecorations rest
-        else
-          remainder :: rest
+        dropLeadingDecorations (dropAttributeBlock (line :: rest))
       else
         line :: rest
 
@@ -1087,11 +1273,144 @@ def axiomsOfDecls (env : Environment) (names : Array Name) : IO (Std.HashMap Nam
       acc := acc.insert name (axs.qsort Name.lt)
     return acc
 
+/-- The packages a reader is being told to trust, given the ones named with `--trust`: those, plus
+everything they depend on, plus the toolchain.
+
+Closing downwards is the whole semantics of the flag. Trusting Mathlib while treating `batteries` as
+unaudited would be incoherent — Mathlib's own theorems rest on it — so naming a package necessarily
+vouches for what it is built from. The toolchain is trusted unconditionally: it is the compiler and
+kernel that checked every other package, so a site cannot coherently offer it as a choice.
+
+Unknown names are *not* silently ignored; `unknownTrustedPackages` reports them, because a typo in
+`--trust mathlbi` would otherwise read as a clean audit of nothing. -/
+partial def trustClosure (packages : Array PackageInfo) (trusted : Array Name) : Std.HashSet Name :=
+  let byName : Std.HashMap Name PackageInfo :=
+    packages.foldl (fun acc pkg => acc.insert pkg.name pkg) {}
+  go byName (trusted.toList ++
+    (packages.filterMap fun pkg => if pkg.isToolchain then some pkg.name else none).toList) {}
+where
+  go (byName : Std.HashMap Name PackageInfo) (todo : List Name) (seen : Std.HashSet Name) :
+      Std.HashSet Name :=
+    match todo with
+    | [] => seen
+    | name :: rest =>
+      if seen.contains name then go byName rest seen
+      else
+        let seen := seen.insert name
+        match byName.get? name with
+        | some pkg => go byName (pkg.deps.toList ++ rest) seen
+        | none => go byName rest seen
+
+/-- The `--trust` names that match no package in the workspace. See `trustClosure`. -/
+def unknownTrustedPackages (packages : Array PackageInfo) (trusted : Array Name) : Array Name :=
+  trusted.filter fun name => !packages.any (·.name == name)
+
+/-- The `Lean` pseudo-package: the toolchain, which owns `Init`/`Std`/`Lean`/`Lake` and belongs to
+no Lake package. -/
+def toolchainPackage : PackageInfo where
+  name := `Lean
+  roots := #[`Init, `Std, `Lean, `Lake]
+  isToolchain := true
+
+/-- The workspace's packages, plus the `Lean` pseudo-package, with their declared dependencies and
+library roots.
+
+Roots come from the Lake configuration rather than from the modules actually present, because they
+are what attributes a module to a package, and a package contributes roots whether or not this
+particular project imports anything under them. -/
+def packageInfosOf (ws : Lake.Workspace) (rootPrefix : Name) : Array PackageInfo :=
+  -- `baseName`, not `keyName`: the latter carries Lake's workspace index (`mathlib.4`), which
+  -- would be what `--trust` had to be spelled with and what the graph displayed.
+  let named := ws.packages.map fun pkg =>
+    let deps := pkg.depIdxs.filterMap fun i => ws.packages[i]?.map (·.baseName)
+    let roots := pkg.leanLibs.flatMap (·.config.roots)
+    { name := pkg.baseName
+      deps := deps
+      roots := roots
+      -- By root prefix rather than by workspace position: `--root` may name a library of the root
+      -- package, and it is the exposed library that "the project" means here.
+      isProject := roots.any (hasPrefixName rootPrefix ·)
+      : PackageInfo }
+  named.push toolchainPackage
+
+/-- Attributes each module of the environment to a package, by longest matching library root.
+
+Longest wins so that a package whose root is nested under another's (`Foo.Bar` under `Foo`) claims
+its own modules. A module matching no root at all is left unattributed and reported by `collect`
+rather than silently folded into some package: it means the workspace's roots do not cover what the
+project actually imports, and a trust claim over an incomplete attribution would be worthless. -/
+def modulePackageOf (packages : Array PackageInfo) (moduleName : Name) : Option Name :=
+  let candidates := packages.flatMap fun pkg =>
+    pkg.roots.filterMap fun root =>
+      if hasPrefixName moduleName root then some (root.getNumParts, pkg.name) else none
+  let best : Option (Nat × Name) :=
+    candidates.foldl (init := none) fun best (depth, name) =>
+      match best with
+      | some (bestDepth, _) => if depth > bestDepth then some (depth, name) else best
+      | none => some (depth, name)
+  best.map Prod.snd
+
+/-- The packages with at least one module in the imported environment.
+
+An exact bound on what any closure can possibly reach, and the thing that keeps the Lake-graph
+closure from being useless. `LeanMachineLearning` *declares* a dependency on `verso` — it builds its
+own site with it — so closing the Lake graph downwards reports every declaration that uses LML as
+resting on Verso, SubVerso, MD4Lean and Illuminate too. None of that code is loaded here: no module
+the project imports belongs to those packages, so no constant in any closure can live in one.
+Intersecting with this set removes them without weakening the guarantee. -/
+def loadedPackagesOf (env : Environment) (packages : Array PackageInfo) : Array Name :=
+  let acc := env.header.moduleNames.foldl (init := ({} : Std.HashSet Name)) fun acc moduleName =>
+    match modulePackageOf packages moduleName with
+    | some pkg => acc.insert pkg
+    | none => acc
+  acc.toArray.qsort Name.lt
+
+/-- The trust-relevant dependency edges of a declaration: the ones `graphDeps` picks, computed from
+the raw `LeanDeps` result before a `DeclInfo` exists to ask. -/
+def trustDepsOf (kind : DeclKind) (isAlias : Bool) (deps typeDeps : Array Name) : Array Name :=
+  if kind == .theorem && !isAlias then typeDeps else deps
+
+/-- Every constant outside the project that some declaration's *statement* names, paired with the
+package it comes from.
+
+Collected so that a declaration's dependency graph can show the upstream declarations it rests on,
+not merely count them. Restricted to the trust-relevant edges (`trustDepsOf`) and to constants that
+resolve to a package: this is the set that can appear as a node, and collecting all of `deps` instead
+would multiply it by every proof-only reference, none of which the graph shows. -/
+def externalPackageMap (env : Environment) (packages : Array PackageInfo) (rootPrefix : Name)
+    (decls : Array DeclInfo) : Array (Name × Name) :=
+  let acc := decls.foldl (init := ({} : Std.HashMap Name Name)) fun acc decl =>
+    (trustDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps).foldl (init := acc) fun acc dep =>
+      if acc.contains dep then acc
+      else match moduleNameOf env dep with
+        | none => acc
+        | some moduleName =>
+          if hasPrefixName moduleName rootPrefix then acc
+          else match modulePackageOf packages moduleName with
+            | some pkg => acc.insert dep pkg
+            | none => acc
+  acc.toArray.qsort fun a b => Name.lt a.1 b.1
+
+/-- The upstream packages a single declaration's own type and body reference, with the project's own
+package dropped: the one-level part of `DeclInfo.upstreamPackages`, before propagation. -/
+def directUpstreamPackages (env : Environment) (packages : Array PackageInfo)
+    (rootPrefix : Name) (deps : Array Name) : Array Name :=
+  let acc := deps.foldl (init := ({} : Std.HashSet Name)) fun acc dep =>
+    match moduleNameOf env dep with
+    | none => acc
+    | some moduleName =>
+      if hasPrefixName moduleName rootPrefix then acc
+      else match modulePackageOf packages moduleName with
+        | some pkg => acc.insert pkg
+        | none => acc
+  acc.toArray.qsort Name.lt
+
 /-- Collects all exposed declarations and computes their primary metadata. The dependency lists
 (`deps`, `typeDeps`) come from `LeanDeps`; everything else — signature, docstring, source snippet,
 kind, `sorry` status — is computed here. -/
 def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
-    (pkg : Lake.Package) (env : Environment) : IO (Array DeclInfo) := do
+    (pkg : Lake.Package) (env : Environment) (packages : Array PackageInfo := #[]) :
+    IO (Array DeclInfo) := do
   let depsCtx := LeanDeps.Context.of env rootPrefix
   let declAxioms ← axiomsOfDecls env (depsCtx.constants.filterMap fun (name, _, _) =>
     if depsCtx.exposed.contains name then some name else none)
@@ -1101,6 +1420,14 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       match origin with
       | .decl declName .. => acc.insert declName
       | _ => acc) {}
+  -- The project's `@[specifies]` annotations, grouped by the theorem carrying them. Reading them
+  -- needs no cooperation from the target beyond depending on `LeanSpec`: the entries ride in the
+  -- `.olean`s and are matched to this process's copy of the extension by name during
+  -- `importModules (loadExts := true)`. A project without the dependency yields an empty array.
+  let specsByTheorem : Std.HashMap Name (Array SpecLink) :=
+    (LeanSpec.specEntries env).foldl (init := {}) fun acc entry =>
+      let link : SpecLink := { name := entry.target, comment := entry.comment }
+      acc.insert entry.theoremName ((acc.getD entry.theoremName #[]).push link)
   let mut cache : LeanDeps.Cache := {}
   let mut fileLines : Std.HashMap System.FilePath (Array String) := {}
   let mut decls := #[]
@@ -1160,6 +1487,12 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       isLemma := isLemma
       isInstanceDecl := isInstanceDecl
       isAlias := isAliasFromSource source? lines
+      specifies := specsByTheorem.getD name #[]
+      -- One level here; `attachUpstreamPackages` propagates it along the project's own edges.
+      -- The edges `graphDeps` picks: a theorem's *statement*, everything else's body too. A
+      -- theorem's proof is not a trust dependency — the kernel checked it.
+      upstreamPackages := directUpstreamPackages env packages rootPrefix
+        (trustDepsOf kind (isAliasFromSource source? lines) declDeps.deps declDeps.typeDeps)
       deps := declDeps.deps
       typeDeps := declDeps.typeDeps
       docstringBlock? := docstringBlock?
@@ -1186,7 +1519,44 @@ for everything else. An `alias`, though a theorem, keeps its body verbatim durin
 follows `deps` too. Shared by `attachTransitiveDeps` (the declaration detail page) and the
 dependency graph, so both agree on what counts as a dependency. -/
 def graphDeps (decl : DeclInfo) : Array Name :=
-  if decl.kind == .theorem && !decl.isAlias then decl.typeDeps else decl.deps
+  trustDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps
+
+/-- Adds the reverse of the `@[specifies]` links: each definition learns which of the exposed
+theorems its author declared to be part of its specification.
+
+Kept in declaration order rather than sorted by name, unlike `attachReverseDeps` — a specification
+is a short, deliberately ordered list, and the order its author wrote it in is the order it reads
+best in. A link whose target is not an exposed declaration (a Mathlib definition, say) simply has
+nowhere to land here; it stays visible on the theorem's own `specifies`. -/
+def attachSpecifiedBy (decls : Array DeclInfo) : Array DeclInfo :=
+  let rev : Std.HashMap Name (Array SpecLink) :=
+    decls.foldl (init := {}) fun acc decl =>
+      decl.specifies.foldl (init := acc) fun acc link =>
+        let back : SpecLink := { name := decl.name, comment := link.comment }
+        acc.insert link.name ((acc.getD link.name #[]).push back)
+  decls.map fun decl => { decl with specifiedBy := rev.getD decl.name #[] }
+
+/-- Propagates the directly-referenced upstream packages along the project's own dependency edges,
+so that each declaration's `upstreamPackages` covers everything its project-level closure touches.
+
+Follows `graphDeps`, the same edges the rest of the site follows, for the reason recorded there: a
+theorem's proof is not something a reader has to trust further, because the kernel checked it. What
+a reader must take on faith from upstream is a *definition* appearing in a statement — and for a
+definition, its body is part of its meaning, which is why `graphDeps` keeps body edges for
+everything that is not a theorem.
+
+Reuses `LeanDeps.transitiveDeps` for the closure rather than iterating a fixpoint: the closure is
+over 784-ish project declarations, not over the environment, so it is cheap and already written. -/
+def attachUpstreamPackages (decls : Array DeclInfo) : Array DeclInfo :=
+  let depsMap : Std.HashMap Name (Array Name) :=
+    decls.foldl (fun acc decl => acc.insert decl.name (graphDeps decl)) {}
+  let ownPkgs : Std.HashMap Name (Array Name) :=
+    decls.foldl (fun acc decl => acc.insert decl.name decl.upstreamPackages) {}
+  decls.map fun decl =>
+    let closure := #[decl.name] ++ LeanDeps.transitiveDeps depsMap decl.name
+    let acc := closure.foldl (init := ({} : Std.HashSet Name)) fun acc name =>
+      (ownPkgs.getD name #[]).foldl (init := acc) (·.insert ·)
+    { decl with upstreamPackages := acc.toArray.qsort Name.lt }
 
 /-- Adds the transitive closure of `deps` to each declaration as `transDeps`, topologically ordered
 so that every dependency precedes the declarations that use it (suitable for emitting a minimal

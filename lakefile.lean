@@ -7,6 +7,15 @@ package LMLExposition where
 
 require verso from git "https://github.com/leanprover/verso" @ "main"
 
+/-- The `@[specifies]` attribute, as a *separate, dependency-free package* rather than a library of
+this one. A project that wants to annotate its specifications must depend on it, and must not have
+to drag in Verso to do so.
+
+This tool depends on it for the other end of the same wire: reading the annotations back out of a
+target project needs the environment extension registered in *this* process, since imported
+extension entries are matched to registered extensions by name and silently dropped otherwise. -/
+require LeanSpec from "LeanSpec"
+
 /--
 The site's CSS and JavaScript, authored as real files and embedded with `include_str`.
 
@@ -27,7 +36,7 @@ lean_lib LMLExposition where
   needs := #[websiteAssets]
 
 lean_lib Test where
-  globs := #[`Test, `Test.Collect, `Test.Deps, `Test.Extract]
+  globs := #[`Test, `Test.Collect, `Test.Deps, `Test.Extract, `Test.Spec]
 
 @[default_target]
 lean_exe exposition where

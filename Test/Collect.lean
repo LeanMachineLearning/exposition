@@ -17,6 +17,9 @@ This module audits the *pure* logic of `Collect.lean`:
   (`attachReverseDeps`, `attachTransitiveDeps`), i.e. the field plumbing and the `graphDeps` edge
   choice — the passes themselves live in `LeanDeps` and are checked in `Test/Deps.lean`, together
   with the rest of the dependency analysis;
+* `attachSpecifiedBy`, which reverses the author's `@[specifies]` links, and `isDefinitionLike`,
+  the classification every specification count is taken over (reading the annotations out of the
+  environment needs a real project and is exercised end to end, not here);
 * the JSON round-trip of the collected data.
 
 Each check is a `#guard`, so any regression turns into a build error. Run with
@@ -86,6 +89,34 @@ namespace LMLExposition.Test
 #guard splitTopLevelColon? "{a : b} → c" == none            -- the only colon is bracketed
 #guard splitTopLevelColon? "no colon here" == none
 
+/-! ## Stripping the decorations before a declaration
+
+`cleanDeclSnippet` has to leave the snippet starting at the declaration keyword, because everything
+downstream reads that first word: the signature shown on the page, and the `lemma`/`instance`/
+`alias` detection that decides both the label and whether a declaration lands on the Claims page.
+
+The multi-line cases below are the ones that were wrong: a `@[…]` spanning two source lines had
+only its first line dropped, so the statement was rendered with the tail of the attribute glued to
+its front *and* `lemma` went undetected, promoting the lemma to a claim. -/
+
+#guard cleanDeclSnippet "theorem foo : True := trivial" == "theorem foo : True := trivial"
+#guard cleanDeclSnippet "@[simp] lemma foo : True := trivial" == "lemma foo : True := trivial"
+#guard cleanDeclSnippet "/-- Doc. -/\nlemma foo : True := trivial" == "lemma foo : True := trivial"
+-- An attribute on its own line, and several of them.
+#guard cleanDeclSnippet "@[simp]\nlemma foo : True := trivial" == "lemma foo : True := trivial"
+#guard cleanDeclSnippet "@[simp]\n@[norm_cast]\nlemma foo : True" == "lemma foo : True"
+-- Docstring, then attribute, in the order Lean requires.
+#guard cleanDeclSnippet "/-- Doc. -/\n@[simp]\nlemma foo : True" == "lemma foo : True"
+-- An attribute spanning two lines, via a string gap and via a plain wrap.
+#guard cleanDeclSnippet "@[specifies f \"a long \\\n  note\"]\nlemma foo : True" == "lemma foo : True"
+#guard cleanDeclSnippet "@[specifies f,\n  simp]\nlemma foo : True" == "lemma foo : True"
+-- A bracket inside the attribute's string argument must not close it early.
+#guard cleanDeclSnippet "@[specifies f \"the a[i] case\"]\nlemma foo : True" == "lemma foo : True"
+-- An escaped quote does not end the string, so the `]` after it is still inside the attribute.
+#guard cleanDeclSnippet "@[specifies f \"say \\\"hi]\\\"\"]\nlemma foo : True" == "lemma foo : True"
+-- The declaration may begin on the same line as the closing bracket.
+#guard cleanDeclSnippet "@[specifies f,\n  simp] lemma foo : True" == "lemma foo : True"
+
 /-! ## Dependency-graph passes
 
 These run on an already-collected `Array DeclInfo`, wrapping the graph passes of `LeanDeps`. What
@@ -96,7 +127,9 @@ that matter (`name`, `deps`, `typeDeps`, `kind`).
 -/
 
 private def mkDecl (name : Name) (deps : Array Name := #[]) (typeDeps : Array Name := #[])
-    (kind : DeclKind := .definition) : DeclInfo := {
+    (kind : DeclKind := .definition) (specifies : Array SpecLink := #[])
+    (upstreamPackages : Array Name := #[]) : DeclInfo := {
+  upstreamPackages := upstreamPackages
   name := name
   moduleName := `Test.Mod
   modulePath := "Mod"
@@ -109,6 +142,7 @@ private def mkDecl (name : Name) (deps : Array Name := #[]) (typeDeps : Array Na
   source? := none
   deps := deps
   typeDeps := typeDeps
+  specifies := specifies
 }
 
 /-- Look up one declaration's field after running a pass, for compact assertions. -/
@@ -176,6 +210,149 @@ private def mutualGraph : Array DeclInfo := #[
 #guard field (attachTransitiveDeps mutualGraph) `A (·.transDeps) == some #[`B]
 #guard field (attachTransitiveDeps mutualGraph) `B (·.transDeps) == some #[`A]
 
+/-! ### `attachSpecifiedBy` (`specifiedBy` = reverse of the author's `@[specifies]` links)
+
+Unlike the passes above this one carries a payload — the author's comment — and deliberately does
+*not* sort: a specification is a short curated list and reads in the order it was written. -/
+
+private def specGraph : Array DeclInfo := #[
+  mkDecl `thmB (kind := .theorem) (specifies := #[⟨`Def, "second"⟩]),
+  mkDecl `thmA (kind := .theorem) (specifies := #[⟨`Def, ""⟩, ⟨`Other.Upstream, "off-project"⟩]),
+  mkDecl `Def,
+  mkDecl `Unspecified
+]
+
+-- Declaration order, not name order, and the comment travels with the link.
+#guard field (attachSpecifiedBy specGraph) `Def (·.specifiedBy) ==
+  some #[⟨`thmB, "second"⟩, ⟨`thmA, ""⟩]
+-- A definition nobody annotated is the case the site has to be able to point at.
+#guard field (attachSpecifiedBy specGraph) `Unspecified (·.specifiedBy) ==
+  some (#[] : Array SpecLink)
+-- A target outside the exposed set stays visible on the theorem and adds no node of its own.
+#guard field (attachSpecifiedBy specGraph) `thmA (·.specifies) ==
+  some #[⟨`Def, ""⟩, ⟨`Other.Upstream, "off-project"⟩]
+#guard (attachSpecifiedBy specGraph).all (·.name != `Other.Upstream)
+-- The pass only writes the reverse direction; the forward links are the collected input.
+#guard field (attachSpecifiedBy specGraph) `thmA (·.specifiedBy) == some (#[] : Array SpecLink)
+
+/-! ### `isDefinitionLike`
+
+What a specification can be *about*, and so the denominator of every "N of M definitions have one"
+the site reports. Worth pinning down: the exclusions are judgement calls, and silently gaining or
+losing a kind here would move every count on the specification page. -/
+
+#guard (mkDecl `D (kind := .definition)).isDefinitionLike
+#guard (mkDecl `S (kind := .structure)).isDefinitionLike
+#guard (mkDecl `C (kind := .typeclass)).isDefinitionLike
+#guard (mkDecl `I (kind := .inductive)).isDefinitionLike
+#guard (mkDecl `O (kind := .opaque)).isDefinitionLike
+-- A theorem's meaning is its statement, an axiom is itself an assumption (which the trust page
+-- reports), and instances are plumbing numerous enough to bury the definitions that matter.
+#guard !(mkDecl `T (kind := .theorem)).isDefinitionLike
+#guard !(mkDecl `A (kind := .axiom)).isDefinitionLike
+#guard !(mkDecl `Inst (kind := .instance)).isDefinitionLike
+-- Written with the `instance` keyword, whatever kind it elaborated to.
+#guard !({ mkDecl `Inst2 (kind := .definition) with isInstanceDecl := true }).isDefinitionLike
+
+/-! ## Upstream packages and trust
+
+The one part of the audit that reaches outside the project. Three pieces of pure logic, all of which
+would fail *silently* if wrong — a trust page that under-reports reads exactly like one with nothing
+to report — so each is pinned here.
+
+The fixture is `AlphaRAR`'s real shape, reduced: the project requires `LML`, which requires
+`mathlib` (which requires `batteries`) and `verso`. `verso` is the interesting one: `LML` declares it
+but none of its code is loaded, which is what `loadedPackages` exists to exclude. -/
+
+private def pkgs : Array PackageInfo := #[
+  { name := `Proj, deps := #[`LML], roots := #[`Proj], isProject := true },
+  { name := `LML, deps := #[`mathlib, `verso], roots := #[`LeanMachineLearning] },
+  { name := `mathlib, deps := #[`batteries], roots := #[`Mathlib] },
+  { name := `batteries, deps := #[], roots := #[`Batteries] },
+  { name := `verso, deps := #[], roots := #[`Verso] },
+  { name := `Lean, deps := #[], roots := #[`Init, `Std, `Lean, `Lake], isToolchain := true }
+]
+
+/-! ### `trustClosure` -/
+
+-- Trusting a package vouches for what it is built from: Mathlib's own theorems rest on Batteries.
+#guard (trustClosure pkgs #[`mathlib]).contains `batteries
+#guard (trustClosure pkgs #[`mathlib]).contains `mathlib
+-- But not for what is built *on* it, which is the whole point of the flag.
+#guard !(trustClosure pkgs #[`mathlib]).contains `LML
+#guard !(trustClosure pkgs #[`mathlib]).contains `verso
+-- The toolchain is trusted with no flag at all: it is the kernel that checked everything else.
+#guard (trustClosure pkgs #[]).contains `Lean
+#guard (trustClosure pkgs #[]).size == 1
+-- Trusting LML reaches everything it declares, transitively.
+#guard (trustClosure pkgs #[`LML]).contains `batteries
+#guard (trustClosure pkgs #[`LML]).contains `verso
+-- A cycle in the graph must not hang the closure.
+#guard (trustClosure #[{ name := `a, deps := #[`b] }, { name := `b, deps := #[`a] }] #[`a]).size == 2
+
+-- A typo must be reported, not silently vouch for nothing.
+#guard unknownTrustedPackages pkgs #[`mathlbi] == #[`mathlbi]
+#guard unknownTrustedPackages pkgs #[`mathlib] == (#[] : Array Name)
+
+/-! ### `modulePackageOf` -/
+
+#guard modulePackageOf pkgs `Mathlib.Order.Basic == some `mathlib
+#guard modulePackageOf pkgs `LeanMachineLearning.Bandits == some `LML
+#guard modulePackageOf pkgs `Init.Prelude == some `Lean
+#guard modulePackageOf pkgs `Lake.Build == some `Lean
+-- Component-wise, not string prefix: `MathlibExtra` is not `Mathlib`.
+#guard modulePackageOf pkgs `MathlibExtra.Foo == none
+#guard modulePackageOf pkgs `Something.Else == none
+-- Longest matching root wins, so a package nested under another's root claims its own modules.
+#guard modulePackageOf #[{ name := `outer, roots := #[`Foo] }, { name := `inner, roots := #[`Foo.Bar] }]
+  `Foo.Bar.Baz == some `inner
+
+/-! ### `trustDepsOf`
+
+The single rule for "which edges does trust follow", now load-bearing in three places: `graphDeps`
+delegates to it, `collectDecls` uses it before a `DeclInfo` exists, and `externalPackageMap` uses it
+to decide which upstream constants can appear as graph nodes. Worth pinning directly rather than only
+through its callers. -/
+
+-- A theorem contributes its statement; its proof was checked by the kernel.
+#guard trustDepsOf .theorem false #[`body] #[`stated] == #[`stated]
+-- Everything else contributes its body too, because a definition's body is its meaning.
+#guard trustDepsOf .definition false #[`body] #[`stated] == #[`body]
+#guard trustDepsOf .structure false #[`body] #[`stated] == #[`body]
+-- An `alias` is a theorem whose body is kept verbatim, so it follows the body like a definition.
+#guard trustDepsOf .theorem true #[`body] #[`stated] == #[`body]
+
+/-! ### `attachUpstreamPackages`
+
+Propagation follows `graphDeps`, and the reason is the whole point of the measure: an upstream
+*proof* is not a trust dependency, because the kernel rechecked it and anything left unproved in it
+arrives as a `sorry` or an extra axiom, which the trust page counts separately. What a reader must
+take on faith is an upstream *definition* their statement is about.
+
+So the two cases below have to come out differently, and getting them the same way round — which an
+earlier version did, following `deps` — inflates the report with proof-only dependencies that need no
+audit at all. -/
+
+private def pkgGraph : Array DeclInfo := #[
+  -- A theorem whose statement touches nothing upstream and whose *proof* reaches Mathlib. Not a
+  -- trust dependency: the proof is checked.
+  mkDecl `provedThm (deps := #[`helper]) (typeDeps := #[]) (kind := .theorem),
+  -- A theorem whose *statement* is about the same upstream definition. This one is.
+  mkDecl `statedThm (deps := #[`helper]) (typeDeps := #[`helper]) (kind := .theorem),
+  -- A definition's body is part of its meaning, so body edges do count for one.
+  mkDecl `defn (deps := #[`helper]) (typeDeps := #[]) (kind := .definition),
+  mkDecl `helper (upstreamPackages := #[`mathlib]),
+  mkDecl `isolated
+]
+
+#guard field (attachUpstreamPackages pkgGraph) `provedThm (·.upstreamPackages) ==
+  some (#[] : Array Name)
+#guard field (attachUpstreamPackages pkgGraph) `statedThm (·.upstreamPackages) == some #[`mathlib]
+#guard field (attachUpstreamPackages pkgGraph) `defn (·.upstreamPackages) == some #[`mathlib]
+#guard field (attachUpstreamPackages pkgGraph) `helper (·.upstreamPackages) == some #[`mathlib]
+#guard field (attachUpstreamPackages pkgGraph) `isolated (·.upstreamPackages) ==
+  some (#[] : Array Name)
+
 /-! ## JSON round-trip for collected data
 
 `DeclInfo`/`ModuleInfo`/`GroupInfo`/`MarkdownSection`/`CollectedData` derive `ToJson`/`FromJson`
@@ -203,6 +380,9 @@ private def sampleDeclForJson : DeclInfo := {
   proofText? := some "trivial"
   source? := some { relPath := "Foo.lean", absPath := "/tmp/Foo.lean", line := 1, endLine := 2 }
   isLemma := true
+  specifies := #[{ name := `Foo.mk, comment := "characterizes `mk` on the empty case" }]
+  specifiedBy := #[{ name := `Foo.qux }]
+  upstreamPackages := #[`mathlib]
   deps := #[`Nat.add]
   typeDeps := #[`Nat.add]
   usedBy := #[`Foo.baz]
@@ -218,6 +398,8 @@ private def sampleDeclForJson : DeclInfo := {
   moduleOrder := #[(`Foo, 0), (`Foo.Bar, 1)]
   moduleDocs := #[(`Foo, #[.para #[.text "module doc"]])]
   readmeText := some "# Title\n\nBody"
+  packages := pkgs
+  loadedPackages := #[`Proj, `LML, `mathlib, `batteries, `Lean]
 } : CollectedData)
 
 end LMLExposition.Test

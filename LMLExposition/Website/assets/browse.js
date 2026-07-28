@@ -26,6 +26,11 @@ document.addEventListener('DOMContentLoaded', () => {
     [`<option value="">${all}</option>`]
       .concat(values.map(v => `<option value="${esc(v)}">${esc(v)}</option>`)).join('');
 
+  // The specification column exists only for a project that uses `@[specifies]`. `specs` is null
+  // (or absent) for anything a specification cannot be about — theorems, axioms, instances — so a
+  // project that never annotates produces no non-null counts and gets the table it had before.
+  const hasSpecs = rows.some(r => r.specs != null && r.specs > 0);
+
   root.innerHTML = `
     <div class="browse-controls">
       <input id="browse-q" type="search" placeholder="Filter by name or module" />
@@ -37,6 +42,11 @@ document.addEventListener('DOMContentLoaded', () => {
         <option value="sorry">Depends on sorry</option>
         <option value="axioms">Extra axioms</option>
       </select>
+      ${hasSpecs ? `<select id="browse-spec">
+        <option value="">Any definition</option>
+        <option value="none">No specification</option>
+        <option value="some">Has a specification</option>
+      </select>` : ''}
       <button id="browse-reset" type="button">Reset</button>
     </div>
     <p class="browse-count" id="browse-count"></p>
@@ -49,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <th data-sort="module" class="browse-sortable">Module</th>
             <th data-sort="deps" class="browse-sortable browse-num">Deps</th>
             <th data-sort="ext" class="browse-sortable browse-num">External</th>
+            ${hasSpecs ? '<th data-sort="specs" class="browse-sortable browse-num">Spec</th>' : ''}
             <th data-sort="trust" class="browse-sortable">Status</th>
           </tr>
         </thead>
@@ -61,6 +72,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const kind = document.getElementById('browse-kind');
   const chapter = document.getElementById('browse-chapter');
   const trust = document.getElementById('browse-trust');
+  const spec = document.getElementById('browse-spec');
   const body = document.getElementById('browse-body');
   const count = document.getElementById('browse-count');
 
@@ -68,6 +80,17 @@ document.addEventListener('DOMContentLoaded', () => {
   let sortAsc = true;
 
   const trustOf = r => (r.dependsOnSorry ? 'sorry' : r.extraAxioms ? 'axioms' : 'proved');
+
+  // Sorts and filters treat "not the sort of thing that has a specification" as its own value
+  // rather than as zero, so that ascending order does not bury the unspecified definitions —
+  // the reason to sort this column at all — under every theorem in the library.
+  const specOf = r => (r.specs == null ? null : r.specs > 0 ? 'some' : 'none');
+
+  const specCell = r => {
+    if (r.specs == null) return '<span class="browse-spec-na">—</span>';
+    if (r.specs > 0) return String(r.specs);
+    return '<span class="browse-flag browse-flag-gap">none</span>';
+  };
 
   const statusCell = r => {
     if (r.dependsOnSorry) return '<span class="browse-flag browse-flag-warn">depends on sorry</span>';
@@ -81,6 +104,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (kind.value && r.kind !== kind.value) return false;
       if (chapter.value && r.chapter !== chapter.value) return false;
       if (trust.value && trustOf(r) !== trust.value) return false;
+      if (spec && spec.value && specOf(r) !== spec.value) return false;
       if (needle && !(`${r.name} ${r.module}`.toLowerCase().includes(needle))) return false;
       return true;
     });
@@ -90,6 +114,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const dir = sortAsc ? 1 : -1;
     const value = r => (sortKey === 'trust' ? trustOf(r) : r[sortKey]);
     return list.slice().sort((a, b) => {
+      // Rows that cannot have a specification sink to the bottom in *both* directions: they are
+      // not a value on this scale, and letting them sort along with the rest would bury the
+      // definitions the column exists to surface under every theorem in the library.
+      if (sortKey === 'specs') {
+        const aNone = a.specs == null, bNone = b.specs == null;
+        if (aNone !== bNone) return aNone ? 1 : -1;
+      }
       const x = value(a), y = value(b);
       const cmp = typeof x === 'number' && typeof y === 'number'
         ? x - y
@@ -109,6 +140,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <td class="browse-module"><code>${esc(r.module)}</code></td>
         <td class="browse-num">${r.deps}</td>
         <td class="browse-num">${r.ext}</td>
+        ${hasSpecs ? `<td class="browse-num">${specCell(r)}</td>` : ''}
         <td>${statusCell(r)}</td>
       </tr>`).join('');
     count.textContent = found.length === rows.length
@@ -135,13 +167,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  for (const control of [q, kind, chapter, trust]) {
+  for (const control of [q, kind, chapter, trust, spec].filter(Boolean)) {
     control.addEventListener('input', render);
     control.addEventListener('change', render);
   }
 
   document.getElementById('browse-reset').addEventListener('click', () => {
     q.value = ''; kind.value = ''; chapter.value = ''; trust.value = '';
+    if (spec) spec.value = '';
     sortKey = 'name'; sortAsc = true;
     render();
   });

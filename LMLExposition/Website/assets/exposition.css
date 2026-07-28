@@ -643,6 +643,77 @@ body.hide-theorems [data-decl-group="theorem"] {
   white-space: nowrap;
 }
 
+/* --------------------------------------------------- specification listing */
+
+/* The theorems an author declared to be the meaning of a definition (`Block.specList`).
+
+   Heavier than `.decl-index` on purpose. That is a list of links, scanned; this is a list of
+   statements, read — each row is a property the reader has to weigh, so it gets a card of its own
+   rather than a line. */
+
+.spec-list {
+  list-style: none;
+  margin: .6rem 0 1.2rem;
+  padding: 0;
+}
+
+.spec-item {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-left: 3px solid var(--site-kind-definition);
+  border-radius: var(--site-radius-sm);
+  margin-bottom: .55rem;
+  padding: .6rem .8rem;
+}
+
+.spec-item:last-child { margin-bottom: 0; }
+
+.spec-item-head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+  justify-content: space-between;
+}
+
+.spec-item-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.spec-item-name code { font-size: .9rem; }
+
+.spec-item-kind {
+  color: var(--site-ink-3);
+  flex: 0 0 auto;
+  font-family: var(--verso-structure-font-family);
+  font-size: .74rem;
+  white-space: nowrap;
+}
+
+/* The author's note on why the property belongs in the specification: the one part of the row
+   that is prose, and the part a reader is most likely to want first. */
+.spec-item-comment {
+  color: var(--site-ink-2);
+  font-size: .9rem;
+  margin: .35rem 0 0;
+}
+
+.spec-item-statement {
+  background: var(--site-surface-2);
+  border-radius: var(--site-radius-sm);
+  font-size: .82rem;
+  margin: .45rem 0 0;
+  overflow-x: auto;
+  padding: .5rem .65rem;
+}
+
+.spec-item-statement code {
+  font-family: var(--verso-code-font-family);
+  white-space: pre;
+}
+
 /* ----------------------------------------------------------------- browse */
 
 .browse-controls {
@@ -757,6 +828,16 @@ body.hide-theorems [data-decl-group="theorem"] {
   border: 1px solid var(--site-warn-border);
   color: var(--site-warn);
 }
+
+/* A missing specification is a gap, not a fault: the declaration may be perfectly correct and
+   nobody has said what it means. Marked plainly rather than in the warning colour, which on this
+   table means "depends on sorry". */
+.browse-flag-gap {
+  border: 1px solid var(--site-border-strong);
+  color: var(--site-ink-3);
+}
+
+.browse-spec-na { color: var(--site-ink-3); }
 
 /* ------------------------------------------------------------------ graph */
 
