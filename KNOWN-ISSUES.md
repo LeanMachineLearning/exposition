@@ -5,7 +5,7 @@
 > [Fallback: `extract-flat`](#fallback-extract-flat) at the end of this file. The issues below are
 > specific to `extract` and remain the reason the readable tier needs a fallback at all.
 
-Status of the standalone `.lean` files written by `exposition extract`, as measured by
+Status of the standalone `.lean` files written by `referee extract`, as measured by
 `scripts/check-extracted-compile.sh`. Every number below comes from running that script over a
 whole corpus; none of it is estimated.
 
@@ -27,10 +27,10 @@ whole corpus; none of it is estimated.
 Reproduce with, per project:
 
 ```bash
-EXPOSITION=/path/to/lml-exposition/.lake/build/bin/exposition
-lake env "$EXPOSITION" collect --root <Root> --data data.json     # add --exclude-lib for unbuilt libs
-lake env "$EXPOSITION" extract --data data.json --output out      # same --exclude-lib as collect
-/path/to/lml-exposition/scripts/check-extracted-compile.sh . out/html-multi/extracted
+REFEREE=/path/to/referee/.lake/build/bin/referee
+lake env "$REFEREE" collect --root <Root> --data data.json     # add --exclude-lib for unbuilt libs
+lake env "$REFEREE" extract --data data.json --output out      # same --exclude-lib as collect
+/path/to/referee/scripts/check-extracted-compile.sh . out/html-multi/extracted
 ```
 
 ## Open issues
@@ -167,7 +167,7 @@ term, which is why sorrying proofs (the bulk of what extraction does) is safe. V
 
 ## Fallback: `extract-flat`
 
-`LMLExposition.Flat` (`exposition extract-flat`) is a second extraction path that renders each
+`Referee.Flat` (`referee extract-flat`) is a second extraction path that renders each
 declaration from its `ConstantInfo` in the compiled environment instead of copying source text.
 Fully qualified names, `@`-explicit applications, `sorry` for every proof; no `variable`, no
 `namespace`/`open`, no notation, no attributes, no tactic blocks. It is unreadable by design.
@@ -182,7 +182,7 @@ Fully qualified names, `@`-explicit applications, `sorry` for every proof; no `v
 Reproduce exactly as for `extract`, substituting the subcommand and the output directory:
 
 ```bash
-lake env "$EXPOSITION" extract-flat --data data.json --output out
+lake env "$REFEREE" extract-flat --data data.json --output out
 scripts/check-extracted-compile.sh . out/html-multi/extracted-flat
 ```
 

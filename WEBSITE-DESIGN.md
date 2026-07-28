@@ -1,6 +1,6 @@
 # Website design principles
 
-Design document for the second-generation exposition site. Written before any code, so the
+Design document for the second-generation Referee site. Written before any code, so the
 principles can be argued with cheaply.
 
 ## 1. What the site is for
@@ -34,7 +34,7 @@ click it to jump to its definition.
 
 **Where highlighting stands today.** The site already gets this for one thing: `collect` calls
 Verso's `Signature.forName` and emits a `Block.docstring`
-([Collect.lean:491](LMLExposition/Collect.lean#L491)), and that block descriptor is wrapped in
+([Collect.lean:491](Referee/Collect.lean#L491)), and that block descriptor is wrapped in
 `withHighlighting`, so the *pretty-printed signature* is real `Highlighted` with tippy tooltips.
 That works and stays.
 
@@ -43,7 +43,7 @@ What is **not** highlighted is everything else, and it is the part that matters 
 | shown on a declaration | today |
 |---|---|
 | pretty-printed signature (`Block.docstring`) | ✅ highlighted, hoverable |
-| source-form statement (`displaySignature`) | ❌ plain `<pre>` ([Site.lean:353](LMLExposition/Website/Site.lean#L353)) |
+| source-form statement (`displaySignature`) | ❌ plain `<pre>` ([Site.lean:353](Referee/Website/Site.lean#L353)) |
 | proof body (`proofText?`) | ❌ plain `<pre>` |
 | **minimal dependency file** | ❌ not shown at all — an off-site link |
 
@@ -113,8 +113,8 @@ client of it; so is anything else anyone builds. It also makes version-to-versio
 ("what changed in this library") nearly free — which nothing today can do.
 
 Corollary: **no HTML, CSS, or JavaScript authored inside Lean string literals.** Today
-[Theme.lean](LMLExposition/Website/Theme.lean) is CSS in a string and
-[GraphJs.lean](LMLExposition/Website/GraphJs.lean) is 489 lines of JavaScript in a string, so
+[Theme.lean](Referee/Website/Theme.lean) is CSS in a string and
+[GraphJs.lean](Referee/Website/GraphJs.lean) is 489 lines of JavaScript in a string, so
 changing a margin means rebuilding a Lean executable against Verso. The fix is Verso's own asset
 system — `CssFile`/`JsFile` whose `contents` come from `include_str` of a real `.css`/`.js`
 file, which is precisely how Verso vendors popper and tippy
@@ -231,7 +231,7 @@ measurement on brownian-motion before the layout is fixed.**
 
 One directory of files, hostable on GitHub Pages, working after load with no network. That
 includes **no CDN**: the site currently fetches D3 from `d3js.org` at runtime
-([Site.lean:259-261](LMLExposition/Website/Site.lean#L259-L261)), which is both a failure mode
+([Site.lean:259-261](Referee/Website/Site.lean#L259-L261)), which is both a failure mode
 and a third-party dependency in an artifact whose entire pitch is verifiability. Vendor it the
 way Verso vendors tippy.
 

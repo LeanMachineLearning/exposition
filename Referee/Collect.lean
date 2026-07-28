@@ -21,7 +21,7 @@ Walks a compiled project's environment and builds one `DeclInfo` per exposed dec
 signature, docstring, source location and snippet, kind, and dependency lists.
 
 The dependency analysis itself lives in `LeanDeps` — a standalone module that knows nothing about
-this tool's output. This file only decides *which* dependency edges the exposition follows
+this tool's output. This file only decides *which* dependency edges Referee follows
 (`graphDeps`: type-only for theorems) and attaches the results to `DeclInfo`.
 -/
 
@@ -32,12 +32,12 @@ open Verso.Doc
 open Verso.Genre
 open Manual
 
-namespace LMLExposition
+namespace Referee
 
 open Verso.Output Html
 open LeanDeps
 
-/-- CLI options used to configure exposition generation. Shared across the `collect`,
+/-- CLI options used to configure site generation. Shared across the `collect`,
 `extract`, `build-site`, and `all` subcommands; each one only consults the fields relevant
 to it. -/
 structure Cli where
@@ -446,7 +446,7 @@ deriving ToJson, FromJson
 /-- Command-line usage text shown for invalid arguments. -/
 def usage : String :=
   String.intercalate "\n" [
-    "Usage: lake exe exposition [SUBCOMMAND] [options]",
+    "Usage: lake exe referee [SUBCOMMAND] [options]",
     "",
     "Subcommands:",
     "  collect              Import the target project and write collected declaration data as JSON.",
@@ -790,7 +790,7 @@ the module system's phase check has to be switched off for this one definition. 
 `LEAN_EXPORT` symbols in Verso's library, so the call links and runs normally. -/
 def mkDocstringBlock? (env : Environment) (name : Name) : IO (Option (Block Manual)) := do
   let options := Options.empty.setBool `pp.fieldNotation false
-  let coreCtx : Core.Context := { fileName := "<exposition>", fileMap := default, options }
+  let coreCtx : Core.Context := { fileName := "<referee>", fileMap := default, options }
   let openDecls := (namespaceAncestors name.getPrefix).map (OpenDecl.simple · [])
   let act : MetaM (Block Manual) := do
     let declType ← Block.Docstring.DeclType.ofName name
@@ -1152,7 +1152,7 @@ def issueUrlOf (repoUrl? : Option String) (decl : Name) (moduleName : Name) (sou
       "**Describe the issue:**",
       ""
     ]
-    s!"{repoUrl}/issues/new?title={title}&body={body}&labels=exposition-review"
+    s!"{repoUrl}/issues/new?title={title}&body={body}&labels=referee-review"
 
 /-- Builds a repository source link for a declaration location. -/
 def sourceUrlOf (repoUrl? : Option String) (source? : Option SourceInfo) : Option String :=
@@ -1218,8 +1218,8 @@ def dropUnsafeDeps (decls : Array DeclInfo) : Array DeclInfo :=
 /-- Helper for runCoreIO. -/
 def runCoreIO {α : Type} (env : Environment) (x : CoreM α) : IO α := do
   x.toIO'
-    { fileName := "<exposition>", fileMap := default, options := {}, currNamespace := .anonymous, openDecls := [] }
-    { env := env, ngen := { namePrefix := `_exposition } }
+    { fileName := "<referee>", fileMap := default, options := {}, currNamespace := .anonymous, openDecls := [] }
+    { env := env, ngen := { namePrefix := `_referee } }
 
 /-- Retrieves declaration source ranges, returning `none` on failure. -/
 def findRanges? (env : Environment) (name : Name) : IO (Option DeclarationRanges) := do
@@ -1566,4 +1566,4 @@ def attachTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
     decls.foldl (fun acc decl => acc.insert decl.name (graphDeps decl)) {}
   decls.map fun decl => { decl with transDeps := LeanDeps.transitiveDeps depsMap decl.name }
 
-end LMLExposition
+end Referee

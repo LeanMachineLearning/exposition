@@ -3,12 +3,12 @@
 set -euo pipefail
 
 output_dir="${1:-dist}"
-binary_path="${BINARY_PATH:-.lake/build/bin/exposition}"
+binary_path="${BINARY_PATH:-.lake/build/bin/referee}"
 platform="${PACKAGE_PLATFORM:-linux-x86_64}"
 source_sha="${SOURCE_SHA:-${GITHUB_SHA:-$(git rev-parse HEAD)}}"
 lean_toolchain="$(tr -d '\n' < lean-toolchain)"
 built_at_utc="${BUILD_TIMESTAMP_UTC:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-asset_stem="exposition-${platform}-${source_sha}"
+asset_stem="referee-${platform}-${source_sha}"
 package_root="${asset_stem}"
 staging_dir="${output_dir}/${package_root}"
 metadata_path="${output_dir}/${asset_stem}.metadata.json"
@@ -22,12 +22,12 @@ fi
 
 rm -rf "${staging_dir}"
 mkdir -p "${staging_dir}"
-cp "${binary_path}" "${staging_dir}/exposition"
+cp "${binary_path}" "${staging_dir}/referee"
 cp lean-toolchain "${staging_dir}/lean-toolchain"
 
 cat > "${staging_dir}/metadata.json" <<EOF
 {
-  "name": "exposition",
+  "name": "referee",
   "platform": "${platform}",
   "source_sha": "${source_sha}",
   "lean_toolchain": "${lean_toolchain}",

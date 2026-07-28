@@ -12,10 +12,10 @@ public import VersoManual.Markdown
 public import VersoManual.ExternalLean
 public import SubVerso.Highlighting
 public import SubVerso.Module
-public import LMLExposition.Collect
-public import LMLExposition.Extract
-public import LMLExposition.ExtractFlat
-public import LMLExposition.Highlight
+public import Referee.Collect
+public import Referee.Extract
+public import Referee.ExtractFlat
+public import Referee.Highlight
 
 open Lake
 open Lean
@@ -24,7 +24,7 @@ open Verso.Doc
 open Verso.Genre
 open Manual
 
-namespace LMLExposition
+namespace Referee
 
 open Verso.Output Html
 open LeanDeps
@@ -307,7 +307,7 @@ end
 
 /-- The README text up to, but not including, a "Selected References" heading at any level.
 
-A bibliography is the one part of a README that reads as noise on a generated exposition page,
+A bibliography is the one part of a README that reads as noise on a generated page,
 and long enough to bury everything above it. -/
 private def readmeUpToReferences (readme : String) : String :=
   let isReferencesHeading (line : String) : Bool :=
@@ -356,9 +356,9 @@ cache between pages. And it made iterating on style absurd: changing a margin me
 executable and re-rendering the whole site, minutes for a one-character edit. As files, the same
 edit is `scripts/sync-assets.sh <site>` and a reload. -/
 
-private def expositionCssFile : CssFile where
-  filename := "exposition.css"
-  contents := CSS.mk (include_str "assets/exposition.css")
+private def refereeCssFile : CssFile where
+  filename := "referee.css"
+  contents := CSS.mk (include_str "assets/referee.css")
 
 private def graphJsFile : JsFile where
   filename := "graph.js"
@@ -369,7 +369,7 @@ private def graphJsFile : JsFile where
 
 /-- Applies the reader's stored light/dark choice to `<html>` before the page paints. -/
 private def themeBootJs : String :=
-  "try{var t=localStorage.getItem('lean-exposition:theme');\
+  "try{var t=localStorage.getItem('referee:theme');\
    if(t==='dark'||t==='light')document.documentElement.setAttribute('data-theme',t);}catch(e){}"
 
 private def tocJsFile : JsFile where
@@ -382,7 +382,7 @@ private def browseJsFile : JsFile where
   contents := JS.mk (include_str "assets/browse.js")
   sourceMap? := none
 
-/-- Rendering configuration for the exposition site output. -/
+/-- Rendering configuration for the site output. -/
 private def renderConfig : RenderConfig :=
   {
     emitTeX := false
@@ -400,7 +400,7 @@ private def renderConfig : RenderConfig :=
     -- those, immediately below them. The sidebar carries the same navigation on every page.
     rootTocDepth := some 0
     sectionTocDepth := some 0
-    extraCssFiles := {expositionCssFile}
+    extraCssFiles := {refereeCssFile}
     extraJsFiles := {d3JsFile, graphJsFile, tocJsFile, browseJsFile}
     -- Inline and in `<head>`, so the stored theme is applied before the first paint. Loading this
     -- as a file would let the light theme flash before the script ran.
@@ -1271,7 +1271,7 @@ what the library asserts, what it takes for granted, and where it is incomplete.
 /-- The library's claims: everything written with the `theorem` keyword.
 
 This reads the author's own signal. Mathlib-style convention distinguishes `theorem` — a result
-worth stating for its own sake — from `lemma`, which marks a step towards one; `LMLExposition`
+worth stating for its own sake — from `lemma`, which marks a step towards one; `Referee`
 takes that distinction at face value, so what a project puts on this page is decided by how it
 writes its declarations.
 
@@ -1658,60 +1658,86 @@ private def mkTrustPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manu
     subParts := #[]
   }
 
-/-- The landing summary: what the library claims, how much of it is proved, and what it assumes.
+/-- The landing summary: the question the whole site exists to answer, then the numbers that answer
+it, then what every page carries.
 
 Replaces a declaration-count dashboard. A reader arriving cold cannot act on "1677 declarations,
-12 chapters"; they can act on "these are the results, this many are complete, here is what they
-rest on". -/
-private def mkLandingBlocks (decls : Array DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
+12 chapters"; they can act on "here is what it claims, here is how much of it is proved, here is
+what you would additionally have to accept".
+
+The middle paragraph is one sentence built from four counts, and each clause is dropped when it has
+nothing to say — a project with no `sorry`, no upstream dependency or no `@[specifies]` annotation
+should read as a shorter sentence rather than a padded one. -/
+private def mkLandingBlocks (rootPrefix : Name) (decls : Array DeclInfo) (ctx : SiteContext) :
+    Array (Block Manual) :=
   Id.run do
   let claims := claimsOf decls
   let sorried := decls.filter (·.dependsOnSorry)
   let topClaims := (claims.qsort fun a b => closureSize a ctx > closureSize b ctx).take 10
   let mut blocks : Array (Block Manual) := #[]
-  let gap : Array (Inline Manual) :=
+  blocks := blocks.push <| .para #[
+    .bold #[.text "What would it take to believe this library?"]
+  ]
+  -- Sentence one: what it claims and how much of it is proved.
+  let proved : Array (Inline Manual) :=
     if sorried.isEmpty then
-      #[.text ", with nothing resting on a ", .code "sorry", .text "."]
+      #[.text s!" and proves all {decls.size} of its declarations with no "] ++
+        #[.code "sorry", .text " anywhere"]
     else
-      #[.text s!"; {sorried.size} depend on a ", .code "sorry", .text ". See ",
-        .link #[.text "Trust"] "trust/", .text " for the breakdown."]
-  blocks := blocks.push <| .para <| #[
-    .bold #[.text "Status. "],
-    .text s!"{decls.size - sorried.size} of {decls.size} declarations are fully proved"
-  ] ++ gap
-  blocks := blocks.push <| .para <| #[
-    .bold #[.text "What it claims. "],
-    .text s!"{claims.size} declarations are stated as ", .code "theorem",
-    .text s!" rather than {(if claims.size == 1 then "a lemma" else "lemmas")}"
-  ] ++ #[
-    .text " — the author's own mark of a result worth stating for its own sake. The largest by \
-      dependency footprint:"
+      #[.text s!" and proves {decls.size - sorried.size} of its {decls.size} declarations; \
+        {sorried.size} still rest on a "] ++ #[.code "sorry"]
+  let claimed : Array (Inline Manual) := #[
+    .code rootPrefix.toString,
+    .text s!" states {claims.size} \
+      {if claims.size == 1 then "result" else "results"} as \
+      {if claims.size == 1 then "a theorem" else "theorems"}"
+  ]
+  blocks := blocks.push <| .para (claimed ++ proved ++ #[.text "."])
+  -- Sentence two: what believing that additionally costs. Both halves are optional.
+  let upstream := reachedPackages decls ctx |>.filter fun name =>
+    !(ctx.packages.any fun pkg => pkg.name == name && pkg.isToolchain)
+  let unaudited := upstream.filter (!ctx.trusted.contains ·)
+  let definitions := decls.filter (·.isDefinitionLike)
+  let specified := definitions.filter (!·.specifiedBy.isEmpty)
+  let mut cost : Array (Array (Inline Manual)) := #[]
+  if !upstream.isEmpty then
+    cost := cost.push #[
+      .link #[.text s!"{upstream.size} upstream \
+        {if upstream.size == 1 then "package" else "packages"}"] "trust/",
+      .text s!", of which {unaudited.size} \
+        {if unaudited.size == 1 then "is unaudited" else "are unaudited"}"
+    ]
+  if ctx.usesSpecs then
+    cost := cost.push #[
+      .link #[.text s!"{definitions.size} \
+        {if definitions.size == 1 then "definition" else "definitions"}"] "specifications/",
+      .text s!", of which {specified.size} \
+        {if specified.size == 1 then "says" else "say"} what {if specified.size == 1 then "it means"
+          else "they mean"}"
+    ]
+  if !cost.isEmpty then
+    blocks := blocks.push <| .para <|
+      #[.text "Believing them means also accepting "] ++
+        joinInlines cost.toList #[.text ", and "] ++ #[.text "."]
+  blocks := blocks.push <| .para #[
+    .text "Every declaration here carries what it claims, what it rests on, and a single \
+      self-contained Lean file holding everything you would have to read to check it."
+  ]
+  blocks := blocks.push <| .para #[
+    .bold #[.text "The results, largest first by how much machinery they rest on."]
   ]
   if let some list := declIndexList topClaims ctx then
     blocks := blocks.push list
-  blocks := blocks.push <| .para #[
-    .link #[.text "See all claims"] "claims/",
-    .text ". Each declaration's page carries its minimal self-contained Lean file, the ",
-    .text "definitions its statement rests on, and what it would cost to accept it."
-  ]
-  -- Only for a project that annotates; see `SiteContext.usesSpecs`.
-  if ctx.usesSpecs then
-    let definitions := decls.filter (·.isDefinitionLike)
-    let specified := definitions.filter (!·.specifiedBy.isEmpty)
-    blocks := blocks.push <| .para #[
-      .bold #[.text "What it means. "],
-      .text s!"{specified.size} of {definitions.size} definitions carry a specification — theorems \
-        the author marked as the properties that pin the definition down. ",
-      .link #[.text "Specifications"] "specifications/",
-      .text " lists them, and the definitions that have none."
-    ]
+  blocks := blocks.push <| .para #[.link #[.text "See all claims"] "claims/", .text "."]
   return blocks
 
 /-- Builds the root site part with chapter pages and utility sections. -/
 private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo)
     (decls : Array DeclInfo) (ctx : SiteContext)
     (overviewBlocks : Array (Block Manual)) : Part Manual :=
-  let title := cfg.siteTitle.getD s!"{rootPrefix} exposition"
+  -- The library's own name, not the tool's: a reader landing here is looking for the project,
+  -- and "Referee" belongs in the footer of the site rather than the title of it.
+  let title := cfg.siteTitle.getD rootPrefix.toString
   {
     title := #[.text title]
     titleString := title
@@ -1720,10 +1746,7 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
       shortTitle := some title
       number := false
     }
-    content := #[
-        .para #[.text "Auto-generated exposition for ", .code rootPrefix.toString, .text "."]
-      ]
-      ++ mkLandingBlocks decls ctx
+    content := mkLandingBlocks rootPrefix decls ctx
       ++ mkDashboardBlocks groups
       ++ overviewBlocks
     -- The Specifications page exists only for a project that annotates: see
@@ -1778,8 +1801,8 @@ private unsafe def loadEnv (projectDir : System.FilePath) (ws : Lake.Workspace) 
   -- data and renders raw constants (e.g. `LE.le`/`Eq` instead of `≤`/`=`).
   withCurrentDir projectDir <| Lean.importModules imports {} (loadExts := true)
 
-/-- Imports the target project (the current working directory, since the exposition tool
-always runs inside the target project's own Lake environment via `lake env …/exposition`)
+/-- Imports the target project (the current working directory, since Referee
+always runs inside the target project's own Lake environment via `lake env …/referee`)
 and resolves the root module prefix. Shared by `collect`/`all` (`extract` re-imports
 separately, since it only needs `env`, not a fresh root-prefix resolution: it trusts
 `CollectedData.rootPrefix` instead). -/
@@ -1969,7 +1992,7 @@ private unsafe def runExtract (cfg : Cli) : IO UInt32 := do
   IO.println s!"Wrote {n} standalone extraction files in {(← IO.monoMsNow) - startMs}ms"
   return 0
 
-/-- `extract-flat`: the tier-2 fallback extraction (see `LMLExposition.Flat`). Same inputs as
+/-- `extract-flat`: the tier-2 fallback extraction (see `Referee.Flat`). Same inputs as
 `extract`, but the standalone files are rendered from the compiled environment rather than from
 source text, and land in `extracted-flat/` so both tiers can be produced and compared in one run. -/
 private unsafe def runExtractFlat (cfg : Cli) : IO UInt32 := do
@@ -2148,4 +2171,4 @@ split (bare flags, no subcommand) keep working unchanged. -/
 
 end
 
-end LMLExposition
+end Referee

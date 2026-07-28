@@ -6,7 +6,7 @@ one.
 
 Depends on Lean core and nothing else. It lives in the
 [`exposition`](https://github.com/LeanMachineLearning/exposition) repository but is a separate Lake
-package precisely so that annotating a project does not drag in the exposition tool's own
+package precisely so that annotating a project does not drag in Referee's own
 dependencies.
 
 ## Why
@@ -111,8 +111,8 @@ returns every annotation visible in `env` — theorem, target, comment — in de
 A tool in a *different process* (one that imports a compiled project rather than being compiled
 into it) can read them too, but it must link this library and import with
 `importModules (loadExts := true)`: imported extension entries are matched to registered extensions
-by name, and entries with no matching extension are silently dropped. The `exposition` tool in the
-parent repository does exactly this, and renders the result as a Specification section on each
+by name, and entries with no matching extension are silently dropped. Referee, in the
+parent repository, does exactly this, and renders the result as a Specification section on each
 definition's page, a note on each definition that has none, and a Specifications page listing both.
 
 ## Why not `@[spec]`

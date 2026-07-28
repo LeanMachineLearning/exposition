@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks that every standalone .lean file written by `exposition extract` (or `exposition all`)
+# Checks that every standalone .lean file written by `referee extract` (or `referee all`)
 # actually compiles on its own. Each extracted file is self-contained (it inlines its transitive
 # dependencies and replaces theorem proofs with `sorry`), so it must be checked from inside the
 # target project's own `lake env` to resolve its imports (Mathlib, the project's own libraries,
@@ -7,7 +7,7 @@
 #
 # Usage: scripts/check-extracted-compile.sh TARGET_PROJECT_DIR EXTRACTED_DIR [JOBS]
 #
-#   TARGET_PROJECT_DIR  Directory of the target project (the one passed to `lake env .../exposition`).
+#   TARGET_PROJECT_DIR  Directory of the target project (the one passed to `lake env .../referee`).
 #   EXTRACTED_DIR       Directory containing the extracted *.lean files (typically
 #                       <output>/html-multi/extracted from `extract`/`all`).
 #   JOBS                Number of files to check in parallel (default: number of CPUs).

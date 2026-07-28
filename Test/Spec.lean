@@ -11,7 +11,7 @@ meta import LeanSpec
 # Tests for the `@[specifies]` attribute
 
 The `LeanSpec` package is small but it is not inert: it infers a target from a declaration's name,
-rejects five kinds of misuse, and warns about a sixth. None of that is visible in the exposition
+rejects five kinds of misuse, and warns about a sixth. None of that is visible in the Referee
 site — a rejected annotation is a build error in the *target* project, and a wrongly accepted one
 becomes a silently wrong specification — so it is checked here.
 
@@ -28,7 +28,7 @@ Run with `lake build Test`.
 
 open Lean
 
-namespace LMLExposition.Test.Spec
+namespace Referee.Test.Spec
 
 /-! ## Accepted forms -/
 
@@ -55,16 +55,16 @@ Restricted to this namespace so that an annotation added elsewhere in the reposi
 break these expectations; `specEntries` returns imported entries too. -/
 private def dump (env : Environment) : String :=
   let ours := (LeanSpec.specEntries env).filter fun entry =>
-    (`LMLExposition.Test.Spec).isPrefixOf entry.theoremName
+    (`Referee.Test.Spec).isPrefixOf entry.theoremName
   String.intercalate "\n" <| ours.toList.map fun entry =>
     let comment := if entry.comment.isEmpty then "" else s!" — {entry.comment}"
     s!"{entry.target}: {entry.theoremName}{comment}"
 
 /--
-info: LMLExposition.Test.Spec.double: LMLExposition.Test.Spec.double_zero — the textbook characterization
-LMLExposition.Test.Spec.double: LMLExposition.Test.Spec.double.one
-LMLExposition.Test.Spec.double: LMLExposition.Test.Spec.double_triple_zero
-LMLExposition.Test.Spec.triple: LMLExposition.Test.Spec.double_triple_zero — relates the two at zero
+info: Referee.Test.Spec.double: Referee.Test.Spec.double_zero — the textbook characterization
+Referee.Test.Spec.double: Referee.Test.Spec.double.one
+Referee.Test.Spec.double: Referee.Test.Spec.double_triple_zero
+Referee.Test.Spec.triple: Referee.Test.Spec.double_triple_zero — relates the two at zero
 -/
 #guard_msgs in
 #eval show CoreM Unit from do IO.println (dump (← getEnv))
@@ -77,18 +77,18 @@ specification, so the attribute refuses it at elaboration time rather than recor
 theorem two_pos : 0 < 2 := by decide
 
 /--
-error: `LMLExposition.Test.Spec.two_pos` is itself a proof, but `specifies` names the definition that the annotated theorem is a property of
+error: `Referee.Test.Spec.two_pos` is itself a proof, but `specifies` names the definition that the annotated theorem is a property of
 -/
 #guard_msgs in
 @[specifies two_pos]
 theorem target_is_a_theorem : double 1 = 2 := rfl
 
-/-- error: `specifies` belongs on a theorem, but `LMLExposition.Test.Spec.not_a_prop` is not a proposition -/
+/-- error: `specifies` belongs on a theorem, but `Referee.Test.Spec.not_a_prop` is not a proposition -/
 #guard_msgs in
 @[specifies double]
 def not_a_prop : Nat := 4
 
-/-- error: `LMLExposition.Test.Spec.duplicated` is already part of the specification of `LMLExposition.Test.Spec.double` -/
+/-- error: `Referee.Test.Spec.duplicated` is already part of the specification of `Referee.Test.Spec.double` -/
 #guard_msgs in
 @[specifies double, specifies double]
 theorem duplicated : double 0 = 0 := rfl
@@ -101,7 +101,7 @@ error: `specifies` must be a global attribute: a specification is a claim about 
 theorem not_global : double 1 = 2 := rfl
 
 /--
-error: cannot infer what `LMLExposition.Test.Spec.nothing_to_infer_from` specifies: no enclosing namespace of its name is a declaration. Name the definition explicitly, as `@[specifies myDefinition]`
+error: cannot infer what `Referee.Test.Spec.nothing_to_infer_from` specifies: no enclosing namespace of its name is a declaration. Name the definition explicitly, as `@[specifies myDefinition]`
 -/
 #guard_msgs in
 @[specifies]
@@ -110,7 +110,7 @@ theorem nothing_to_infer_from : double 1 = 2 := rfl
 -- Only reachable through `attribute`, since a theorem cannot name itself as it is being declared.
 theorem self_referential : double 0 = 0 := rfl
 
-/-- error: `LMLExposition.Test.Spec.self_referential` cannot be part of its own specification -/
+/-- error: `Referee.Test.Spec.self_referential` cannot be part of its own specification -/
 #guard_msgs in
 attribute [specifies self_referential] self_referential
 
@@ -121,7 +121,7 @@ the target can hide behind an abbreviation or inside a projection. So this is a 
 skipped for a theorem living in the target's namespace, and it can be switched off. -/
 
 /--
-warning: `LMLExposition.Test.Spec.silent_about_double` is marked as part of the specification of `LMLExposition.Test.Spec.double`, but its statement does not mention `LMLExposition.Test.Spec.double`. Set `specifies.checkTargetMentioned` to `false` to silence this.
+warning: `Referee.Test.Spec.silent_about_double` is marked as part of the specification of `Referee.Test.Spec.double`, but its statement does not mention `Referee.Test.Spec.double`. Set `specifies.checkTargetMentioned` to `false` to silence this.
 -/
 #guard_msgs in
 @[specifies double]
@@ -138,4 +138,4 @@ theorem silenced : 1 + 1 = 2 := rfl
 @[specifies double]
 theorem double.unrelated_statement : 1 + 1 = 2 := rfl
 
-end LMLExposition.Test.Spec
+end Referee.Test.Spec

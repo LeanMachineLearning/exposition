@@ -1,14 +1,14 @@
 module
 
-public import LMLExposition.Collect
+public import Referee.Collect
 -- The checks below are `#guard`s, which Lean elaborates into compile-time (`meta`)
 -- definitions, so the declarations under test have to be imported at that level too.
-meta import LMLExposition.Collect
+meta import Referee.Collect
 
 @[expose] public section
 
 /-!
-# Tests for `LMLExposition.Collect`
+# Tests for `Referee.Collect`
 
 This module audits the *pure* logic of `Collect.lean`:
 
@@ -30,9 +30,9 @@ project; it is not unit-tested here because constructing a synthetic `Environmen
 -/
 
 open Lean Std
-open LMLExposition
+open Referee
 
-namespace LMLExposition.Test
+namespace Referee.Test
 
 /-! ## Name / string helpers used for hrefs and signatures -/
 
@@ -402,4 +402,4 @@ private def sampleDeclForJson : DeclInfo := {
   loadedPackages := #[`Proj, `LML, `mathlib, `batteries, `Lean]
 } : CollectedData)
 
-end LMLExposition.Test
+end Referee.Test

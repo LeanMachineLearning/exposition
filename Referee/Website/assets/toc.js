@@ -115,7 +115,7 @@ document.addEventListener('DOMContentLoaded', () => {
      unchecked checkbox that CSS keys off — which makes sense for a book you read front to back,
      but this site exists to be browsed, and the chapter list is the main way in. A reader who
      collapses it gets that remembered. */
-  const tocOpenKey = 'lean-exposition:toc-open';
+  const tocOpenKey = 'referee:toc-open';
   for (const box of toc.querySelectorAll('.split-toc .toggle-split-toc input[type="checkbox"]')) {
     let open = true;
     try {
@@ -144,7 +144,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const utilityNav = toc.querySelector('.site-utility-nav');
 
   for (const toggle of visibilityToggles) {
-    const key = `lean-exposition:${toggle.cssClass}`;
+    const key = `referee:${toggle.cssClass}`;
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'site-utility-button';
@@ -183,7 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
      both directions, which matters because a reader on a dark desktop may still want the light
      theme for a page they are going to print or screenshot. The stored value is applied before
      first paint by a small script in <head>, so there is no flash of the wrong theme. */
-  const themeKey = 'lean-exposition:theme';
+  const themeKey = 'referee:theme';
   const themeOrder = { auto: 'light', light: 'dark', dark: 'auto' };
   const themeLabel = { auto: 'Theme: auto', light: 'Theme: light', dark: 'Theme: dark' };
 
@@ -205,7 +205,7 @@ document.addEventListener('DOMContentLoaded', () => {
     else document.documentElement.setAttribute('data-theme', mode);
     themeButton.textContent = themeLabel[mode];
     // Anything that paints its own colours (the dependency graph) re-reads them on this.
-    document.dispatchEvent(new CustomEvent('exposition:themechange', { detail: { mode } }));
+    document.dispatchEvent(new CustomEvent('referee:themechange', { detail: { mode } }));
   };
 
   themeButton.addEventListener('click', () => {

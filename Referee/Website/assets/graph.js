@@ -559,7 +559,7 @@ document.addEventListener('DOMContentLoaded', () => {
     state.sel = null; highlight(null); updatePanel();
   });
 
-  document.addEventListener('exposition:themechange', () => {
+  document.addEventListener('referee:themechange', () => {
     readTheme();
     d3.selectAll('#graph-svg marker path')
       .attr('fill', function () {

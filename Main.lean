@@ -1,10 +1,10 @@
 module
 
-public import LMLExposition
+public import Referee
 
 @[expose] public section
 
-open LMLExposition
+open Referee
 
 unsafe def main (args : List String) : IO UInt32 :=
   mainImpl args

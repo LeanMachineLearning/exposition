@@ -14,7 +14,7 @@ trees.
 
 This is the expensive tier of highlighting. The cheap tier — a declaration's *pretty-printed*
 signature — needs only the environment and already runs during `collect` (see
-`LMLExposition.mkDocstringBlock?`). Highlighting *source text* is different: `highlight` needs
+`Referee.mkDocstringBlock?`). Highlighting *source text* is different: `highlight` needs
 info trees and messages, which only real elaboration produces. So this module re-elaborates each
 module from source.
 
@@ -23,7 +23,7 @@ declaration to its highlighted source, and assemble a minimal file's rendering o
 highlighted forms of the declarations it inlines.
 
 Because `importModules` must run against a fresh environment, one module is processed per
-process; `LMLExposition.Website.Site` drives the fan-out by re-invoking this executable.
+process; `Referee.Website.Site` drives the fan-out by re-invoking this executable.
 -/
 
 open Lean Elab Frontend
@@ -31,7 +31,7 @@ open Lean.Elab.Command hiding Context
 open SubVerso Module
 open SubVerso.Highlighting (Highlighted highlightFrontendResult)
 
-namespace LMLExposition.Highlight
+namespace Referee.Highlight
 
 @[expose] public section
 
@@ -198,4 +198,4 @@ def extractedWorkItems (files : Array System.FilePath) (dir : System.FilePath) :
 
 end
 
-end LMLExposition.Highlight
+end Referee.Highlight

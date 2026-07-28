@@ -1,4 +1,4 @@
-name: Publish Exposition Binary
+name: Publish Referee Binary
 
 on:
   push:
@@ -20,13 +20,13 @@ jobs:
       - uses: actions/checkout@v5
       - uses: leanprover/lean-action@v1
 
-      - name: Package exposition binary
-        run: ./scripts/package-exposition-binary.sh
+      - name: Package referee binary
+        run: ./scripts/package-referee-binary.sh
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: exposition-linux-x86_64-${{ github.sha }}
+          name: referee-linux-x86_64-${{ github.sha }}
           path: dist/
           retention-days: 90
 
@@ -42,7 +42,7 @@ jobs:
       - name: Download packaged binary
         uses: actions/download-artifact@v5
         with:
-          name: exposition-linux-x86_64-${{ github.sha }}
+          name: referee-linux-x86_64-${{ github.sha }}
           path: dist
 
       - name: Publish release assets

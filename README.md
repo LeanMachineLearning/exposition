@@ -1,6 +1,15 @@
-# LMLExposition
+# Referee
 
-`LMLExposition` is a Lean 4 executable that walks a compiled project's environment and emits a Verso `Manual` site for mathematician-facing exposition. It is a fork of [LeanExposition](https://github.com/mattrobball/lean-exposition/) by Matthew Ballard.
+`Referee` reads a compiled Lean project and builds a site that answers, for every result in it:
+what does this claim, what does it rest on, and what would you have to take on faith?
+
+The name is the reader it serves. A referee deciding whether to believe a paper needs the claims
+separated from the machinery, the gaps made visible rather than buried, and the smallest self-contained
+thing they can read to check a statement. That is what the site is: not documentation of a library,
+but the evidence for it.
+
+It is a Lean 4 executable, a fork of [LeanExposition](https://github.com/mattrobball/lean-exposition/)
+by Matthew Ballard, and it renders through [Verso](https://github.com/leanprover/verso).
 
 Features:
 
@@ -38,9 +47,9 @@ The tool always exposes the project of the surrounding `lake env`, i.e. the curr
 ## Build
 
 ```bash
-cd /path/to/lml-exposition
+cd /path/to/referee
 lake update
-lake build exposition
+lake build referee
 ```
 
 ## Run Against A Target Repo
@@ -66,18 +75,18 @@ cd /path/to/target-repo
 lake exe cache get
 lake build MyLibrary
 
-EXPOSITION=/path/to/lml-exposition/.lake/build/bin/exposition
+REFEREE=/path/to/referee/.lake/build/bin/referee
 OUT=/path/to/site-out
 
-lake env "$EXPOSITION" collect --root MyLibrary --data data.json
+lake env "$REFEREE" collect --root MyLibrary --data data.json
 
-lake env "$EXPOSITION" extract --data data.json --output "$OUT"
+lake env "$REFEREE" extract --data data.json --output "$OUT"
 
 # Interactive Lean: hover a symbol for its type, click to jump to its definition.
-lake env "$EXPOSITION" highlight --data data.json --output "$OUT"
-lake env "$EXPOSITION" highlight-extracted --output "$OUT"
+lake env "$REFEREE" highlight --data data.json --output "$OUT"
+lake env "$REFEREE" highlight-extracted --output "$OUT"
 
-"$EXPOSITION" build-site --data data.json --output "$OUT" \
+"$REFEREE" build-site --data data.json --output "$OUT" \
   --repo-url https://github.com/owner/repo \
   --site-url https://owner.github.io/repo
 ```
@@ -103,7 +112,7 @@ to back in one process), use `all`, or omit the subcommand entirely — a bare i
 defaults to `all` for backward compatibility:
 
 ```bash
-lake env "$EXPOSITION" all \
+lake env "$REFEREE" all \
   --root MyLibrary \
   --repo-url https://github.com/owner/repo \
   --site-url https://owner.github.io/repo \
@@ -145,7 +154,7 @@ Nothing has to be replayed — no `variable` binders, no namespaces, no notation
 and no instance is ever synthesized, so the entire class of context-replay failures disappears.
 
 ```bash
-lake env "$EXPOSITION" extract-flat --data data.json --output /path/to/site-out
+lake env "$REFEREE" extract-flat --data data.json --output /path/to/site-out
 ```
 
 It takes the same inputs as `extract` and writes to `html-multi/extracted-flat/`, so both tiers can
@@ -199,19 +208,19 @@ file for the declarations whose readable version does not compile. See
   too, for the other end of the same wire — reading the annotations back out of a compiled project
   requires the environment extension to be registered in the reading process. See
   [`LeanSpec/README.md`](LeanSpec/README.md).
-- `LMLExposition/Collect.lean` — walks the environment and builds one `DeclInfo` per exposed
+- `Referee/Collect.lean` — walks the environment and builds one `DeclInfo` per exposed
   declaration (signature, docstring, source snippet, kind), delegating all dependency computation to
-  `LeanDeps` and deciding only which edges the exposition follows (`graphDeps`: type-only for
+  `LeanDeps` and deciding only which edges Referee follows (`graphDeps`: type-only for
   theorems). `sorry` status is a single transitive flag (`dependsOnSorry`) obtained from
   `Lean.collectAxioms`, i.e. the same answer `#print axioms` gives. `@[specifies]` annotations are
   read here too and reversed by `attachSpecifiedBy`, the one field on `DeclInfo` that is not
   derived from the environment but taken from the author.
-- `LMLExposition/Extract.lean` — the standalone `.lean` file extraction (see `KNOWN-ISSUES.md`).
-- `LMLExposition/Highlight.lean` — source-text highlighting. Runs the Lean frontend over a file and
+- `Referee/Extract.lean` — the standalone `.lean` file extraction (see `KNOWN-ISSUES.md`).
+- `Referee/Highlight.lean` — source-text highlighting. Runs the Lean frontend over a file and
   returns SubVerso `Highlighted` per command, tagged with the names each command defines, plus any
   elaboration errors. Depends on Lean and SubVerso only — it knows nothing about the site.
-- `LMLExposition/Website/Site.lean` — Verso page construction and the CLI subcommands. The site's
-  CSS and JavaScript live in `LMLExposition/Website/assets/` as real files and are embedded with
+- `Referee/Website/Site.lean` — Verso page construction and the CLI subcommands. The site's
+  CSS and JavaScript live in `Referee/Website/assets/` as real files and are embedded with
   `include_str`. D3 is vendored there too rather than fetched from a CDN at page load. Everything
   specification-related is gated on `SiteContext.usesSpecs`, so a project that does not annotate
   gets exactly the site it got before the feature existed.
@@ -331,7 +340,7 @@ the attribute is not called `spec`.
 
 ## Theme
 
-`LMLExposition/Website/assets/exposition.css` is the whole theme, built on a token block that
+`Referee/Website/assets/referee.css` is the whole theme, built on a token block that
 exists in a light and a dark variant. It loads after Verso's `book.css` and `verso-vars.css`, so it
 both restates Verso's own custom properties (fonts, text/code/structure colours, code-highlighting
 colours) and overrides the handful of places its stylesheet hardcodes a colour.
@@ -341,7 +350,7 @@ and the search box, which reads a `--verso-background-color` that Verso never de
 defaulted to white. A control in the sidebar cycles auto → light → dark; the choice is stored in
 `localStorage` and applied by a small inline script in `<head>` so the page never flashes the wrong
 theme. The dependency graph reads its colours from the same tokens and repaints on a
-`exposition:themechange` event rather than requiring a reload.
+`referee:themechange` event rather than requiring a reload.
 
 ## Iterating On Style
 
@@ -349,7 +358,7 @@ The site's CSS and JS are emitted as *files* (into `html-multi/-verso-data/`) ra
 into every page, so a style change does not need a rebuild at all:
 
 ```bash
-# edit LMLExposition/Website/assets/exposition.css or graph.js, then:
+# edit Referee/Website/assets/referee.css or graph.js, then:
 scripts/sync-assets.sh /path/to/site-out
 ```
 
@@ -373,30 +382,30 @@ Two things worth knowing:
 
 ## CI: Prebuilt Binaries
 
-The `Publish Exposition Binary` workflow runs on pushes to `master`, on tags, and on manual dispatches. It builds the Linux `x86_64` binary, then calls `scripts/package-exposition-binary.sh` to produce a versioned archive under `dist/`:
+The `Publish Referee Binary` workflow runs on pushes to `master`, on tags, and on manual dispatches. It builds the Linux `x86_64` binary, then calls `scripts/package-referee-binary.sh` to produce a versioned archive under `dist/`:
 
-- `exposition-linux-x86_64-<sha>.tar.gz` — the binary, `lean-toolchain`, and `metadata.json`
-- `exposition-linux-x86_64-<sha>.metadata.json` — standalone copy of the metadata
+- `referee-linux-x86_64-<sha>.tar.gz` — the binary, `lean-toolchain`, and `metadata.json`
+- `referee-linux-x86_64-<sha>.metadata.json` — standalone copy of the metadata
 - `SHA256SUMS` — checksums for the two files above
 
-The archive is uploaded as a GitHub Actions artifact named `exposition-linux-x86_64-<sha>` with a 90-day retention. On tag builds, the same files are attached to the corresponding GitHub release (creating it if it doesn't exist).
+The archive is uploaded as a GitHub Actions artifact named `referee-linux-x86_64-<sha>` with a 90-day retention. On tag builds, the same files are attached to the corresponding GitHub release (creating it if it doesn't exist).
 
 Downstream CI can download a matching artifact with `gh`:
 
 ```bash
 SOURCE_SHA=<commit>
-REPO=<owner>/lml-exposition
+REPO=<owner>/referee
 RUN_ID=$(gh run list \
   -R "$REPO" \
-  --workflow "Publish Exposition Binary" \
+  --workflow "Publish Referee Binary" \
   --event push \
   --commit "$SOURCE_SHA" \
   --status success \
   --json databaseId \
   --jq '.[0].databaseId')
 gh run download "$RUN_ID" -R "$REPO" \
-  -n "exposition-linux-x86_64-$SOURCE_SHA" \
-  -D ./exposition-artifact
-tar -xzf "./exposition-artifact/exposition-linux-x86_64-$SOURCE_SHA/exposition-linux-x86_64-$SOURCE_SHA.tar.gz" \
-  -C ./exposition-artifact
+  -n "referee-linux-x86_64-$SOURCE_SHA" \
+  -D ./referee-artifact
+tar -xzf "./referee-artifact/referee-linux-x86_64-$SOURCE_SHA/referee-linux-x86_64-$SOURCE_SHA.tar.gz" \
+  -C ./referee-artifact
 ```
