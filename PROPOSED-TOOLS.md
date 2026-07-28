@@ -8,8 +8,9 @@ The framing observation. Everything the site does today describes **one snapshot
 three biggest gaps are that it cannot say what *changed*, cannot say what *falls* if something is
 wrong, and cannot record what the referee has *done*. Those are the first three below.
 
-Status: (1) is built — see [Revisions](#revisions-the-user-experience) for its design and the
-`--baseline` flag in [README.md](README.md). The rest are proposals.
+Status: (1) and (3) are built — see [Revisions](#revisions-the-user-experience) and
+[Audit state](#audit-state-what-was-built) for their designs, and the `--baseline` flag and Audit
+State sections in [README.md](README.md). The rest are proposals.
 
 ## Tier A — pure functions of `data.json` (no new Lean phase, no re-import)
 
@@ -139,6 +140,51 @@ stored client-side, plus three things that make it more than a checkbox:
 
 P7 says a reviewer's work product is links. The stronger version is that it is a file, and this
 makes the site a work surface rather than a viewer — which no other Lean tool is.
+
+#### Audit state: what was built
+
+**The design turns on what "accepted" means.** One checkbox per declaration produces a number that
+lies: a reader who accepts a regret bound without reading `IsAlgEnvSeq` has accepted a sentence.
+So each declaration carries two things, and only one is the reader's to set — a **verdict** (unread
+/ accepted / query, with a note), and derived **coverage**: accepted, *and* every project
+declaration in its statement closure accepted too.
+
+The state worth naming is the third that falls out, **accepted but not covered**. The Audit page
+leads with covered claims, never with accepted declarations, because the flattering number is the
+one that misleads.
+
+Deliberately orthogonal to trust: a `sorry` never blocks acceptance. Accepting is a judgement about
+meaning; whether something is proved is what the trust page is for.
+
+**What ships.** A verdict control under the card on every declaration page, with the line saying
+what accepting it would and would not cover; an Audit page with progress, per-claim reading queues,
+open queries, and the accepted-but-not-covered list; a Verdict column and filter on Browse; export,
+import and a generated Markdown report.
+
+Three pieces were free because the data already existed:
+
+- **the reading queue's order** — `transDeps` is topologically sorted, since the extractor needs
+  that to emit a compilable minimal file, and a reader needs exactly the same order;
+- **the bulk action** *accept this and everything its statement rests on* — the minimal file **is**
+  the closure inlined, so it matches the artifact rather than being a shortcut around it;
+- **the import interlock with (1)** — a build with `--baseline` knows which declarations a revision
+  invalidated, so importing an older file drops exactly those acceptances and says so, and carries
+  verdicts across a rename using the diff's identical-statement evidence.
+
+**Sizing.** Coverage needs every declaration's closure, which is why closures ship as indices into a
+shared name table on the audit page and nowhere else: LML's payload is 234 KB for 698 declarations,
+where naming each of the 3,293 closure entries as a string would have been several times that, and
+brownian-motion has 116,519 edges. Declaration pages carry only their own closure.
+
+**Stated on the page, not just here.** Nothing is authenticated — the file is plain JSON anyone can
+edit, and it must never be offered as evidence that a library was audited. Nothing is verified. And
+`localStorage` is not storage: it is keyed by project name (GitHub Pages serves every project of an
+account from one origin, so a path key would collide or break on a move), and it dies with a cleared
+browser profile, which is why export is a button rather than a footnote.
+
+**Not built, on purpose:** no server, no accounts, no multi-reviewer merge, no signatures. Each
+turns a static site into an application with an operator, and once there is an operator the artifact
+stops being a file the reader owns.
 
 ## Tier B — needs the environment (a `collect`-time addition)
 

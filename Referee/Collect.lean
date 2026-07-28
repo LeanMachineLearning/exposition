@@ -212,6 +212,12 @@ deriving Repr, ToJson, FromJson, Inhabited
 /-- Data container for BrowseData. -/
 structure BrowseData where
   rows : Array BrowseRow
+  /-- The project name, which is the audit state's storage key.
+
+  Carried here because the Verdict column needs it and this page has no other audit payload: the
+  script that owns that state cannot look up a verdict without knowing which project's state to
+  read, and it is deliberately the only thing that knows. -/
+  project : String := ""
 deriving Repr, ToJson, FromJson, Inhabited
 
 /-- Data container for DetailsData. -/

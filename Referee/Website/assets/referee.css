@@ -1005,6 +1005,178 @@ body.hide-theorems [data-decl-group="theorem"] {
 
 .change-banner-since { color: var(--site-ink-3); font-size: .8rem; }
 
+/* ----------------------------------------------------------------- audit --- */
+
+/* The reader's own verdicts. Styled as a control surface rather than as content: this is the one
+   part of the site that is written to rather than read, and it should not look like another
+   derived section. */
+
+.audit-control {
+  background: var(--site-surface-2);
+  border: 1px solid var(--site-border);
+  border-radius: var(--site-radius-sm);
+  margin: 0 0 1.2rem;
+  padding: .7rem .9rem;
+}
+
+.audit-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+}
+
+.audit-verdicts {
+  display: flex;
+  gap: .3rem;
+}
+
+.audit-verdict {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border-strong);
+  border-radius: 999px;
+  color: var(--site-ink-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: .8rem;
+  padding: .15rem .7rem;
+}
+
+.audit-verdict:hover { border-color: var(--site-accent); color: var(--site-accent); }
+
+.audit-verdict--on[data-v="accepted"] {
+  background: var(--site-ok-soft);
+  border-color: var(--site-ok);
+  color: var(--site-ok);
+}
+
+.audit-verdict--on[data-v="query"] {
+  background: var(--site-warn-soft);
+  border-color: var(--site-warn-border);
+  color: var(--site-warn);
+}
+
+.audit-verdict--on[data-v="unread"] {
+  background: var(--site-surface-3);
+  border-color: var(--site-border-strong);
+  color: var(--site-ink);
+}
+
+.audit-note {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-radius: var(--site-radius-sm);
+  color: var(--site-ink);
+  font: inherit;
+  font-size: .85rem;
+  margin-top: .5rem;
+  padding: .4rem .5rem;
+  resize: vertical;
+  width: 100%;
+}
+
+.audit-coverage,
+.audit-queue {
+  font-size: .85rem;
+  margin: .5rem 0 0;
+}
+
+.audit-queue { color: var(--site-ink-2); }
+
+.audit-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+  margin-top: .5rem;
+}
+
+.audit-actions button,
+.audit-toolbar button {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border-strong);
+  border-radius: var(--site-radius-sm);
+  color: var(--site-ink-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: .8rem;
+  padding: .2rem .6rem;
+}
+
+.audit-actions button:hover,
+.audit-toolbar button:hover { border-color: var(--site-accent); color: var(--site-accent); }
+
+.audit-toolbar button.audit-danger:hover { border-color: var(--site-del); color: var(--site-del); }
+
+.audit-ok { color: var(--site-ok); font-weight: 600; }
+.audit-warn { color: var(--site-warn); font-weight: 600; }
+.audit-hint { color: var(--site-ink-3); font-size: .8rem; }
+
+.audit-link { font-size: .8rem; margin-left: auto; }
+
+.audit-summary {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-radius: var(--site-radius);
+  margin-bottom: 1rem;
+  padding: .9rem 1.1rem;
+}
+
+/* The number that matters, and deliberately the only large one: how many claims are covered, not
+   how many declarations have been ticked. */
+.audit-headline {
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin: 0 0 .3rem;
+}
+
+.audit-summary p { margin: .2rem 0; }
+
+.audit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin-bottom: .8rem;
+}
+
+.audit-import-note:not(:empty) {
+  background: var(--site-surface-2);
+  border-left: 3px solid var(--site-accent);
+  border-radius: var(--site-radius-sm);
+  font-size: .85rem;
+  margin-bottom: 1rem;
+  padding: .5rem .7rem;
+}
+
+.audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+  list-style: none;
+  margin: .6rem 0 1.2rem;
+  padding: 0;
+}
+
+.audit-item {
+  align-items: baseline;
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-radius: var(--site-radius-sm);
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+  padding: .4rem .7rem;
+}
+
+.audit-name { text-decoration: none; }
+.audit-name code { overflow-wrap: anywhere; }
+
+.audit-meta { color: var(--site-ink-3); font-size: .8rem; }
+.audit-note-text { color: var(--site-ink-2); font-size: .85rem; }
+
+/* Pushed right so the buttons line up down the page rather than tracking name length. */
+.audit-item .audit-start { margin-left: auto; }
+
 /* ------------------------------------------------------------------ graph */
 
 #graph-root {

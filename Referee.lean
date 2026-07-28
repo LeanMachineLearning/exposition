@@ -1,6 +1,7 @@
 module
 
 public import Referee.Collect
+public import Referee.Audit
 public import Referee.Diff
 public import Referee.Extract
 public import Referee.ExtractFlat

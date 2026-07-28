@@ -12,6 +12,7 @@ public import VersoManual.Markdown
 public import VersoManual.ExternalLean
 public import SubVerso.Highlighting
 public import SubVerso.Module
+public import Referee.Audit
 public import Referee.Collect
 public import Referee.Diff
 public import Referee.Extract
@@ -388,6 +389,54 @@ block_extension Block.changeList (_payload : ChangeListData) where
       }}
     pure {{<ul class="change-list">{{rows}}</ul>}}
 
+/- The verdict control on a declaration page: three buttons, a note, and the line saying what
+accepting this would and would not cover.
+
+Only the mount point and this declaration's own statement closure are emitted. The closure is
+needed to compute coverage, and it is per-declaration precisely so that a page does not have to
+carry the whole library's closures — see `AuditData`, which does, and is emitted on one page only.
+
+(A plain comment, not a docstring: `block_extension` does not take one.) -/
+block_extension Block.auditControl (_payload : AuditControlData) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI _goB _id data _ => do
+    let .ok (payload : AuditControlData) := FromJson.fromJson? data
+      | Verso.reportError s!"Could not decode audit control data from {data.compress}"
+        pure .empty
+    pure {{
+      <div id="audit-control-root">
+        <noscript>"Recording what you have read needs JavaScript. Everything else on this page
+          works without it."</noscript>
+      </div>
+      {{Html.tag "script" #[("id", "audit-control"), ("type", "application/json")]
+          (.text false (ToJson.toJson payload).compress)}}
+    }}
+
+/- The audit page's data: every declaration, with the closure its coverage is computed over.
+
+Emitted here and nowhere else. `audit.js` builds the page from it, for the same reason `browse.js`
+builds its table: sorting and recomputing coverage as verdicts change has to happen in the browser,
+since a static site has no server to ask.
+
+(A plain comment, not a docstring: `block_extension` does not take one.) -/
+block_extension Block.auditData (_payload : AuditData) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI _goB _id data _ => do
+    let .ok (payload : AuditData) := FromJson.fromJson? data
+      | Verso.reportError s!"Could not decode audit data from {data.compress}"
+        pure .empty
+    pure {{
+      <div id="audit-root">
+        <noscript>"The audit checklist needs JavaScript."</noscript>
+      </div>
+      {{Html.tag "script" #[("id", "audit-data"), ("type", "application/json")]
+          (.text false (ToJson.toJson payload).compress)}}
+    }}
+
 /- The banner at the top of a declaration page whose meaning moved.
 
 Above the declaration card rather than below it: a reader who accepted this declaration in the
@@ -488,10 +537,19 @@ private def tocJsFile : JsFile where
   contents := JS.mk (include_str "assets/toc.js")
   sourceMap? := none
 
+private def auditJsFile : JsFile where
+  filename := "audit.js"
+  contents := JS.mk (include_str "assets/audit.js")
+  sourceMap? := none
+
 private def browseJsFile : JsFile where
   filename := "browse.js"
   contents := JS.mk (include_str "assets/browse.js")
   sourceMap? := none
+  -- Browse reads verdicts through the `RefereeAudit` global rather than reaching into
+  -- localStorage itself, so that the two views cannot disagree about what a verdict is. That means
+  -- it has to run second.
+  after := #["audit.js"]
 
 /-- Rendering configuration for the site output. -/
 private def renderConfig : RenderConfig :=
@@ -512,7 +570,7 @@ private def renderConfig : RenderConfig :=
     rootTocDepth := some 0
     sectionTocDepth := some 0
     extraCssFiles := {refereeCssFile}
-    extraJsFiles := {d3JsFile, graphJsFile, tocJsFile, browseJsFile}
+    extraJsFiles := {d3JsFile, graphJsFile, tocJsFile, auditJsFile, browseJsFile}
     -- Inline and in `<head>`, so the stored theme is applied before the first paint. Loading this
     -- as a file would let the light theme flash before the script ran.
     extraHead := #[Html.tag "script" #[] (.text false themeBootJs)]
@@ -650,6 +708,9 @@ private def loadExtractedStems (dir : System.FilePath) : IO (Std.HashSet String)
 private structure SiteContext where
   repoUrl? : Option String
   siteUrl? : Option String
+  /-- The exposed root module prefix. Doubles as the audit state's storage key, since GitHub Pages
+  serves every project of an account from one origin. -/
+  rootPrefix : Name := .anonymous
   declByName : Std.HashMap Name DeclInfo
   declHrefs : Std.HashMap Name String
   declPageHrefs : Std.HashMap Name String
@@ -1177,6 +1238,108 @@ private def mkChangeBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block 
     else #[]
   | _, _ => #[]
 
+/-! ## Audit state
+
+What a *reader* has decided, as opposed to what the environment says. See `Referee/Audit.lean` for
+what acceptance is taken to mean and why coverage is derived rather than recorded. -/
+
+/-- The statement closure of a declaration, as links, in dependency order.
+
+The order is `transDeps`', which is topological — every dependency precedes what uses it — because
+that is what the extractor needs to emit a compilable minimal file. A reading queue wants exactly
+the same order, so it comes for free. -/
+private def auditClosureLinks (decl : DeclInfo) (ctx : SiteContext) : Array LinkInfo :=
+  decl.transDeps.filterMap fun dep =>
+    if !ctx.declByName.contains dep then none
+    else some { label := dep.toString, href? := ctx.declPageHrefs.get? dep }
+
+/-- The verdict control at the top of a declaration page. -/
+private def mkAuditControlBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
+  #[.other (Block.auditControl {
+      name := decl.name.toString
+      project := ctx.rootPrefix.toString
+      closure := auditClosureLinks decl ctx
+    }) #[]]
+
+/-- The whole library, as the audit page needs it.
+
+Closures are emitted as indices into a shared name table. The same few hundred strings appear tens
+of thousands of times across the closures of a library this size — brownian-motion has 116,519
+transitive edges — and writing them out would put megabytes of duplicated text on one page. -/
+private def mkAuditData (decls : Array DeclInfo) (ctx : SiteContext) : AuditData := Id.run do
+  let names := decls.map (·.name)
+  let index : Std.HashMap Name Nat :=
+    names.zipIdx.foldl (fun acc (n, i) => acc.insert n i) {}
+  let entries := decls.map fun decl => {
+    kind := decl.displayKind
+    group := declGroupOfFields decl.kind.label decl.isLemma decl.isInstanceDecl
+    module := decl.modulePath
+    href := (ctx.declPageHrefs.get? decl.name).getD ""
+    claim := decl.isClaim
+    sorryDep := decl.dependsOnSorry
+    unspecified := decl.isDefinitionLike && decl.specifiedBy.isEmpty && ctx.usesSpecs
+    change := ((ctx.changes.get? decl.name).map (·.kind.slug)).getD ""
+    closure := decl.transDeps.filterMap index.get?
+    : AuditDecl
+  }
+  return {
+    project := ctx.rootPrefix.toString
+    dataId := dataFingerprint decls
+    names := names.map (·.toString)
+    decls := entries
+    renamed := ((ctx.diff?.map (·.renamed)).getD #[]).map fun (a, b) => (a.toString, b.toString)
+    baselineLabel := (ctx.diff?.map (·.baselineLabel)).getD ""
+  }
+
+/-- Builds the Audit page: what the reader has read, and what that does and does not cover.
+
+The one page on this site whose content is not derived from the library. It exists because the
+reading a referee does is work, and work that cannot be recorded has to be redone — and because the
+number that matters is not how many declarations someone has ticked off but how many claims are
+covered *including everything their statements rest on*, which no checkbox can say by itself. -/
+private def mkAuditPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manual :=
+  {
+    title := #[.text "Audit"]
+    titleString := "Audit"
+    metadata := some {
+      file := some "audit"
+      shortTitle := some "Audit"
+      tag := some (.provided "audit")
+      number := false
+    }
+    content := #[
+      .para #[
+        .text "What you have read, and what follows from it. A declaration is ",
+        .emph #[.text "accepted"],
+        .text " when you have read it and judged that it says what its name claims — and ",
+        .emph #[.text "covered"], .text " when, in addition, every declaration its statement rests \
+          on is accepted too. The gap between those two is the point of this page: accepting a \
+          theorem whose definitions you have not read accepts a sentence, not a theorem."
+      ],
+      .para #[
+        .text "Whether something is ", .emph #[.text "proved"], .text " is a separate question and \
+          is not tracked here. A ", .code "sorry", .text " never blocks acceptance, because \
+          accepting is a judgement about what a statement means; ",
+        .link #[.text "Trust"] "trust/", .text " reports the rest."
+      ],
+      .other (Block.auditData (mkAuditData decls ctx)) #[],
+      .para #[
+        .bold #[.text "What this is not. "],
+        .text "Nothing here is checked or authenticated. The exported file is plain JSON that \
+          anyone can edit, and an accepted declaration is one that a human said says what its name \
+          claims — no more. It is a work aid for the reader who made it, and it should never be \
+          offered to anyone else as evidence that a library was audited."
+      ],
+      .para #[
+        .bold #[.text "Where it is kept. "],
+        .text "In this browser, under this project's name. Clearing your browser data deletes it, \
+          and a second reader on another machine shares none of it — so export the file, which is \
+          the artifact that actually travels."
+      ]
+    ]
+    subParts := #[]
+  }
+
 /-- The minimal dependency file, inline.
 
 This is the artifact the whole tool exists to produce: one self-contained Lean file holding
@@ -1286,6 +1449,9 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   -- learn that their reading is void *before* re-reading it, not after.
   blocks := blocks ++ mkChangeBlocks decl ctx
   blocks := blocks.push (mkDeclBlock decl ctx)
+  -- Directly under the card: this is the action the page exists to enable, and burying it below
+  -- the closure listings would put it past the fold on every page that has one.
+  blocks := blocks ++ mkAuditControlBlocks decl ctx
   blocks := blocks ++ mkAuditBlocks decl ctx
   -- Before the dependency machinery, because it answers a different and prior question. The
   -- closures below say what a declaration costs to accept; the specification says what it means.
@@ -1824,7 +1990,7 @@ private def mkBrowsePart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
         .text " groups the same declarations by what happened to them, largest consequence first."
       ]
     ]) ++ #[
-      .other (Block.browseTable { rows }) #[]
+      .other (Block.browseTable { rows, project := ctx.rootPrefix.toString }) #[]
     ]
     subParts := #[]
   }
@@ -2139,7 +2305,8 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
         | none => #[])
       ++ #[mkClaimsPart decls ctx]
       ++ (if ctx.usesSpecs then #[mkSpecificationsPart decls ctx] else #[])
-      ++ #[mkBrowsePart decls ctx, mkModulesPart groups ctx, mkTrustPart decls ctx]
+      ++ #[mkBrowsePart decls ctx, mkModulesPart groups ctx, mkTrustPart decls ctx,
+           mkAuditPart decls ctx]
       ++ (groups.map fun group => mkGroupPart group ctx)
   }
 
@@ -2347,6 +2514,7 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
   let ctx : SiteContext := {
     repoUrl? := cfg.repoUrl
     siteUrl? := cfg.siteUrl
+    rootPrefix := data.rootPrefix
     declByName := declByNameMap data.decls
     declHrefs := declHrefMap data.decls
     declPageHrefs := declPageHrefMap data.decls

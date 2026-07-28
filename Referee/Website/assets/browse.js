@@ -41,6 +41,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // a theorem says.
   const REAUDIT = new Set(['statement', 'body', 'indirect', 'added']);
 
+  // Verdicts come from audit.js rather than from localStorage directly, so the table and the
+  // declaration pages cannot disagree about what a verdict is. Absent if that script failed to
+  // load, in which case the column simply does not appear.
+  const audit = window.RefereeAudit || null;
+  const verdictOf = r => (audit ? audit.verdictOf(r.name) : 'unread');
+
   const CHANGE_LABEL = {
     statement: 'statement changed',
     body: 'definition changed',
@@ -76,6 +82,12 @@ document.addEventListener('DOMContentLoaded', () => {
         <option value="proof">Proof only</option>
         <option value="unchanged">Unchanged</option>
       </select>` : ''}
+      ${audit ? `<select id="browse-verdict">
+        <option value="">Any verdict</option>
+        <option value="unread">Unread</option>
+        <option value="accepted">Accepted</option>
+        <option value="query">Query</option>
+      </select>` : ''}
       <button id="browse-reset" type="button">Reset</button>
     </div>
     <p class="browse-count" id="browse-count"></p>
@@ -90,6 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <th data-sort="ext" class="browse-sortable browse-num">External</th>
             ${hasSpecs ? '<th data-sort="specs" class="browse-sortable browse-num">Spec</th>' : ''}
             ${hasChanges ? '<th data-sort="change" class="browse-sortable">Changed</th>' : ''}
+            ${audit ? '<th data-sort="verdict" class="browse-sortable">Verdict</th>' : ''}
             <th data-sort="trust" class="browse-sortable">Status</th>
           </tr>
         </thead>
@@ -104,6 +117,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const trust = document.getElementById('browse-trust');
   const spec = document.getElementById('browse-spec');
   const change = document.getElementById('browse-change');
+  const verdict = document.getElementById('browse-verdict');
   const body = document.getElementById('browse-body');
   const count = document.getElementById('browse-count');
 
@@ -136,6 +150,16 @@ document.addEventListener('DOMContentLoaded', () => {
     return `<span class="browse-flag ${cls}">${esc(CHANGE_LABEL[r.change] || r.change)}</span>`;
   };
 
+  // Unread sorts first: the point of sorting this column is to bring what is left to the top.
+  const VERDICT_RANK = { unread: 0, query: 1, accepted: 2 };
+
+  const verdictCell = r => {
+    const v = verdictOf(r);
+    if (v === 'unread') return '<span class="browse-change-na">unread</span>';
+    const cls = v === 'accepted' ? 'browse-flag-ok' : 'browse-flag-warn';
+    return `<span class="browse-flag ${cls}">${v}</span>`;
+  };
+
   const statusCell = r => {
     if (r.dependsOnSorry) return '<span class="browse-flag browse-flag-warn">depends on sorry</span>';
     if (r.extraAxioms) return '<span class="browse-flag browse-flag-warn">extra axioms</span>';
@@ -154,6 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (!REAUDIT.has(r.change)) return false;
         } else if (r.change !== change.value) return false;
       }
+      if (verdict && verdict.value && verdictOf(r) !== verdict.value) return false;
       if (needle && !(`${r.name} ${r.module}`.toLowerCase().includes(needle))) return false;
       return true;
     });
@@ -164,6 +189,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const value = r => {
       if (sortKey === 'trust') return trustOf(r);
       if (sortKey === 'change') return CHANGE_RANK[r.change] ?? 9;
+      if (sortKey === 'verdict') return VERDICT_RANK[verdictOf(r)] ?? 9;
       return r[sortKey];
     };
     return list.slice().sort((a, b) => {
@@ -195,6 +221,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <td class="browse-num">${r.ext}</td>
         ${hasSpecs ? `<td class="browse-num">${specCell(r)}</td>` : ''}
         ${hasChanges ? `<td>${changeCell(r)}</td>` : ''}
+        ${audit ? `<td>${verdictCell(r)}</td>` : ''}
         <td>${statusCell(r)}</td>
       </tr>`).join('');
     count.textContent = found.length === rows.length
@@ -222,7 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  for (const control of [q, kind, chapter, trust, spec, change].filter(Boolean)) {
+  for (const control of [q, kind, chapter, trust, spec, change, verdict].filter(Boolean)) {
     control.addEventListener('input', render);
     control.addEventListener('change', render);
   }
@@ -231,9 +258,13 @@ document.addEventListener('DOMContentLoaded', () => {
     q.value = ''; kind.value = ''; chapter.value = ''; trust.value = '';
     if (spec) spec.value = '';
     if (change) change.value = '';
+    if (verdict) verdict.value = '';
     sortKey = 'name'; sortAsc = true;
     render();
   });
+
+  // A verdict set on a declaration page (or an import on the audit page) has to show up here too.
+  document.addEventListener('referee:auditchange', render);
 
   render();
 });

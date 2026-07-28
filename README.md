@@ -30,6 +30,12 @@ Features:
 - a specifications page, for projects that annotate their theorems with
   [`@[specifies]`](LeanSpec/): which definitions their author said something about, which they
   said nothing about, and — on each definition's own page — the properties themselves
+- **audit state**: an Audit page recording what *you* have read. A declaration is *accepted* when
+  you have judged that it says what its name claims, and *covered* when every declaration its
+  statement rests on is accepted too — so the page can report the thing a checkbox cannot, that a
+  claim has been accepted while resting on definitions nobody has looked at. Per-claim reading
+  queues in dependency order, a verdict column on Browse, and export to a JSON file that survives
+  the browser and re-imports against the next revision
 - **revisions**: given an earlier `collect` output (`--baseline`), a Changes page saying what a
   reader who already worked through that revision has to read again. Statement changes, and — the
   case no textual diff of the repository can show — the results *invalidated indirectly*, whose own
@@ -227,6 +233,10 @@ file for the declarations whose readable version does not compile. See
   `Lean.collectAxioms`, i.e. the same answer `#print axioms` gives. `@[specifies]` annotations are
   read here too and reversed by `attachSpecifiedBy`, the one field on `DeclInfo` that is not
   derived from the environment but taken from the author.
+- `Referee/Audit.lean` — the payloads the audit page and the per-declaration control hand to
+  `assets/audit.js`, plus `dataFingerprint`, the stamp an exported audit file carries so it can be
+  matched against the build it was made against. The verdicts, coverage, queue, import and export
+  are all the browser's; this is only the data they run on.
 - `Referee/Diff.lean` — the revision comparison (`--baseline`): a pure function of two
   `CollectedData` values, with no environment and no notion of a page. Classifies each declaration
   as statement-changed, body-changed, indirectly invalidated, proof-only, added or unchanged,
@@ -296,6 +306,57 @@ its statement, everything else its body too, since a definition's body is part o
 difference is not cosmetic. On `AlphaRAR`, following proofs reported 172 declarations as resting on
 `batteries`; following statements reports none, because no statement in the project mentions a
 Batteries definition — every one of those 172 was a kernel-checked proof detail needing no audit.
+
+## Audit State
+
+Every other page on the site is derived from the compiled library. The Audit page is not: it records
+what a *reader* has decided, and computes what follows.
+
+Two things are tracked per declaration, and only one of them is the reader's to set:
+
+- a **verdict** — *unread*, *accepted* or *query* — where accepted means "I read this and it says
+  what its name claims", and a query carries a note;
+- **coverage**, which is derived: accepted, *and* every project declaration in its statement closure
+  accepted too.
+
+The state worth having a name for is the third one that falls out: **accepted but not covered**, a
+reader who believes they are finished and is not. Accepting a regret bound without reading
+`IsAlgEnvSeq` accepts a sentence, not a theorem, and a single checkbox per declaration cannot say
+so. The Audit page therefore leads with covered claims rather than with accepted declarations.
+
+Deliberately orthogonal to trust: a `sorry`, an axiom or an unaudited package never blocks
+acceptance. Accepting is a judgement about what a statement *means*; whether it is *proved* is what
+the trust page reports. Conflating them would make the checklist useless on any library still being
+written.
+
+What a reader does with it:
+
+- **Start reading** from a claim on the Audit page walks its statement closure in dependency order,
+  so nothing is read before the definitions it is stated in terms of. That order is free —
+  `transDeps` is already topologically sorted, because the extractor needs it that way to emit a
+  compilable minimal file.
+- On each declaration, `a` / `q` / `u` set the verdict and `n` moves to the next unread one in the
+  queue. There is also *accept this and everything its statement rests on*, which matches the
+  minimal file: that file **is** the closure inlined, so a reader who has read one has covered
+  everything in it.
+- **Export** writes a JSON file — the artifact that actually travels. Re-importing it against a
+  later build carries verdicts across, ignores declarations that no longer exist, and drops
+  acceptances that the revision diff says are void, naming them. Where `--baseline` reports a
+  removal and an addition with identical statements, the import offers to carry the verdict across
+  the rename.
+- **Generate report** writes Markdown: claims and their coverage, the open queries with their notes,
+  and what the library rests on. Most of a referee report, already written.
+
+Three limits, stated on the page itself rather than only here:
+
+- **Nothing is authenticated.** The file is plain JSON that anyone can edit, and an accepted
+  declaration is one that a human said says what its name claims. It is a work aid for the reader
+  who made it and must never be offered to anyone else as evidence that a library was audited.
+- **Nothing is verified.** The site records the judgement; it does not check it.
+- **The browser is not storage.** State lives in `localStorage` under the project's name — which is
+  also why the key is the project rather than the path: GitHub Pages serves every project of an
+  account from one origin, so two referee sites would otherwise share one bucket. Clearing browser
+  data deletes it, and a second reader on another machine shares none of it.
 
 ## Comparing Revisions
 

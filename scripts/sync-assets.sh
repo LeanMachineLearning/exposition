@@ -38,14 +38,26 @@ if [[ ! -d "$dest" ]]; then
   exit 1
 fi
 
+# Every asset that exists on both sides, rather than a hardcoded list. The list drifted: it named
+# four files and was never updated when `browse.js` and `audit.js` were added, so editing either and
+# running this reported success while copying neither — the failure mode this script exists to
+# prevent, one level up.
 copied=0
-for f in referee.css graph.js toc.js d3.v7.min.js; do
-  if [[ -f "$assets/$f" && -f "$dest/$f" ]]; then
-    cp "$assets/$f" "$dest/$f"
+skipped=()
+shopt -s nullglob
+for path in "$assets"/*.css "$assets"/*.js; do
+  f="$(basename "$path")"
+  if [[ -f "$dest/$f" ]]; then
+    cp "$path" "$dest/$f"
     copied=$((copied + 1))
-  elif [[ -f "$assets/$f" ]]; then
-    echo "note: $f is not present in the built site; skipping" >&2
+  else
+    skipped+=("$f")
   fi
 done
+shopt -u nullglob
+
+if [[ ${#skipped[@]} -gt 0 ]]; then
+  echo "note: not present in the built site, skipped: ${skipped[*]}" >&2
+fi
 
 echo "Synced $copied asset(s) into $dest — reload the page (bypass the browser cache)."
