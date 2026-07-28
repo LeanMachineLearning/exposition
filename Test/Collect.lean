@@ -20,6 +20,8 @@ This module audits the *pure* logic of `Collect.lean`:
 * `attachSpecifiedBy`, which reverses the author's `@[specifies]` links, and `isDefinitionLike`,
   the classification every specification count is taken over (reading the annotations out of the
   environment needs a real project and is exercised end to end, not here);
+* the decoding of a `semantic_hash export` record, whose encoding is an assumption about *another*
+  tool's output and so is the thing here most able to break without anyone noticing;
 * the JSON round-trip of the collected data.
 
 Each check is a `#guard`, so any regression turns into a build error. Run with
@@ -473,6 +475,29 @@ private def sampleDeclForJson : DeclInfo := {
   transDeps := #[`Nat.add]
   docstringBlock? := some (.para #[.code "bar"])
 }
+
+/-! ## Semantic hash records
+
+The one place this tool depends on the *encoding* of another's output. Lean serializes `UInt64` as
+a decimal string, since JavaScript cannot hold 64 bits in a number, so that is what
+`semantic_hash export` writes today — but reading it is an assumption, and an assumption that fails
+silently costs the whole comparison upgrade with no error anywhere. Hence the numeric branch, and
+hence these. -/
+
+#guard hex16 0 == "0000000000000000"
+#guard hex16 255 == "00000000000000ff"
+#guard hex16 0xdeadbeefcafe1234 == "deadbeefcafe1234"
+
+-- What the tool actually writes.
+#guard parseHashField? (Json.str "255") == some "00000000000000ff"
+-- And the same value written as a JSON number, so a change of convention upstream degrades to
+-- nothing rather than to a silently empty hash table.
+#guard parseHashField? (Json.num 255) == some "00000000000000ff"
+-- Both encodings of one value canonicalize to the same key, which is what makes files written
+-- under either convention comparable.
+#guard parseHashField? (Json.str "255") == parseHashField? (Json.num 255)
+#guard parseHashField? (Json.str "not a number") == none
+#guard parseHashField? Json.null == none
 
 #guard roundTrips sampleDeclForJson
 #guard roundTrips ({ title := "Section", body := "Some *markdown* body." } : MarkdownSection)

@@ -39,7 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Which change kinds mean "your earlier reading of this no longer covers it". Proof-only changes
   // are deliberately not among them: the kernel rechecked the proof, and a proof cannot change what
   // a theorem says.
-  const REAUDIT = new Set(['statement', 'body', 'indirect', 'added']);
+  const REAUDIT = new Set(['statement', 'body', 'indirect', 'upstream', 'added']);
 
   // Verdicts come from audit.js rather than from localStorage directly, so the table and the
   // declaration pages cannot disagree about what a verdict is. Absent if that script failed to
@@ -51,6 +51,7 @@ document.addEventListener('DOMContentLoaded', () => {
     statement: 'statement changed',
     body: 'definition changed',
     indirect: 'meaning changed indirectly',
+    upstream: 'meaning changed underneath',
     added: 'new',
     proof: 'proof changed',
     unchanged: 'unchanged',
@@ -77,6 +78,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <option value="reaudit">Needs re-reading</option>
         <option value="statement">Statement changed</option>
         <option value="indirect">Invalidated indirectly</option>
+        <option value="upstream">Changed underneath</option>
         <option value="body">Definition changed</option>
         <option value="added">New</option>
         <option value="proof">Proof only</option>
@@ -140,7 +142,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Sorted by urgency rather than alphabetically: the point of sorting this column is to bring what
   // needs re-reading to the top, and "added" before "indirect" before "statement" is not an order
   // anyone wants.
-  const CHANGE_RANK = { statement: 0, indirect: 1, body: 2, added: 3, proof: 4, unchanged: 5 };
+  const CHANGE_RANK = {
+    statement: 0, indirect: 1, upstream: 2, body: 3, added: 4, proof: 5, unchanged: 6,
+  };
 
   const changeCell = r => {
     if (r.change == null || r.change === 'unchanged') {

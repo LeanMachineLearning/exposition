@@ -36,21 +36,65 @@ Changes propagate only from meaning changes. An *added* declaration cannot inval
 one — if some statement mentions it, that statement changed too — and the same argument covers
 removals, so neither needs closing over.
 
-## What it compares on, and what that costs
+## What it compares on
 
-Statements are compared as `expandedSignature`, the pretty-printed *elaborated* type. That is the
-only field that is right in both directions: reindentation, a renamed bound variable, or a
-hypothesis moved into a `variable` line must not count as a change, while editing a `variable` line
-*does* change a theorem's statement without touching a character of its own source text.
+Preferably, **semantic hashes** — `DeclInfo.proofIrrelHash?` and `DeclInfo.semanticHash?`, collected
+from `semantic_hash export` when `collect --hashes` was given. They are structural hashes of the
+elaborated `Expr`, and they have three properties nothing derived from text has:
 
-Bodies have no elaborated form in the collected data, so they are compared as source text. That
-over-reports — reformatting a definition counts as a change — which is the safe direction for an
-auditor: the cost is a page of extra reading, against a missed invalidation.
+- they are unaffected by how anything *prints*, so a toolchain upgrade cannot make the diff report
+  a library it did not touch;
+- they are *deep* — a referenced constant contributes its own hash — so a declaration's hash moves
+  when the meaning of anything in its closure moves, upstream included;
+- the proof-irrelevant variant hides theorem bodies, which is `graphDeps` arrived at independently:
+  a theorem's proof-irrelevant hash rests on its statement's closure and on nothing its proof
+  merely calls.
 
-Both comparisons normalize whitespace first. The residual risk is stated rather than hidden: a
-toolchain upgrade can change how *every* type pretty-prints, and the diff would then report the
-whole library as changed. `DiffReport.looksLikeToolchainChurn` recognizes that shape so the page
-can say so instead of presenting it as the author's doing.
+So `proofIrrelHash` differing *is* "this needs re-reading", and `semanticHash` differing while
+`proofIrrelHash` does not *is* "only a proof changed" — the two questions this module exists to
+answer, decided at the level of terms instead of inferred from strings.
+
+What a hash cannot do is say *why*. It reports that the meaning moved, never where, so the textual
+keys below stay on, demoted from deciding whether something changed to explaining what did:
+
+- `expandedSignature`, the pretty-printed elaborated type, splits a *direct* statement change from
+  one inherited from a dependency — the hash cannot tell them apart, because it deliberately
+  conflates a declaration with its closure;
+- `proofText?` / `displaySignature` do the same for a definition's body.
+
+When the hash moved and neither text did, the cause is outside the exposed declarations: an
+upstream package, or project code this site does not show. That is `ChangeKind.upstream`, and it
+is a finding the previous text-only comparison could not make at all.
+
+## Without hashes
+
+Everything still works, per declaration: a pair where either side lacks a hash falls back to
+comparing `expandedSignature` and body text, exactly as this module did before hashes existed, so
+an old baseline or a project that never ran `semantic_hash` degrades rather than breaks. Both
+comparisons normalize whitespace first, because neither pretty-printed output nor source text is
+stable enough to compare raw.
+
+The text path's residual risk is stated rather than hidden: a toolchain upgrade can change how
+*every* type pretty-prints, and the diff would then report the whole library as changed.
+`DiffReport.looksLikeToolchainChurn` recognizes that shape so the page can say so instead of
+presenting it as the author's doing. It is checked only where text was actually used — with hashes
+on both sides the failure cannot occur, since a repretty-printed statement whose hash is unmoved is
+classified `unchanged` and never reaches the page.
+
+The text path also over-reports on bodies. Whitespace normalization covers reindentation, but not
+any other way of writing the same term: renaming a bound variable inside a definition, or adding a
+comment to it, reads as a different definition. Because a body change propagates along the closure,
+that false positive does not stay put — one renamed lambda binder can invalidate every theorem
+stated about the definition. It is the safe direction, a page of extra reading against a missed
+invalidation, and it is the single largest thing hashes remove.
+
+## Collisions
+
+A semantic hash is 64 bits, so two different meanings can in principle collide, and the
+consequence is a *missed* invalidation: the one direction every other approximation here avoids.
+For a library of a few thousand declarations the probability is on the order of `10⁻¹³`. It is
+reported on the page rather than left implicit, because a reader is entitled to know which way the
+tool fails.
 -/
 
 open Lean
@@ -68,8 +112,14 @@ inductive ChangeKind where
   | statementChanged
   /-- Its type is unchanged, but its body differs and its body is part of its meaning. -/
   | bodyChanged
-  /-- Unchanged itself, but something its statement rests on changed meaning. -/
+  /-- Unchanged itself, but a *project* declaration its statement rests on changed meaning. -/
   | indirect
+  /-- Its meaning moved and nothing this site shows accounts for it: the cause is an upstream
+  package, or project code that is not exposed.
+
+  Only reachable when both revisions carry semantic hashes, because only a deep hash sees past the
+  project boundary. The text comparison cannot produce this and cannot detect what it reports. -/
+  | upstream
   /-- Only a proof changed, which the kernel has already rechecked. -/
   | proofOnly
   | unchanged
@@ -81,6 +131,7 @@ def ChangeKind.slug : ChangeKind → String
   | .statementChanged => "statement"
   | .bodyChanged => "body"
   | .indirect => "indirect"
+  | .upstream => "upstream"
   | .proofOnly => "proof"
   | .unchanged => "unchanged"
 
@@ -91,6 +142,7 @@ def ChangeKind.label : ChangeKind → String
   | .statementChanged => "statement changed"
   | .bodyChanged => "definition changed"
   | .indirect => "meaning changed indirectly"
+  | .upstream => "meaning changed underneath"
   | .proofOnly => "proof changed"
   | .unchanged => "unchanged"
 
@@ -99,14 +151,28 @@ def ChangeKind.label : ChangeKind → String
 `proofOnly` is false, and that is the useful half: the kernel rechecked the proof, and a proof
 cannot change what a theorem says. -/
 def ChangeKind.needsReaudit : ChangeKind → Bool
-  | .added | .statementChanged | .bodyChanged | .indirect => true
+  | .added | .statementChanged | .bodyChanged | .indirect | .upstream => true
   | .proofOnly | .unchanged => false
 
-/-- Whether a change to this declaration changes the meaning of the declarations that rest on it,
-and so has to be propagated along the dependency graph. -/
-def ChangeKind.propagates : ChangeKind → Bool
-  | .statementChanged | .bodyChanged => true
+/-- Whether this declaration's meaning moved, and so whether it can be named as the cause of an
+indirect invalidation further up.
+
+`upstream` counts. Its own cause lies outside the exposed declarations, but its meaning moved all
+the same, so a theorem whose statement is about it has moved too — and naming *it* as the cause is
+far more use to a reader than repeating "something upstream". -/
+def ChangeKind.movedMeaning : ChangeKind → Bool
+  | .statementChanged | .bodyChanged | .upstream => true
   | .added | .indirect | .proofOnly | .unchanged => false
+
+/-- Whether the propagation pass may reclassify this as an indirect invalidation, on finding a
+project declaration in its statement closure whose meaning moved.
+
+`upstream` is here as well as in `movedMeaning`: a declaration can be told that its meaning moved
+by the hash and then have the proximate cause found among the project's own declarations, which is
+the strictly better answer and so replaces it. -/
+def ChangeKind.attributable : ChangeKind → Bool
+  | .unchanged | .proofOnly | .upstream => true
+  | .added | .statementChanged | .bodyChanged | .indirect => false
 
 /-! ## Comparison keys -/
 
@@ -140,6 +206,28 @@ whole command as written. Source text, for want of anything better — see the n
 in the module docstring. -/
 def bodyKey (decl : DeclInfo) : String :=
   normalizeSpace (decl.proofText?.getD decl.displaySignature)
+
+/-- Whether both revisions of a declaration carry semantic hashes, and so can be compared on
+meaning rather than on how they print.
+
+Both hashes are required on both sides. `semantic_hash export` always emits the pair, so a
+declaration carrying one and not the other is pathological rather than partial, and comparing it on
+text is the answer that cannot be quietly wrong. -/
+def comparableByHash (old new : DeclInfo) : Bool :=
+  old.semanticHash?.isSome && new.semanticHash?.isSome &&
+    old.proofIrrelHash?.isSome && new.proofIrrelHash?.isSome
+
+/-- The key an added declaration is matched against a removed one on, to offer a rename as evidence.
+
+Tagged with which measure produced it so the two keyspaces cannot meet: a semantic hash matches
+across a rename *and* across renames of everything the statement mentions, which is a materially
+stronger piece of evidence than two statements happening to pretty-print alike, and the two should
+never be silently interchanged. Where one side has hashes and the other does not, the lookup simply
+misses and no rename is claimed — the safe direction, since the claim is the risky part. -/
+def renameKey (decl : DeclInfo) : String :=
+  match decl.proofIrrelHash? with
+  | some h => "h:" ++ h
+  | none => "s:" ++ statementKey decl
 
 /-! ## Token-level statement diff
 
@@ -300,11 +388,30 @@ structure DiffReport where
   look any declaration up without deciding in advance which it will need. -/
   changes : Array DeclChange := #[]
   removed : Array RemovedDecl := #[]
-  /-- Removed/added pairs whose statements are identical, offered as evidence that a declaration was
-  renamed. Not merged into a single "renamed" entry: the tool cannot see intent, and two
-  declarations sharing a statement is a fact, not a conclusion. -/
+  /-- Removed/added pairs that compare equal under `renameKey`, offered as evidence that a
+  declaration was renamed. Not merged into a single "renamed" entry: the tool cannot see intent, and
+  two declarations sharing a meaning is a fact, not a conclusion. -/
   renamed : Array (Name × Name) := #[]
+  /-- Declarations present in both revisions, i.e. how many comparisons were made at all. -/
+  comparisons : Nat := 0
+  /-- How many of those were made on semantic hashes rather than on text.
+
+  Kept so the page can name the measure it used. A reader deciding how much of a Changes page to
+  believe needs to know whether "unchanged" means *the term is the same term* or *it printed the
+  same way*, and those are not equally strong claims. -/
+  hashedComparisons : Nat := 0
 deriving Repr, Inhabited, ToJson, FromJson
+
+/-- Whether any comparison in this report was made on semantic hashes. -/
+def DiffReport.usedHashes (report : DiffReport) : Bool :=
+  report.hashedComparisons > 0
+
+/-- Whether *every* comparison was made on semantic hashes.
+
+The condition under which the page's claims are the strong ones, and under which
+`looksLikeToolchainChurn` cannot fire. -/
+def DiffReport.fullyHashed (report : DiffReport) : Bool :=
+  report.comparisons > 0 && report.hashedComparisons == report.comparisons
 
 /-- Declaration name ↦ its change, for the site's per-declaration lookups. -/
 def DiffReport.byName (report : DiffReport) : Std.HashMap Name DeclChange :=
@@ -325,17 +432,22 @@ def DiffReport.isEmpty (report : DiffReport) : Bool :=
 /-- Whether the diff has the shape a *toolchain* change produces rather than an author's edit:
 nearly every surviving declaration's statement reported as changed at once.
 
-Worth recognizing because the failure is otherwise silent and total. Statements are compared as
-pretty-printed elaborated types, and a Lean upgrade can change how every type prints; the page then
+Worth recognizing because the failure is otherwise silent and total. Where statements are compared
+as pretty-printed elaborated types, a Lean upgrade can change how every type prints; the page then
 tells the reader to re-audit the entire library, which is both useless and wrong. A tool that asks
 to be trusted has to say when its own measure has stopped meaning anything.
+
+Gated on `fullyHashed`, because with semantic hashes on both sides the failure cannot happen: a
+repretty-printed statement whose hash is unmoved is classified `unchanged` and never reaches the
+page. Running the heuristic anyway would mean warning about a risk the comparison no longer takes.
 
 The threshold is deliberately high. Real revisions do not touch four-fifths of the statements in a
 library, and a project small enough for that to happen by hand (under 50 declarations) is one where
 the reader can see the whole diff anyway. -/
 def DiffReport.looksLikeToolchainChurn (report : DiffReport) : Bool :=
   let survivors := report.changes.filter (·.kind != .added)
-  survivors.size >= 50 &&
+  !report.fullyHashed &&
+    survivors.size >= 50 &&
     (report.ofKind .statementChanged).size * 5 >= survivors.size * 4
 
 /-! ## Render payloads
@@ -391,9 +503,31 @@ def DeclChange.trustNotes (c : DeclChange) : Array String := Id.run do
 def axiomSet (decl : DeclInfo) : Std.HashSet Name :=
   decl.axioms.foldl (init := {}) fun acc a => if a == ``sorryAx then acc else acc.insert a
 
-/-- The direct (non-propagated) change to one declaration that exists in both revisions. -/
+/-- The change to one declaration that exists in both revisions, before the propagation pass.
+
+Two paths, chosen per declaration by `comparableByHash`.
+
+**With hashes**, the hash decides *whether* the meaning moved and the text decides *where*. The
+order matters: because the hash is deep, a declaration whose dependency moved has a different hash
+while being character-for-character identical, so the text is consulted only after the hash has
+already said there is something to explain. This is what makes a toolchain upgrade a non-event —
+every statement prints differently, no hash moves, and every declaration comes out `unchanged`.
+
+**Without hashes**, the original text comparison, unchanged: `expandedSignature` for the statement
+and source text for the body, with indirect invalidation left entirely to the propagation pass. -/
 def directKind (old new : DeclInfo) : ChangeKind :=
-  if statementKey old != statementKey new then .statementChanged
+  if comparableByHash old new then
+    if old.proofIrrelHash? == new.proofIrrelHash? then
+      -- The proposition is the same term it was. Anything left is a proof, which the kernel has
+      -- already rechecked.
+      if old.semanticHash? == new.semanticHash? then .unchanged else .proofOnly
+    else if statementKey old != statementKey new then .statementChanged
+    else if new.bodyIsMeaning && bodyKey old != bodyKey new then .bodyChanged
+    -- The meaning moved and this declaration's own text did not, so the cause is elsewhere.
+    -- Provisional: the propagation pass replaces this with `indirect` if the cause turns out to be
+    -- a project declaration, and only what is left over is genuinely from outside.
+    else .upstream
+  else if statementKey old != statementKey new then .statementChanged
   else if bodyKey old == bodyKey new then .unchanged
   else if new.bodyIsMeaning then .bodyChanged
   else .proofOnly
@@ -410,13 +544,18 @@ def diff (old new : CollectedData) (baselineLabel : String := "") : DiffReport :
   -- Pass one: the changes each declaration shows on its own.
   let mut changes : Array DeclChange := #[]
   let mut meaningChanged : Std.HashSet Name := {}
+  let mut comparisons := 0
+  let mut hashedComparisons := 0
   for decl in new.decls do
     match oldByName.get? decl.name with
     | none =>
       changes := changes.push { name := decl.name, kind := .added }
     | some prev =>
+      comparisons := comparisons + 1
+      if comparableByHash prev decl then
+        hashedComparisons := hashedComparisons + 1
       let kind := directKind prev decl
-      if kind.propagates then
+      if kind.movedMeaning then
         meaningChanged := meaningChanged.insert decl.name
       let prevAxioms := axiomSet prev
       let currAxioms := axiomSet decl
@@ -440,7 +579,7 @@ def diff (old new : CollectedData) (baselineLabel : String := "") : DiffReport :
     new.decls.foldl (fun acc d => acc.insert d.name d) {}
   if !meaningChanged.isEmpty then
     changes := changes.map fun change =>
-      if change.kind.propagates || change.kind == .added then change
+      if !change.kind.attributable then change
       else
         match declByName.get? change.name with
         | none => change
@@ -448,10 +587,10 @@ def diff (old new : CollectedData) (baselineLabel : String := "") : DiffReport :
           let causes := decl.transDeps.filter meaningChanged.contains
           if causes.isEmpty then change
           else { change with kind := .indirect, causes := causes }
-  -- Removals, and the added declarations whose statements match one.
+  -- Removals, and the added declarations that match one.
   let addedByStatement : Std.HashMap String Name :=
     new.decls.foldl (init := {}) fun acc d =>
-      if oldByName.contains d.name then acc else acc.insert (statementKey d) d.name
+      if oldByName.contains d.name then acc else acc.insert (renameKey d) d.name
   let mut removed : Array RemovedDecl := #[]
   let mut renamed : Array (Name × Name) := #[]
   for decl in old.decls do
@@ -463,7 +602,7 @@ def diff (old new : CollectedData) (baselineLabel : String := "") : DiffReport :
         else decl.displaySignature
       wasClaim := decl.isClaim
     }
-    if let some newName := addedByStatement.get? (statementKey decl) then
+    if let some newName := addedByStatement.get? (renameKey decl) then
       renamed := renamed.push (decl.name, newName)
   return {
     baselineLabel := baselineLabel
@@ -472,6 +611,8 @@ def diff (old new : CollectedData) (baselineLabel : String := "") : DiffReport :
     changes := changes
     removed := removed
     renamed := renamed
+    comparisons := comparisons
+    hashedComparisons := hashedComparisons
   }
 
 end Referee

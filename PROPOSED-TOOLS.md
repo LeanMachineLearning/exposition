@@ -104,6 +104,31 @@ the failure is silent otherwise.
 **Renames** are reported as a removal and an addition, with a note where the two statements
 coincide. Evidence, not an inferred rename: the tool does not know intent and should not claim to.
 
+#### What semantic hashes changed
+
+The two paragraphs above were written before
+[`semantic_hash`](https://github.com/mathlib-initiative/semantic_hash) existed, and both of their
+compromises are now optional. `collect --hashes` reads its per-declaration structural hashes of the
+elaborated term, and the diff prefers them wherever both revisions carry them.
+
+The residual risk named above — a toolchain bump turning the page into 1677 false positives — is
+simply gone: no hash depends on how anything prints. The body comparison stops over-reporting,
+which matters more than it sounds, because a body change *propagates*: on this repository an
+alpha-renamed lambda inside one `def` is a changed definition to the text comparison and nothing at
+all to the hash. And rename evidence gets stronger, since a matching hash survives the renamed
+declaration's dependencies being renamed with it, where two coinciding pretty-printings do not.
+
+The hash also brings a category the text comparison could not see. It is deep — a referenced
+constant contributes its own hash — so it moves when anything in a declaration's closure moves,
+upstream included. What it cannot say is *where*, so the textual keys stay on for attribution, and
+what they cannot attribute to an exposed declaration is reported as **meaning changed underneath**:
+the project was rebuilt against something that moved beneath a statement nobody edited.
+
+The costs, both stated on the page: a 64-bit hash can collide, which is the one direction the
+comparison under-reports; and `semantic_hash` is a separate tool to run, deliberately not a Lake
+dependency, because it enforces its own toolchain match and a third toolchain to line up is worse
+than a file on disk.
+
 **What it deliberately does not cover.** Extraction compile status lives in the
 `extracted-highlighting/` output, not in `data.json`, so "this extraction stopped compiling" is out
 of range for a diff of two data files. Reporting it would mean baselining a whole site rather than

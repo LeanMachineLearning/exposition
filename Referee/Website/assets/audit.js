@@ -36,6 +36,13 @@ document.addEventListener('DOMContentLoaded', function () {
   const FILE_VERSION = 1;
   const VERDICTS = ['unread', 'accepted', 'query'];
 
+  // The change kinds that void an imported acceptance: those where the declaration means something
+  // different from what the reader accepted. 'proof' is deliberately absent — the kernel rechecked
+  // the proof, and a proof cannot change what a theorem says — and so is 'added', which has no
+  // earlier acceptance to void. 'upstream' is here for the same reason 'indirect' is: the meaning
+  // moved, only the cause lies outside what this site shows.
+  const VOIDING = new Set(['statement', 'body', 'indirect', 'upstream']);
+
   const esc = s => String(s).replace(/[&<>"]/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -438,8 +445,7 @@ document.addEventListener('DOMContentLoaded', function () {
         // acceptance of one of those is not carried across silently: it is exactly the reading the
         // revision made void, and importing it back would hide that.
         const change = decls[index[target]].change;
-        if (rec.verdict === 'accepted' &&
-            (change === 'statement' || change === 'body' || change === 'indirect')) {
+        if (rec.verdict === 'accepted' && VOIDING.has(change)) {
           voided.push(target);
           return;
         }
@@ -451,7 +457,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
       messages.push(`Imported ${taken} ${taken === 1 ? 'verdict' : 'verdicts'}.`);
       if (carried) {
-        messages.push(`${carried} carried across a rename (matched by identical statement).`);
+        messages.push(`${carried} carried across a rename (matched by an identical meaning).`);
       }
       if (voided.length) {
         messages.push(`<span class="audit-warn">${voided.length} ${voided.length === 1

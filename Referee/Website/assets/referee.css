@@ -917,6 +917,7 @@ body.hide-theorems [data-decl-group="theorem"] {
 
 .change-chip--statement,
 .change-chip--indirect,
+.change-chip--upstream,
 .change-chip--body {
   background: var(--site-del-soft);
   color: var(--site-del);

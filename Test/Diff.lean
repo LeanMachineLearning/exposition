@@ -24,7 +24,10 @@ What is checked:
   proof-only section of the page rests on;
 * whitespace normalization, since without it every reformatting would be reported as a change;
 * the token alignment used to render a changed statement;
-* additions, removals, and the rename evidence.
+* additions, removals, and the rename evidence;
+* the **semantic-hash path** — that a hash decides whether the meaning moved and the text only
+  where, that a repretty-printed library comes out unchanged, and that the fallback to text is per
+  declaration rather than all-or-nothing.
 
 Each check is a `#guard`, so any regression turns into a build error. Run with `lake build Test`.
 -/
@@ -43,7 +46,8 @@ definition), the kind, and the closure. -/
 private def mkDecl (name : Name) (statement : String := "True") (body : String := "trivial")
     (kind : DeclKind := .theorem) (transDeps : Array Name := #[])
     (dependsOnSorry : Bool := false) (axioms : Array Name := #[])
-    (specifiedBy : Array SpecLink := #[]) (isLemma : Bool := false) : DeclInfo := {
+    (specifiedBy : Array SpecLink := #[]) (isLemma : Bool := false)
+    (semanticHash? : Option String := none) (proofIrrelHash? : Option String := none) : DeclInfo := {
   name := name
   moduleName := `Test.Mod
   modulePath := "Mod"
@@ -63,6 +67,8 @@ private def mkDecl (name : Name) (statement : String := "True") (body : String :
   dependsOnSorry := dependsOnSorry
   axioms := axioms
   specifiedBy := specifiedBy
+  semanticHash? := semanticHash?
+  proofIrrelHash? := proofIrrelHash?
 }
 
 private def mkData (decls : Array DeclInfo) : CollectedData := {
@@ -219,5 +225,210 @@ private def tokenTexts (old new : String) (kind : String) : Array String :=
 
 #guard (statementDiff "a" "a").tokens.map (·.kind) == #["same"]
 #guard !(statementDiff "a" "b").coarse
+
+/-! ## The semantic-hash path
+
+Everything above compares text. With `collect --hashes`, the same classification is made on
+structural hashes of the elaborated term instead, and the text is consulted only to say *where* a
+change the hash already found actually happened.
+
+The fixtures below name hashes as short strings; nothing in the diff reads them as anything but
+opaque tokens compared for equality, so `"h1"` stands in for a 64-bit hash without loss. -/
+
+/-- A declaration carrying both hashes. `meaning` is the proof-irrelevant hash and `full` the
+proof-relevant one; where a case does not care about proofs, both move together. -/
+private def mkHashed (name : Name) (meaning : String) (full : String := meaning)
+    (statement : String := "True") (body : String := "trivial") (kind : DeclKind := .theorem)
+    (transDeps : Array Name := #[]) : DeclInfo :=
+  mkDecl name (statement := statement) (body := body) (kind := kind) (transDeps := transDeps)
+    (semanticHash? := some full) (proofIrrelHash? := some meaning)
+
+/-! ### The headline: how a statement prints is not what it means
+
+A toolchain upgrade repretty-prints every elaborated type in a library at once. Under the text
+comparison that is a page telling the reader to re-audit everything; under hashes it is nothing,
+which is the correct answer. -/
+
+#guard kindOf (run #[mkHashed `T "h1" (statement := "∀ (x : α), P x")]
+                   #[mkHashed `T "h1" (statement := "∀ {x : α}, P x")]) `T
+  == some .unchanged
+
+-- And the inverse, which is the case only an elaborated measure catches at all: a hypothesis moved
+-- into a `variable` line changes what a theorem says without touching a character of its own text.
+#guard kindOf (run #[mkHashed `T "h1" (statement := "P")]
+                   #[mkHashed `T "h2" (statement := "P")]) `T
+  != some .unchanged
+
+/-! ### Whether, then where -/
+
+-- The hash says the meaning moved and the text says it moved here.
+#guard kindOf (run #[mkHashed `T "h1" (statement := "P")]
+                   #[mkHashed `T "h2" (statement := "Q")]) `T
+  == some .statementChanged
+
+-- Proof-irrelevant hash unmoved, proof-relevant hash moved: only a proof changed, whatever the
+-- source text says about it.
+#guard kindOf (run #[mkHashed `T "h1" (full := "f1")] #[mkHashed `T "h1" (full := "f2")]) `T
+  == some .proofOnly
+
+-- A definition's body is its meaning, so the same pair of facts lands differently for one.
+#guard kindOf
+    (run #[mkHashed `D "h1" (kind := .definition) (body := "def D := 1")]
+         #[mkHashed `D "h2" (kind := .definition) (body := "def D := 2")]) `D
+  == some .bodyChanged
+
+/-! ### What the text comparison over-reports, and what that costs
+
+Whitespace is already normalized away, so the text comparison survives reindentation. What it
+cannot survive is any other way of writing the same term: renaming a bound variable in a
+definition's body, or adding a comment inside it, reads as a different definition.
+
+And because a body change propagates along the closure, that false positive does not stay put — it
+invalidates every theorem stated about the definition. One renamed lambda binder for a page of
+re-reading. -/
+
+private def alphaBefore : Array DeclInfo := #[
+  mkHashed `D "d1" (kind := .definition) (body := "def D := fun x => x"),
+  mkHashed `T "t1" (statement := "P D") (transDeps := #[`D])
+]
+
+private def alphaAfter : Array DeclInfo := #[
+  mkHashed `D "d1" (kind := .definition) (body := "def D := fun y => y"),
+  mkHashed `T "t1" (statement := "P D") (transDeps := #[`D])
+]
+
+#guard kindOf (run alphaBefore alphaAfter) `D == some .unchanged
+#guard kindOf (run alphaBefore alphaAfter) `T == some .unchanged
+#guard (run alphaBefore alphaAfter).needingReaudit.isEmpty
+
+-- The same pair without hashes: the renaming is reported, and it cascades. This is the behaviour
+-- hashes exist to remove, pinned here so the improvement cannot silently regress.
+#guard kindOf (run #[mkDecl `D (kind := .definition) (body := "def D := fun x => x"),
+                     mkDecl `T (statement := "P D") (transDeps := #[`D])]
+                  #[mkDecl `D (kind := .definition) (body := "def D := fun y => y"),
+                     mkDecl `T (statement := "P D") (transDeps := #[`D])]) `D
+  == some .bodyChanged
+#guard kindOf (run #[mkDecl `D (kind := .definition) (body := "def D := fun x => x"),
+                     mkDecl `T (statement := "P D") (transDeps := #[`D])]
+                  #[mkDecl `D (kind := .definition) (body := "def D := fun y => y"),
+                     mkDecl `T (statement := "P D") (transDeps := #[`D])]) `T
+  == some .indirect
+
+-- Reindentation, by contrast, was never over-reported: whitespace normalization already covered it
+-- on both paths.
+#guard kindOf (run #[mkDecl `D (kind := .definition) (body := "def D := 1")]
+                   #[mkDecl `D (kind := .definition) (body := "def D :=\n  1")]) `D
+  == some .unchanged
+
+/-! ### Indirect invalidation, and what is left when nothing accounts for it
+
+A deep hash moves when anything in the closure moves, so it cannot on its own distinguish "this
+statement changed" from "something under it did". The closure supplies the attribution, and what it
+cannot attribute is reported as coming from outside rather than left unexplained. -/
+
+private def hashedBefore : Array DeclInfo := #[
+  mkHashed `D "d1" (kind := .definition) (body := "def D := 1"),
+  mkHashed `T "t1" (statement := "P D") (transDeps := #[`D]),
+  mkHashed `U "u1" (statement := "P")
+]
+
+private def hashedAfter : Array DeclInfo := #[
+  mkHashed `D "d2" (kind := .definition) (body := "def D := 2"),
+  -- Untouched as text; its hash moved because `D`'s did.
+  mkHashed `T "t2" (statement := "P D") (transDeps := #[`D]),
+  mkHashed `U "u1" (statement := "P")
+]
+
+#guard kindOf (run hashedBefore hashedAfter) `T == some .indirect
+#guard ((run hashedBefore hashedAfter).changes.find? (·.name == `T)).map (·.causes) == some #[`D]
+#guard kindOf (run hashedBefore hashedAfter) `U == some .unchanged
+
+-- Nothing in the project accounts for `T`'s hash moving, so the cause is upstream — a Mathlib bump
+-- under a statement nobody edited. The text comparison cannot see this case at all.
+#guard kindOf (run #[mkHashed `T "t1" (statement := "P")]
+                   #[mkHashed `T "t2" (statement := "P")]) `T
+  == some .upstream
+
+-- And an upstream change is itself a cause: when `D` moved underneath and `T` is stated about `D`,
+-- the reader is told about `D` rather than about "something upstream", which is the more useful of
+-- the two true answers.
+#guard kindOf (run #[mkHashed `D "d1" (kind := .definition) (body := "def D := c"),
+                     mkHashed `T "t1" (statement := "P D") (transDeps := #[`D])]
+                  #[mkHashed `D "d2" (kind := .definition) (body := "def D := c"),
+                     mkHashed `T "t2" (statement := "P D") (transDeps := #[`D])]) `T
+  == some .indirect
+#guard kindOf (run #[mkHashed `D "d1" (kind := .definition) (body := "def D := c"),
+                     mkHashed `T "t1" (statement := "P D") (transDeps := #[`D])]
+                  #[mkHashed `D "d2" (kind := .definition) (body := "def D := c"),
+                     mkHashed `T "t2" (statement := "P D") (transDeps := #[`D])]) `D
+  == some .upstream
+
+/-! ### Falling back
+
+Per declaration, not per report: an old baseline, or a hash file that does not cover everything,
+costs a partial upgrade rather than the whole thing. -/
+
+-- One side unhashed: compared as text, and the text says the statement moved.
+#guard kindOf (run #[mkDecl `T (statement := "P")] #[mkHashed `T "h1" (statement := "Q")]) `T
+  == some .statementChanged
+
+-- The same declaration hashed on both sides would be `unchanged` here; unhashed, the reprinting is
+-- reported. Both are the right answer for the evidence available, which is why the page says which
+-- one it used.
+#guard kindOf (run #[mkDecl `T (statement := "∀ (x : α), P x")]
+                   #[mkDecl `T (statement := "∀ {x : α}, P x")]) `T
+  == some .statementChanged
+
+private def mixedReport : DiffReport :=
+  run #[mkHashed `A "a1", mkDecl `B] #[mkHashed `A "a1", mkDecl `B]
+
+#guard mixedReport.comparisons == 2
+#guard mixedReport.hashedComparisons == 1
+#guard mixedReport.usedHashes
+#guard !mixedReport.fullyHashed
+#guard (run #[mkHashed `A "a1"] #[mkHashed `A "a1"]).fullyHashed
+#guard !(run #[mkDecl `A] #[mkDecl `A]).usedHashes
+
+/-! ### The churn warning, and why it is switched off under hashes
+
+`looksLikeToolchainChurn` exists to say that the text comparison has stopped meaning anything. With
+hashes on both sides the failure it warns about cannot occur, so warning about it would be telling
+the reader to distrust a measure that is fine. -/
+
+private def churnOld : Array DeclInfo :=
+  (Array.range 60).map fun i => mkDecl (Name.mkSimple s!"D{i}") (statement := "∀ (x : α), P x")
+
+private def churnNew : Array DeclInfo :=
+  (Array.range 60).map fun i => mkDecl (Name.mkSimple s!"D{i}") (statement := "∀ {x : α}, P x")
+
+#guard (run churnOld churnNew).looksLikeToolchainChurn
+
+private def churnOldHashed : Array DeclInfo :=
+  (Array.range 60).map fun i =>
+    mkHashed (Name.mkSimple s!"D{i}") "h1" (statement := "∀ (x : α), P x")
+
+private def churnNewHashed : Array DeclInfo :=
+  (Array.range 60).map fun i =>
+    mkHashed (Name.mkSimple s!"D{i}") "h1" (statement := "∀ {x : α}, P x")
+
+-- Not merely un-warned: correctly reported as a library that did not change.
+#guard !(run churnOldHashed churnNewHashed).looksLikeToolchainChurn
+#guard (run churnOldHashed churnNewHashed).isEmpty
+
+/-! ### Rename evidence
+
+A matching hash is stronger evidence than a matching pretty-printing: it survives the renamed
+declaration's *dependencies* being renamed too, which is the case a textual match misses. -/
+
+-- Renamed, and its statement mentions something that was renamed with it, so the two statements do
+-- not read alike. The hash matches anyway.
+#guard (run #[mkHashed `Old "h1" (statement := "P OldDef")]
+            #[mkHashed `New "h1" (statement := "P NewDef")]).renamed == #[(`Old, `New)]
+
+-- The two keyspaces do not meet: an unhashed removal is not matched against a hashed addition on
+-- the strength of a coinciding statement, because the evidence claimed would not be the evidence
+-- held.
+#guard (run #[mkDecl `Old (statement := "P")]
+            #[mkHashed `New "h1" (statement := "P")]).renamed == (#[] : Array (Name × Name))
 
 end Referee.Test.Diff

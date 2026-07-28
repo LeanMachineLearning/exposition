@@ -41,7 +41,10 @@ Features:
   case no textual diff of the repository can show — the results *invalidated indirectly*, whose own
   statements are untouched but whose meaning rests on a definition that moved. Proof-only changes
   are collapsed and stated to need no re-reading, on the same ground the trust page gives for
-  upstream proofs: the kernel rechecked them
+  upstream proofs: the kernel rechecked them. Given `--hashes`, the comparison is made on
+  [semantic hashes](#semantic-hashes) of the elaborated terms rather than on pretty-printed types,
+  which makes a toolchain upgrade a non-event and adds the case no text comparison can see at all:
+  a statement whose meaning moved because the *upstream* code it is about was rebuilt underneath it
 - per-declaration standalone Lean files (under `extracted/`), each self-contained with its transitive
   dependencies inlined and theorem proofs replaced by `sorry`, optionally linked into the
   [live.lean-lang.org](https://live.lean-lang.org) web editor (see `--site-url`)
@@ -73,7 +76,7 @@ environment produces **data**, and rendering is a pure function of that data.
 
 | phase | needs `lake env`? | produces |
 |---|---|---|
-| `collect` | yes | `data.json` — declarations, dependencies, docstrings, axioms, `sorry` status |
+| `collect` | yes | `data.json` — declarations, dependencies, docstrings, axioms, `sorry` status, and (given `--hashes`) semantic hashes |
 | `extract` | yes | `extracted/*.lean` — the self-contained minimal file per declaration |
 | `highlight` | yes | `highlighting/*.json` — interactive Lean for each project module |
 | `highlight-extracted` | yes | `extracted-highlighting/*.json` — interactive Lean for each minimal file, **and whether it compiles** |
@@ -209,6 +212,13 @@ file for the declarations whose readable version does not compile. See
   meaning moved, and a Browse column and filter. Omit it and the site says nothing about revisions
   at all
 - `--baseline-label S`: what to call the baseline on the page (default: its file name)
+- `--hashes PATH`: JSONL written by [`semantic_hash export`](#semantic-hashes), giving each
+  declaration a rename-invariant structural hash of its elaborated term. Unlike the two flags
+  above this one is read by `collect`, not by `build-site`: the hashes are a property of the
+  compiled environment, so they belong in `data.json` beside everything else derived from it. They
+  become the key revision comparisons are made on instead of pretty-printed types — which removes
+  the one failure the text comparison cannot survive, a toolchain upgrade changing how every
+  statement prints at once. Optional, and absent it nothing behaves differently
 - `--title TITLE`: override the site title
 - `--output DIR`: output directory passed through to Verso
 - `--exclude-lib NAME`: root library to skip when importing the target project
@@ -244,9 +254,11 @@ file for the declarations whose readable version does not compile. See
   are all the browser's; this is only the data they run on.
 - `Referee/Diff.lean` — the revision comparison (`--baseline`): a pure function of two
   `CollectedData` values, with no environment and no notion of a page. Classifies each declaration
-  as statement-changed, body-changed, indirectly invalidated, proof-only, added or unchanged,
-  propagating meaning changes along `transDeps` and nothing else along anything. Fully unit-tested
-  in `Test/Diff.lean`, which is affordable precisely because it is pure.
+  as statement-changed, body-changed, indirectly invalidated, changed-underneath, proof-only, added
+  or unchanged. Prefers semantic hashes where both revisions carry them — the hash decides *whether*
+  the meaning moved, the text decides *where* — and falls back to comparing text per declaration
+  where they do not. Fully unit-tested in `Test/Diff.lean`, which is affordable precisely because it
+  is pure.
 - `Referee/Extract.lean` — the standalone `.lean` file extraction (see `KNOWN-ISSUES.md`).
 - `Referee/Highlight.lean` — source-text highlighting. Runs the Lean frontend over a file and
   returns SubVerso `Highlighted` per command, tagged with the names each command defines, plus any
@@ -391,22 +403,81 @@ than across the dependency graph:
 - **proof-only changes** need no re-reading at all, and the page says so — this is where the bulk of
   any real revision lands, and telling a referee what they may skip is half the value.
 
-Three things bound what the comparison claims, all of them stated on the page itself:
+### What The Comparison Is Made On
 
-- **Statements are compared as elaborated types** (`expandedSignature`), which is the only field
-  that is right in both directions: reformatting and renamed bound variables do not count, and an
-  edited `variable` line does — it changes a theorem's statement without touching a character of its
-  own source text.
-- **Bodies are compared as source text**, because nothing elaborated is recorded for them. That
-  over-reports: reindenting a definition counts as a change. The direction is deliberate — the cost
-  is a page of extra reading rather than a missed invalidation.
-- **A toolchain upgrade between the two collections invalidates the whole comparison**, since it can
-  change how every type pretty-prints at once. `build-site` warns when the diff has that shape
-  (nearly every statement reported as changed) and the page says so rather than telling the reader
-  to re-audit the library.
+By default, text: statements as `expandedSignature` (the pretty-printed *elaborated* type, which is
+right in both directions — reformatting does not count, and an edited `variable` line does) and
+bodies as source text, since nothing elaborated is recorded for them.
 
-Extraction compile status is not compared: it lives in the `extracted-highlighting/` output rather
-than in `data.json`, so it is out of range for a diff of two collected-data files.
+Given `--hashes`, **semantic hashes** instead, and this is much the better measure. See
+[Semantic Hashes](#semantic-hashes) below for how to produce the file. Three things change:
+
+- **A toolchain upgrade stops mattering.** It is the failure mode the text comparison cannot
+  survive: a Lean bump can change how every type in a library pretty-prints at once, and the page
+  then tells the reader to re-audit everything. A structural hash of the elaborated term is
+  unaffected. Without hashes, `build-site` warns when a diff has that shape (nearly every statement
+  reported as changed); with them, the warning is switched off because the failure cannot occur.
+- **Bodies stop being over-reported.** Whitespace normalization always covered reindentation, but
+  not renaming a variable inside a definition or adding a comment to it — and because a body change
+  propagates along the closure, one renamed binder invalidated every theorem stated about that
+  definition. Measured on this repository: an alpha-renamed lambda in one `def` is reported as a
+  changed definition by the text comparison and as no change at all by the hash.
+- **A fourth category appears.** The hash is *deep* — a referenced constant contributes its own
+  hash — so it moves when anything in a declaration's closure moves, including code outside the
+  project. Where the meaning changed and no exposed declaration accounts for it, the page reports
+  **meaning changed underneath**: an upstream package the project was rebuilt against, or
+  unexposed project code. The text comparison cannot detect this case at all.
+
+What a hash cannot say is *where* the change was, so the textual keys stay on for attribution:
+they are what separate a statement that moved from one that merely rests on something that did.
+The fallback is per declaration, so an old baseline or a partial hash file costs a partial upgrade
+rather than the whole thing, and the page names which measure it used.
+
+Two limits, both stated on the page:
+
+- **Hashes are 64-bit**, so two different meanings can in principle collide and be reported as
+  unchanged. For a library of a few thousand declarations that is on the order of one chance in a
+  trillion, and it is the only direction in which the comparison under-reports.
+- **Extraction compile status is not compared**: it lives in the `extracted-highlighting/` output
+  rather than in `data.json`, so it is out of range for a diff of two collected-data files.
+
+## Semantic Hashes
+
+[`semantic_hash`](https://github.com/mathlib-initiative/semantic_hash) computes rename-invariant
+structural hashes of every constant in a Lean environment. Referee reads its output and stores two
+hashes per declaration, which become the key revision comparisons and audit fingerprints are made
+on. It is optional: without it everything works as it did, on text.
+
+It is a **separate tool, not a dependency of this one**. It enforces a toolchain match against the
+project it reads, exactly as Referee does, and taking it as a Lake dependency would mean a third
+toolchain that also has to line up. A file on disk has no such constraint, and it keeps the phase
+boundary the pipeline is built on: what needs an environment produces data, and what follows is a
+pure function of it.
+
+```bash
+git clone https://github.com/mathlib-initiative/semantic_hash
+cd semantic_hash
+echo "$(tr -d '[:space:]' < /path/to/target-repo/lean-toolchain)" > lean-toolchain
+lake build semantic_hash
+
+cd /path/to/target-repo
+/path/to/semantic_hash/.lake/build/bin/semantic_hash export \
+  --dir . --imports MyLibrary --output hashes.jsonl
+
+lake env "$REFEREE" collect --root MyLibrary --hashes hashes.jsonl --data data.json
+```
+
+`--imports` takes the same root modules `collect` exposes. The tool hashes every constant reachable
+from them — for a Mathlib-based project that is the whole upstream cone, which is what makes the
+hashes deep enough to be worth having; `collect` keeps only the exposed declarations' entries. It
+pins its own `lean-toolchain`, so overwrite it with the target project's: as of this writing it
+builds unpatched on `v4.33.0-rc1` against a `v4.30.0` pin, and it has no dependencies beyond Lean
+and `Std`, so a version bump is cheap when it is needed at all.
+
+Cost is negligible next to `collect`: 237k constants hashed in about 7 seconds on 32 cores.
+
+Both revisions have to carry hashes for a comparison to use them — collecting only the new one
+leaves the diff on the text path, and says so.
 
 [`PROPOSED-TOOLS.md`](PROPOSED-TOOLS.md) records the design, including the parts deliberately not
 built.

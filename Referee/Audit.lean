@@ -106,27 +106,25 @@ structure AuditControlData where
   closure : Array LinkInfo := #[]
 deriving Repr, Inhabited, ToJson, FromJson
 
-/-- A fingerprint of the collected declarations: their names paired with the statements they had.
+/-- A fingerprint of the collected declarations: their names paired with what they meant.
 
 Stamped into an exported audit file so that re-importing it somewhere else can say whether it was
 made against this build. Deliberately covers statements and not proofs — re-proving a theorem does
 not invalidate a reader's acceptance of it, for the same reason the revision diff collapses
 proof-only changes.
 
+Uses each declaration's proof-irrelevant semantic hash where the build has one, and falls back to
+`statementKey` where it does not. That is the same preference `Referee.Diff` makes and for the same
+reason: without it, a toolchain upgrade repretty-prints every type and an audit file made the day
+before stops recognizing the build it was made against, reporting a library nobody touched as
+entirely unread. Names are still mixed in, so this identifies a *build* rather than a meaning.
+
 Not a cryptographic hash and not trying to be: it distinguishes builds, it does not authenticate
 them. Nothing in the audit file is authenticated — see the note on that in `assets/audit.js`. -/
 def dataFingerprint (decls : Array DeclInfo) : String :=
   let h := decls.foldl (init := (0xcbf29ce484222325 : UInt64)) fun acc decl =>
-    mixHash acc (hash (decl.name.toString ++ "\x00" ++ statementKey decl))
-  -- Base 16, fixed width, so it reads as an identifier rather than as a number someone might
-  -- compare with `<`.
-  let digits := "0123456789abcdef"
-  let rec go (n : UInt64) (fuel : Nat) (acc : String) : String :=
-    match fuel with
-    | 0 => acc
-    | fuel + 1 =>
-      let d := (n % 16).toNat
-      go (n / 16) fuel (String.singleton (digits.get ⟨d⟩) ++ acc)
-  go h 16 ""
+    let meaning := decl.proofIrrelHash?.getD (statementKey decl)
+    mixHash acc (hash (decl.name.toString ++ "\x00" ++ meaning))
+  hex16 h
 
 end Referee

@@ -75,6 +75,13 @@ structure Cli where
   baselinePath : Option String := none
   /-- What to call the baseline on the page (`--baseline-label`). Defaults to the file name. -/
   baselineLabel : Option String := none
+  /-- A `semantic_hash export` JSONL file to read declaration hashes from (`--hashes`).
+
+  A `collect`-time input rather than a render-time flag, unlike `--trust` and `--baseline`: the
+  hashes are a property of the compiled environment, so they belong in `data.json` beside every
+  other thing derived from it. Optional — without it every hash is `none` and the revision diff
+  compares text, exactly as it did before the field existed. -/
+  hashesPath : Option String := none
 deriving Repr
 
 /-- Classification of exposed Lean declarations. -/
@@ -332,6 +339,27 @@ structure DeclInfo where
   unproved in it surfaces as a `sorry` or an extra axiom, both of which `axioms` already reports
   transitively. What cannot be checked for you is an upstream *definition* your statement is about. -/
   upstreamPackages : Array Name := #[]
+  /-- The declaration's rename-invariant *semantic* hash, read from a `semantic_hash export` file
+  (`collect --hashes`). Fixed-width hex, so it reads as an identifier rather than as a number
+  someone might compare with `<`.
+
+  Structural over the elaborated `Expr`, and — the property everything downstream rests on —
+  **deep**: a referenced constant contributes *its* hash rather than its name, so this changes when
+  the meaning of anything in the declaration's closure changes, upstream included. Invariant to
+  renaming, to binder names, to `mdata`, and to how anything pretty-prints.
+
+  `none` for a project collected without `--hashes`, and for any declaration the export did not
+  cover; `Referee.Diff` falls back to comparing text per declaration, so absence degrades rather
+  than breaks. -/
+  semanticHash? : Option String := none
+  /-- The same hash with theorem bodies hidden, so a theorem hashes by its *proposition*: proof
+  subterms contribute the hash of the proposition they prove rather than of the term.
+
+  This is `graphDeps` computed at the `Expr` level by an independent implementation — a theorem's
+  proof-irrelevant hash depends on its statement's closure and on nothing its proof merely calls —
+  which is why the revision diff can use it directly as "did the meaning move". The pair
+  (`semanticHash?` differs, this one does not) is exactly a proof-only change. -/
+  proofIrrelHash? : Option String := none
   deps : Array Name
   typeDeps : Array Name := #[]
   usedBy : Array Name := #[]
@@ -456,8 +484,9 @@ decode error when handed a JSON file written by an older `collect`.
 - 2: adds `DeclInfo.hasOwnSorry` and `DeclInfo.axioms`
 - 3: adds `DeclInfo.docText?`
 - 4: adds `DeclInfo.specifies` and `DeclInfo.specifiedBy`
-- 5: adds `CollectedData.packages` and `DeclInfo.upstreamPackages` -/
-def collectedDataVersion : Nat := 5
+- 5: adds `CollectedData.packages` and `DeclInfo.upstreamPackages`
+- 6: adds `DeclInfo.semanticHash?` and `DeclInfo.proofIrrelHash?` -/
+def collectedDataVersion : Nat := 6
 
 /-- The full result of the `collect` subcommand's analysis, persisted as JSON so `extract`
 and `build-site` can run without re-importing the target project. `moduleOrder` and
@@ -529,6 +558,10 @@ def usage : String :=
     "                       reader of that revision has to read again. Omit it and the site says",
     "                       nothing about revisions",
     "  --baseline-label S   What to call the baseline on the page (default: its file name)",
+    "  --hashes PATH        JSONL written by `semantic_hash export`, giving each declaration a",
+    "                       rename-invariant semantic hash. Read by `collect` and stored in the",
+    "                       data file, where it becomes the key the revision diff compares on",
+    "                       instead of pretty-printed types. Optional",
     "  --module NAME        Internal: the module `highlight-module` should process",
     "  --input FILE         Internal: the file `highlight-file` should process",
   ]
@@ -580,6 +613,9 @@ def parseArgs : List String → Except String Cli
   | "--baseline-label" :: label :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with baselineLabel := some label }
+  | "--hashes" :: path :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with hashesPath := some path }
   | flag :: _ =>
       .error s!"Unknown or incomplete option: {flag}\n\n{usage}"
 
@@ -1660,6 +1696,83 @@ def attachSpecifiedBy (decls : Array DeclInfo) : Array DeclInfo :=
         let back : SpecLink := { name := decl.name, comment := link.comment }
         acc.insert link.name ((acc.getD link.name #[]).push back)
   decls.map fun decl => { decl with specifiedBy := rev.getD decl.name #[] }
+
+/-! ## Semantic hashes
+
+Read from a JSONL file produced by [`semantic_hash export`](https://github.com/mathlib-initiative/semantic_hash),
+one `{"name": ..., "hash": ..., "proofIrrelHash": ...}` object per line. That tool is run separately,
+against the same project, and is not a build dependency of this one — which is deliberate. It
+enforces a toolchain match against the project it reads, exactly as this tool does, and taking it as
+a Lake dependency would mean a *third* toolchain that also has to line up. A file on disk has no
+such constraint, and keeps the phase boundary the pipeline is built on: everything that needs the
+environment produces data, and everything downstream is a pure function of it.
+
+The hashes matter to Referee for one reason. `expandedSignature` is a *pretty-printed* elaborated
+type, and a toolchain upgrade can change how every type in a library prints at once — which turns
+the revision diff into a page telling the reader to re-audit everything. A structural hash of the
+`Expr` cannot do that. See `Referee.Diff` for what it is used for and where it is not trusted. -/
+
+/-- Renders a 64-bit hash as fixed-width hex.
+
+Fixed width, and base 16, so the result reads as an identifier rather than as a number someone might
+compare with `<` — these are compared for equality and for nothing else. -/
+def hex16 (n : UInt64) : String :=
+  let hexDigit (d : Nat) : Char :=
+    if d < 10 then Char.ofNat (d + '0'.toNat) else Char.ofNat (d - 10 + 'a'.toNat)
+  let rec go (n : UInt64) (fuel : Nat) (acc : String) : String :=
+    match fuel with
+    | 0 => acc
+    | fuel + 1 => go (n / 16) fuel (String.singleton (hexDigit (n % 16).toNat) ++ acc)
+  go n 16 ""
+
+/-- Reads one hash field of a `semantic_hash` JSONL record.
+
+Accepts a JSON string or a JSON number. Lean serializes `UInt64` as a *decimal string*, since
+JavaScript cannot hold 64 bits in a number, so the string form is what the tool actually writes
+today; the numeric branch is there so that a change of heart upstream degrades to nothing rather
+than to a silently empty hash table. Either way the value is canonicalized to `hex16`, so a file
+written under either convention compares equal to one written under the other. -/
+def parseHashField? (j : Json) : Option String :=
+  let n? : Option Nat :=
+    match j with
+    | .str s => s.toNat?
+    | .num _ => j.getNat?.toOption
+    | _ => none
+  n?.map fun n => hex16 (UInt64.ofNat n)
+
+/-- Declaration ↦ (`hash`, `proofIrrelHash`), read from a `semantic_hash export` JSONL file.
+
+Lines that do not parse are skipped rather than fatal, and the caller reports the coverage it got.
+A hash file is an *optimization of the comparison key*: a partial one costs a partial upgrade, and
+failing the whole collection over a malformed line would trade a good outcome for no outcome. -/
+def readSemanticHashes (path : System.FilePath) : IO (Std.HashMap Name (String × String)) := do
+  let contents ← IO.FS.readFile path
+  let mut out : Std.HashMap Name (String × String) := {}
+  for line in contents.splitOn "\n" do
+    -- No trimming: `Json.parse` already tolerates surrounding whitespace, and a line that is
+    -- nothing but whitespace simply fails to parse and is skipped with the rest.
+    if line.isEmpty then continue
+    let .ok json := Json.parse line | continue
+    let .ok nameStr := json.getObjValAs? String "name" | continue
+    let some hash := (json.getObjVal? "hash").toOption.bind parseHashField? | continue
+    let some proofIrrel :=
+      (json.getObjVal? "proofIrrelHash").toOption.bind parseHashField? | continue
+    let name := nameStr.toName
+    if name.isAnonymous then continue
+    out := out.insert name (hash, proofIrrel)
+  return out
+
+/-- Attaches the semantic hashes to the declarations they name.
+
+A declaration the export does not mention keeps `none` and is compared as text, so this never has
+to be complete to be useful. -/
+def attachSemanticHashes (hashes : Std.HashMap Name (String × String))
+    (decls : Array DeclInfo) : Array DeclInfo :=
+  decls.map fun decl =>
+    match hashes.get? decl.name with
+    | some (hash, proofIrrel) =>
+      { decl with semanticHash? := some hash, proofIrrelHash? := some proofIrrel }
+    | none => decl
 
 /-- Propagates the directly-referenced upstream packages along the project's own dependency edges,
 so that each declaration's `upstreamPackages` covers everything its project-level closure touches.

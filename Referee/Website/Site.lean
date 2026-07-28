@@ -338,13 +338,25 @@ private def changeBodyHtml (row : ChangeRowData) : Html :=
           <p class="change-note">"Its statement rests on these, and they changed:"</p>
           <ul class="change-causes-list">{{links}}</ul>
         </div>}}
+  -- The one kind with nothing to show: no aligned statement, because its text did not move, and no
+  -- causes, because none of them are declarations this site has a page for. Without a sentence
+  -- here its banner would be a bare chip, and a reader on a declaration page has not read the
+  -- section heading on the Changes page that would otherwise explain it.
+  let upstreamHtml :=
+    if row.kind != "upstream" then .empty
+    else {{<p class="change-note">"Nothing about this declaration was edited, and nothing in this
+      project accounts for the change: what moved is upstream code it is stated about, or project
+      code this site does not expose. Reading it again means reading it against the new version of
+      whatever it rests on."</p>}}
   let trustHtml :=
     if row.trustNotes.isEmpty then .empty
     else
       {{<ul class="change-trust">
           {{row.trustNotes.map fun note => {{<li>{{Html.text true note}}</li>}}}}
         </ul>}}
-  {{<div class="change-body">{{diffHtml}}{{statementHtml}}{{causesHtml}}{{trustHtml}}</div>}}
+  {{<div class="change-body">
+      {{diffHtml}}{{statementHtml}}{{causesHtml}}{{upstreamHtml}}{{trustHtml}}
+    </div>}}
 
 /- A list of changes: one section of the Changes page.
 
@@ -1698,6 +1710,7 @@ private def mkChangesPart (report : DiffReport) (ctx : SiteContext) : Part Manua
   let statements := report.ofKind .statementChanged
   let bodies := report.ofKind .bodyChanged
   let indirect := report.ofKind .indirect
+  let upstream := report.ofKind .upstream
   let added := report.ofKind .added
   let proofs := report.ofKind .proofOnly
   -- Only the declarations no earlier section lists. Every row already carries its own trust notes,
@@ -1751,6 +1764,17 @@ private def mkChangesPart (report : DiffReport) (ctx : SiteContext) : Part Manua
         it."
     ]
     blocks := blocks.push list
+  if let some list := listOf upstream then
+    blocks := blocks.push <| .other (Block.sectionHeading
+      s!"Meaning changed underneath ({upstream.size})") #[]
+    blocks := blocks.push <| .para #[
+      .text "Also unchanged as text, and also meaning something different — but nothing this site \
+        shows accounts for it. What moved is outside the exposed declarations: an upstream package \
+        this project was rebuilt against, or project code that is not exposed here. Reading these \
+        again means reading them against the new version of whatever they are about, which is what \
+        the ", .link #[.text "Trust"] "trust/", .text " page is for."
+    ]
+    blocks := blocks.push list
   if let some list := listOf bodies then
     blocks := blocks.push <| .other (Block.sectionHeading
       s!"Definitions changed ({bodies.size})") #[]
@@ -1770,10 +1794,15 @@ private def mkChangesPart (report : DiffReport) (ctx : SiteContext) : Part Manua
         kind := "removed"
         label := if rem.wasClaim then "claim withdrawn" else "removed"
         statement := rem.statement
-        -- Offered as evidence, not as a conclusion: two declarations sharing a statement is a
-        -- fact, and whether it is a rename is the reader's call.
+        -- Offered as evidence, not as a conclusion: two declarations sharing a meaning is a
+        -- fact, and whether it is a rename is the reader's call. What the evidence *is* depends
+        -- on the measure — a matching semantic hash also matches through renamed dependencies,
+        -- which two identical pretty-printings do not — so the note says which one it saw.
         trustNotes := renamedTo.map fun to =>
-          s!"a new declaration, {to}, has an identical statement"
+          if report.usedHashes then
+            s!"a new declaration, {to}, has the same semantic hash"
+          else
+            s!"a new declaration, {to}, has an identical statement"
         : ChangeRowData
       }
     blocks := blocks.push <| .other (Block.sectionHeading
@@ -1826,15 +1855,39 @@ private def mkChangesPart (report : DiffReport) (ctx : SiteContext) : Part Manua
     blocks := blocks.push <| .other (Block.details
       { summary := if proofs.size == 1 then "Show the one proof-only change"
           else s!"Show the {proofs.size} proof-only changes" }) #[list]
-  blocks := blocks.push <| .para #[
-    .bold #[.text "What this comparison can and cannot see. "],
-    .text "Statements are compared as elaborated types, so reformatting and renamed bound variables \
-      do not count as changes and an edited ", .code "variable", .text " line does. Bodies have no \
-      elaborated form here and are compared as source text, which over-reports: reindenting a \
-      definition counts. That is the deliberate direction — the cost is a page of extra reading \
-      rather than a missed invalidation. Whether an extracted file still compiles is not compared \
-      at all, since that lives in the build output rather than in the collected data."
-  ]
+  -- Which measure produced the page, said on the page. "Unchanged" is a much stronger claim when
+  -- it means *the same term* than when it means *printed the same way*, and a reader deciding how
+  -- far to trust the counts above is entitled to know which one they are reading.
+  blocks := blocks.push <| .para <|
+    if report.fullyHashed then
+      #[.bold #[.text "What this comparison can and cannot see. "],
+        .text "Declarations are compared by ", .bold #[.text "semantic hash"],
+        .text " — a structural hash of the elaborated term, taken from ", .code "semantic_hash",
+        .text ". Nothing about how a statement prints reaches it, so reformatting, renamed bound \
+          variables and a Lean upgrade all count as no change at all, while an edited ",
+        .code "variable", .text " line counts as one. The hash is also computed through \
+          dependencies, which is how the two sections above can report a declaration whose own \
+          text is untouched: what a hash cannot say is ",
+        .emph #[.text "where"], .text " the change was, so the source text is still what \
+          separates a statement that moved from one that merely rests on something that did. \
+          Two different meanings can in principle collide on a 64-bit hash and be reported as \
+          unchanged; for a library this size that is on the order of one chance in a trillion, \
+          and it is the only direction in which this page under-reports. Whether an extracted \
+          file still compiles is not compared at all, since that lives in the build output rather \
+          than in the collected data."]
+    else
+      #[.bold #[.text "What this comparison can and cannot see. "],
+        .text "Statements are compared as elaborated types, so reformatting and renamed bound \
+          variables do not count as changes and an edited ", .code "variable", .text " line does. \
+          Bodies have no elaborated form here and are compared as source text, which over-reports: \
+          reindenting a definition is covered, but renaming a variable inside one, or adding a \
+          comment to it, counts as a change to it — and to everything stated about it. That is \
+          the deliberate direction — the cost is a page of extra reading rather than a missed \
+          invalidation. Collecting both revisions with ",
+        .code "--hashes", .text " replaces both comparisons with a structural hash of the \
+          elaborated term, which removes that over-reporting and makes a toolchain upgrade a \
+          non-event. Whether an extracted file still compiles is not compared at all, since that \
+          lives in the build output rather than in the collected data."]
   return {
     title := #[.text "Changes"]
     titleString := "Changes"
@@ -2379,6 +2432,21 @@ private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Wo
   let decls ← collectDecls projectDir rootPrefix ws.root env packages
   let decls := decls |> dropUnsafeDeps |> attachReverseDeps |> attachTransitiveDeps
     |> attachSpecifiedBy |> attachUpstreamPackages
+  -- Semantic hashes, when a `semantic_hash export` file was given. Coverage is reported rather
+  -- than assumed: a hash file collected against a different revision of the project silently
+  -- covers almost nothing, and the count is the only thing that says so before the diff does.
+  let decls ← match cfg.hashesPath with
+    | none => pure decls
+    | some path => do
+      let hashes ← readSemanticHashes path
+      let decls := attachSemanticHashes hashes decls
+      let covered := (decls.filter (·.semanticHash?.isSome)).size
+      IO.println s!"Semantic hashes: {hashes.size} in {path}, covering \
+        {covered} of {decls.size} exposed declarations"
+      if covered == 0 && !decls.isEmpty then
+        IO.eprintln s!"warning: no exposed declaration appears in {path}; revision comparisons \
+          will fall back to comparing pretty-printed types"
+      pure decls
   let excludedNames :=
     (projectConstants env rootPrefix).filterMap fun (name, _, info) =>
       if shouldExpose env rootPrefix name info then none else some name
@@ -2498,13 +2566,22 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
       IO.println s!"Baseline {path}: {report.needingReaudit.size} of {data.decls.size} \
         declarations need re-reading ({(report.ofKind .statementChanged).size} statement, \
         {(report.ofKind .bodyChanged).size} definition, {(report.ofKind .indirect).size} indirect, \
-        {(report.ofKind .added).size} new); {(report.ofKind .proofOnly).size} proof-only and \
-        {report.removed.size} removed"
+        {(report.ofKind .upstream).size} underneath, {(report.ofKind .added).size} new); \
+        {(report.ofKind .proofOnly).size} proof-only and {report.removed.size} removed"
+      IO.println <|
+        if report.fullyHashed then
+          s!"Compared on semantic hashes ({report.comparisons} declarations)"
+        else if report.usedHashes then
+          s!"Compared on semantic hashes for {report.hashedComparisons} of {report.comparisons} \
+            declarations; the rest on pretty-printed types"
+        else
+          s!"Compared on pretty-printed types ({report.comparisons} declarations). Collect both \
+            revisions with --hashes for a comparison a toolchain upgrade cannot disturb"
       if report.looksLikeToolchainChurn then
         IO.eprintln "warning: almost every statement is reported as changed, which is the shape a \
           toolchain upgrade produces rather than an edit. Statements are compared as \
-          pretty-printed elaborated types; collect both revisions on the same toolchain for a \
-          meaningful diff."
+          pretty-printed elaborated types; collect both revisions on the same toolchain, or with \
+          --hashes, for a meaningful diff."
       pure (some report)
   -- Reverse `transDeps`, counted once. Only when there is a baseline: nothing else asks for it.
   let dependentCounts : Std.HashMap Name Nat :=
