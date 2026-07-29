@@ -17,7 +17,7 @@ alongside `--trust` rather than a phase of its own.
 
 ## What counts as a change
 
-The classification is the site's existing meaning/trust split (`graphDeps`) applied across time
+The classification is the site's existing meaning/trust split (`meaningDeps`) applied across time
 instead of across the dependency graph:
 
 - a **statement change** — the declaration's elaborated type differs — invalidates any reading of
@@ -28,7 +28,7 @@ instead of across the dependency graph:
 - an **indirect invalidation** is the case this module exists for. A theorem whose own statement is
   untouched, but whose statement mentions a definition that changed, now *means* something
   different while looking byte-identical. No textual diff of the repository can show that. Closing
-  the changed set over `transDeps` — which already follows `graphDeps` — finds it exactly;
+  the changed set over `dataTransDeps` — which already follows `meaningDeps` — finds it exactly;
 - a **proof-only change** needs no re-reading at all, and saying so is half the point: it is where
   the bulk of any real revision lands.
 
@@ -46,7 +46,7 @@ elaborated `Expr`, and they have three properties nothing derived from text has:
   a library it did not touch;
 - they are *deep* — a referenced constant contributes its own hash — so a declaration's hash moves
   when the meaning of anything in its closure moves, upstream included;
-- the proof-irrelevant variant hides theorem bodies, which is `graphDeps` arrived at independently:
+- the proof-irrelevant variant hides theorem bodies, which is `meaningDeps` arrived at independently:
   a theorem's proof-irrelevant hash rests on its statement's closure and on nothing its proof
   merely calls.
 
@@ -576,8 +576,8 @@ def diff (old new : CollectedData) (baselineLabel : String := "") : DiffReport :
         gainedSpec := decl.isDefinitionLike && prev.specifiedBy.isEmpty && !decl.specifiedBy.isEmpty
         lostSpec := decl.isDefinitionLike && !prev.specifiedBy.isEmpty && decl.specifiedBy.isEmpty
       }
-  -- Pass two: propagate meaning changes along the statement closure. `transDeps` already follows
-  -- `graphDeps`, so this reaches exactly what a declaration's meaning rests on and stops before
+  -- Pass two: propagate meaning changes along the statement closure. `dataTransDeps` follows
+  -- `meaningDeps`, so this reaches exactly what a declaration's meaning rests on and stops before
   -- everything its proofs merely call.
   let declByName : Std.HashMap Name DeclInfo :=
     new.decls.foldl (fun acc d => acc.insert d.name d) {}
@@ -588,7 +588,7 @@ def diff (old new : CollectedData) (baselineLabel : String := "") : DiffReport :
         match declByName.get? change.name with
         | none => change
         | some decl =>
-          let causes := decl.transDeps.filter meaningChanged.contains
+          let causes := decl.dataTransDeps.filter meaningChanged.contains
           if causes.isEmpty then change
           else { change with kind := .indirect, causes := causes }
   -- Removals, and the added declarations that match one.

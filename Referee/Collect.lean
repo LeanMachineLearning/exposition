@@ -22,7 +22,8 @@ signature, docstring, source location and snippet, kind, and dependency lists.
 
 The dependency analysis itself lives in `LeanDeps` — a standalone module that knows nothing about
 this tool's output. This file only decides *which* dependency edges Referee follows
-(`graphDeps`: type-only for theorems) and attaches the results to `DeclInfo`.
+(`meaningDeps` for what a declaration means and rests on, `closureDeps` for the wider extraction
+closure) and attaches the results to `DeclInfo`.
 -/
 
 open Lake
@@ -360,7 +361,7 @@ structure DeclInfo where
   project-level closure names, not the full set it rests on. The site closes them over the Lake
   dependency graph to get that — see the note on upstream packages above for why the two agree.
 
-  Follows `graphDeps`: a theorem contributes what its *statement* mentions, not what its proof
+  Follows `meaningDeps`: a theorem contributes what its *statement* mentions, not what its proof
   calls. An upstream proof is not a trust dependency — the kernel rechecked it, and anything left
   unproved in it surfaces as a `sorry` or an extra axiom, both of which `axioms` already reports
   transitively. What cannot be checked for you is an upstream *definition* your statement is about. -/
@@ -381,15 +382,26 @@ structure DeclInfo where
   /-- The same hash with theorem bodies hidden, so a theorem hashes by its *proposition*: proof
   subterms contribute the hash of the proposition they prove rather than of the term.
 
-  This is `graphDeps` computed at the `Expr` level by an independent implementation — a theorem's
+  This is `meaningDeps` computed at the `Expr` level by an independent implementation — a theorem's
   proof-irrelevant hash depends on its statement's closure and on nothing its proof merely calls —
   which is why the revision diff can use it directly as "did the meaning move". The pair
   (`semanticHash?` differs, this one does not) is exactly a proof-only change. -/
   proofIrrelHash? : Option String := none
   deps : Array Name
   typeDeps : Array Name := #[]
+  /-- `deps` with the proofs inside the value skipped: what the declaration's statement and *data*
+  rest on. See `LeanDeps.dataValueConstants` for why a bundled structure instance's proof fields are
+  not part of its meaning, and `meaningDeps` for where this is used.
+
+  Differs from `deps` only for `def`/`abbrev`/`instance`; equal to it for everything else. -/
+  dataDeps : Array Name := #[]
   usedBy : Array Name := #[]
   transDeps : Array Name := #[]
+  /-- The transitive closure of `meaningDeps`, topologically ordered, as `transDeps` is of
+  `closureDeps`. Kept separate rather than replacing `transDeps` because `Referee.Extract` seeds each
+  standalone file's `keep` set from `transDeps`, and a file whose kept tactic bodies lost the lemmas
+  they call would no longer compile. -/
+  dataTransDeps : Array Name := #[]
   docstringBlock? : Option (Block Manual) := none
 deriving Repr, ToJson, FromJson
 
@@ -424,7 +436,7 @@ def DeclInfo.isClaim (decl : DeclInfo) : Bool :=
 /-- Whether a declaration's *body* is part of what it means, as opposed to being a proof the kernel
 has already checked.
 
-The same rule `trustDepsOf` applies to dependency edges, applied here across revisions instead:
+The same rule `meaningDepsOf` applies to dependency edges, applied here across revisions instead:
 changing a definition's body changes the meaning of every statement about it, while changing a
 theorem's proof changes nothing a reader has to re-read. An `alias` counts as a definition for this
 purpose for the reason recorded on `DeclInfo.isAlias` — its body is kept verbatim. -/
@@ -463,7 +475,7 @@ that call.
 What does need trust is an upstream *definition* that a statement is about. If a theorem's statement
 mentions `Learning.IsAlgEnvSeq`, then what the theorem *means* depends on that definition being the
 intended one, and no proof anywhere settles that — it is the same gap `@[specifies]` exists to
-record, one package up. That is why the edges followed here are `graphDeps`: a theorem contributes
+record, one package up. That is why the edges followed here are `meaningDeps`: a theorem contributes
 its statement, everything else contributes its body too, since a definition's body is its meaning.
 
 What is recorded is deliberately package-granular rather than constant-granular, and the reason is
@@ -511,8 +523,9 @@ decode error when handed a JSON file written by an older `collect`.
 - 3: adds `DeclInfo.docText?`
 - 4: adds `DeclInfo.specifies` and `DeclInfo.specifiedBy`
 - 5: adds `CollectedData.packages` and `DeclInfo.upstreamPackages`
-- 6: adds `DeclInfo.semanticHash?` and `DeclInfo.proofIrrelHash?` -/
-def collectedDataVersion : Nat := 6
+- 6: adds `DeclInfo.semanticHash?` and `DeclInfo.proofIrrelHash?`
+- 7: adds `DeclInfo.dataDeps` and `DeclInfo.dataTransDeps` -/
+def collectedDataVersion : Nat := 7
 
 /-- The full result of the `collect` subcommand's analysis, persisted as JSON so `extract`
 and `build-site` can run without re-importing the target project. `moduleOrder` and
@@ -1418,6 +1431,7 @@ def dropUnsafeDeps (decls : Array DeclInfo) : Array DeclInfo :=
   decls.map fun d => { d with
     deps := d.deps.filter isJsonSafeName
     typeDeps := d.typeDeps.filter isJsonSafeName
+    dataDeps := d.dataDeps.filter isJsonSafeName
   }
 
 /-- Helper for runCoreIO. -/
@@ -1570,22 +1584,51 @@ def loadedPackagesOf (env : Environment) (packages : Array PackageInfo) : Array 
     | none => acc
   acc.toArray.qsort Name.lt
 
-/-- The trust-relevant dependency edges of a declaration: the ones `graphDeps` picks, computed from
-the raw `LeanDeps` result before a `DeclInfo` exists to ask. -/
-def trustDepsOf (kind : DeclKind) (isAlias : Bool) (deps typeDeps : Array Name) : Array Name :=
+/-- The edges the project-local *closure* follows: type-only for theorems, type and body for
+everything else. Computed from the raw `LeanDeps` result, before a `DeclInfo` exists to ask.
+
+This is the wider of the two edge choices and exists for one consumer: `transDeps`, which
+`Referee.Extract` seeds each standalone file from. A file whose kept tactic bodies lost the lemmas
+they call would not compile, so this must stay closed over proofs. Everything that asks what a
+declaration *means* or what a reader must *trust* uses `meaningDepsOf` instead. -/
+def closureDepsOf (kind : DeclKind) (isAlias : Bool) (deps typeDeps : Array Name) : Array Name :=
   if kind == .theorem && !isAlias then typeDeps else deps
+
+/-- The edges *meaning and trust* follow: nothing a proof merely calls.
+
+Three cases, one principle. A theorem contributes its statement, not its proof — the kernel already
+checked the proof, and anything left unproved in it arrives as a `sorry` or an extra axiom, both
+reported transitively elsewhere. A definition contributes its type and the *data* in its value, but
+not the proofs embedded in it: the obligations of a bundled structure (`left_inv`, `map_add'`, …)
+are kernel-checked in exactly the same way and say nothing about what the definition means. An
+`alias` contributes its value regardless, because it is emitted verbatim and its target is a genuine
+dependency of the text.
+
+An empty `dataDeps` beside a non-empty `deps` means the analysis was not run — `DeclInfo.dataDeps`
+defaults to `#[]`, and a genuinely computed one is empty only when `deps` is, since it always
+contains the type's constants. That case falls back to `deps`, so a `DeclInfo` built by hand (or
+decoded from data an older `collect` wrote) reports too much rather than too little. Which way it
+errs matters here and nowhere else: under-reporting would tell a reader they do not rest on code
+they do. -/
+def meaningDepsOf (kind : DeclKind) (isAlias : Bool) (deps typeDeps dataDeps : Array Name) :
+    Array Name :=
+  if isAlias then deps
+  else if kind == .theorem then typeDeps
+  else if dataDeps.isEmpty then deps
+  else dataDeps
 
 /-- Every constant outside the project that some declaration's *statement* names, paired with the
 package it comes from.
 
 Collected so that a declaration's dependency graph can show the upstream declarations it rests on,
-not merely count them. Restricted to the trust-relevant edges (`trustDepsOf`) and to constants that
+not merely count them. Restricted to the meaning edges (`meaningDepsOf`) and to constants that
 resolve to a package: this is the set that can appear as a node, and collecting all of `deps` instead
 would multiply it by every proof-only reference, none of which the graph shows. -/
 def externalPackageMap (env : Environment) (packages : Array PackageInfo) (rootPrefix : Name)
     (decls : Array DeclInfo) : Array (Name × Name) :=
   let acc := decls.foldl (init := ({} : Std.HashMap Name Name)) fun acc decl =>
-    (trustDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps).foldl (init := acc) fun acc dep =>
+    (meaningDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps decl.dataDeps).foldl
+      (init := acc) fun acc dep =>
       if acc.contains dep then acc
       else match moduleNameOf env dep with
         | none => acc
@@ -1616,7 +1659,11 @@ kind, `sorry` status — is computed here. -/
 def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     (pkg : Lake.Package) (env : Environment) (packages : Array PackageInfo := #[]) :
     IO (Array DeclInfo) := do
-  let depsCtx := LeanDeps.Context.of env rootPrefix
+  -- `withDataValueConsts` is what lets `declDeps` report `dataDeps`; without it every `dataDeps`
+  -- would silently equal `deps` and the graph would be unchanged. It needs `MetaM` because deciding
+  -- whether a constructor field is `Prop`-valued is a typing question.
+  let depsCtx ← runCoreIO env
+    (Lean.Meta.MetaM.run' (LeanDeps.Context.of env rootPrefix).withDataValueConsts)
   let declAxioms ← axiomsOfDecls env (depsCtx.constants.filterMap fun (name, _, _) =>
     if depsCtx.exposed.contains name then some name else none)
   let simpTheorems ← runCoreIO env Lean.Meta.getSimpTheorems
@@ -1698,12 +1745,14 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       isAlias := isAliasFromSource source? lines
       specifies := specsByTheorem.getD name #[]
       -- One level here; `attachUpstreamPackages` propagates it along the project's own edges.
-      -- The edges `graphDeps` picks: a theorem's *statement*, everything else's body too. A
+      -- The edges `closureDeps` picks: a theorem's *statement*, everything else's body too. A
       -- theorem's proof is not a trust dependency — the kernel checked it.
       upstreamPackages := directUpstreamPackages env packages rootPrefix
-        (trustDepsOf kind (isAliasFromSource source? lines) declDeps.deps declDeps.typeDeps)
+        (meaningDepsOf kind (isAliasFromSource source? lines) declDeps.deps declDeps.typeDeps
+          declDeps.dataDeps)
       deps := declDeps.deps
       typeDeps := declDeps.typeDeps
+      dataDeps := declDeps.dataDeps
       docstringBlock? := docstringBlock?
     }
     decls := decls.push decl
@@ -1714,7 +1763,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
 Each of these is a thin adapter that projects `decls` onto the plain `(name, deps)` graph the
 `LeanDeps` passes work on, runs the pass, and writes the result back into the corresponding
 `DeclInfo` field. What varies between them is only *which* edges they follow — full `deps` for
-`usedBy`, `graphDeps` for the transitive closure.
+`usedBy`, `closureDeps` for the extraction closure and `meaningDeps` for the meaning closure.
 -/
 
 /-- Adds reverse dependency links (`usedBy`) between exposed declarations, sorted by name. -/
@@ -1722,13 +1771,22 @@ def attachReverseDeps (decls : Array DeclInfo) : Array DeclInfo :=
   let rev := LeanDeps.reverseDeps (decls.map fun decl => (decl.name, decl.deps))
   decls.map fun decl => { decl with usedBy := (rev.getD decl.name #[]).qsort Name.lt }
 
-/-- The dependency set a declaration "counts" for graph/closure purposes: only `typeDeps` for
-theorems (their proofs are not part of what a reader must trust further) and `deps` (type + body)
-for everything else. An `alias`, though a theorem, keeps its body verbatim during extraction, so it
-follows `deps` too. Shared by `attachTransitiveDeps` (the declaration detail page) and the
-dependency graph, so both agree on what counts as a dependency. -/
-def graphDeps (decl : DeclInfo) : Array Name :=
-  trustDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps
+/-- `closureDepsOf` for a `DeclInfo`. Drives `transDeps`, and through it extraction; also the two
+places that legitimately need to see through proofs — the `sorry` chain (a `sorry` reached only by a
+proof is still a real gap) and the module-level graph (which is about what a module needs in order to
+build, not about what it means). -/
+def closureDeps (decl : DeclInfo) : Array Name :=
+  closureDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps
+
+/-- `meaningDepsOf` for a `DeclInfo`: what the declaration claims and what that claim rests on, with
+every proof dropped.
+
+This is what the site follows nearly everywhere — the dependency graph and its node set
+(`dataTransDeps`), the upstream-trust analysis, the audit closure and its reading queues, and the
+revision diff's meaning propagation. All of them ask a version of "what must I accept in order to
+believe this", and the answer never includes a lemma some proof merely called. -/
+def meaningDeps (decl : DeclInfo) : Array Name :=
+  meaningDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps decl.dataDeps
 
 /-- Adds the reverse of the `@[specifies]` links: each definition learns which of the exposed
 theorems its author declared to be part of its specification.
@@ -1825,17 +1883,17 @@ def attachSemanticHashes (hashes : Std.HashMap Name (String × String))
 /-- Propagates the directly-referenced upstream packages along the project's own dependency edges,
 so that each declaration's `upstreamPackages` covers everything its project-level closure touches.
 
-Follows `graphDeps`, the same edges the rest of the site follows, for the reason recorded there: a
-theorem's proof is not something a reader has to trust further, because the kernel checked it. What
-a reader must take on faith from upstream is a *definition* appearing in a statement — and for a
-definition, its body is part of its meaning, which is why `graphDeps` keeps body edges for
-everything that is not a theorem.
+Follows `meaningDeps`, the same edges the rest of the trust analysis follows, for the reason recorded
+there: a proof is not something a reader has to trust further, because the kernel checked it. What a
+reader must take on faith from upstream is a *definition* their statements are about — so a package
+reached only by a lemma that some proof called is not a package this declaration rests on, whether
+that proof is a theorem's or one bundled into a definition's value.
 
 Reuses `LeanDeps.transitiveDeps` for the closure rather than iterating a fixpoint: the closure is
 over 784-ish project declarations, not over the environment, so it is cheap and already written. -/
 def attachUpstreamPackages (decls : Array DeclInfo) : Array DeclInfo :=
   let depsMap : Std.HashMap Name (Array Name) :=
-    decls.foldl (fun acc decl => acc.insert decl.name (graphDeps decl)) {}
+    decls.foldl (fun acc decl => acc.insert decl.name (meaningDeps decl)) {}
   let ownPkgs : Std.HashMap Name (Array Name) :=
     decls.foldl (fun acc decl => acc.insert decl.name decl.upstreamPackages) {}
   decls.map fun decl =>
@@ -1844,12 +1902,26 @@ def attachUpstreamPackages (decls : Array DeclInfo) : Array DeclInfo :=
       (ownPkgs.getD name #[]).foldl (init := acc) (·.insert ·)
     { decl with upstreamPackages := acc.toArray.qsort Name.lt }
 
-/-- Adds the transitive closure of `deps` to each declaration as `transDeps`, topologically ordered
-so that every dependency precedes the declarations that use it (suitable for emitting a minimal
-standalone Lean file). See `graphDeps` for which dependencies are followed. -/
+/-- Adds the transitive closure of `closureDeps` to each declaration as `transDeps`, topologically
+ordered so that every dependency precedes the declarations that use it (suitable for emitting a
+minimal standalone Lean file).
+
+This is the *extraction* closure and is deliberately wider than what the site reports: see
+`dataTransDeps` for the meaning closure the reader is shown. -/
 def attachTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
   let depsMap : Std.HashMap Name (Array Name) :=
-    decls.foldl (fun acc decl => acc.insert decl.name (graphDeps decl)) {}
+    decls.foldl (fun acc decl => acc.insert decl.name (closureDeps decl)) {}
   decls.map fun decl => { decl with transDeps := LeanDeps.transitiveDeps depsMap decl.name }
+
+/-- Adds the transitive closure of `meaningDeps` as `dataTransDeps`, exactly as
+`attachTransitiveDeps` does for `closureDeps`.
+
+This is the node set of a declaration's dependency graph: the declarations its *meaning* rests on.
+Computed here rather than at render time so that the graph and the closure listings cannot disagree
+about what counts, which is the same reason `transDeps` is precomputed. -/
+def attachDataTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
+  let depsMap : Std.HashMap Name (Array Name) :=
+    decls.foldl (fun acc decl => acc.insert decl.name (meaningDeps decl)) {}
+  decls.map fun decl => { decl with dataTransDeps := LeanDeps.transitiveDeps depsMap decl.name }
 
 end Referee

@@ -854,7 +854,7 @@ private structure SiteContext where
   diff? : Option DiffReport := none
   /-- Declaration ↦ how it changed, empty without a baseline. -/
   changes : Std.HashMap Name DeclChange := {}
-  /-- Declaration ↦ how many other declarations' *meaning* rests on it: the reverse of `transDeps`,
+  /-- Declaration ↦ how many other declarations' *meaning* rests on it: the reverse of `dataTransDeps`,
   counted once rather than per lookup. Built only when there is a baseline, since nothing else on
   the site asks for it. -/
   dependentCounts : Std.HashMap Name Nat := {}
@@ -935,8 +935,8 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
 themselves in `decls`. Each edge points from a dependency (the "parent") to the declaration
 that depends on it (the "child"), so the arrow direction follows the order in which the
 declarations must be established. `depsOf` picks which dependency set each edge follows: pass
-`graphDeps` (type-only for theorems) on declaration detail pages, to match their transitive
-closure, or `(·.deps)` (always type + body) for the full-repository graph. -/
+`meaningDeps` on declaration detail pages, to match their `dataTransDeps` closure, or `(·.deps)`
+(always type + body) for the full-repository graph. -/
 private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String)
     (depsOf : DeclInfo → Array Name) (focus? : Option Name := none) : GraphData :=
   let names : Std.HashSet Name := decls.foldl (fun acc d => acc.insert d.name) {}
@@ -1061,11 +1061,11 @@ asked to take on faith, rather than merely whether it is flagged. -/
 imported assumptions, as opposed to the project declarations it builds on. Together with the
 closure size this is the "how much must I accept to believe this" measure. -/
 private def externalConstants (decl : DeclInfo) (ctx : SiteContext) : Array Name :=
-  let closure := #[decl.name] ++ decl.transDeps
+  let closure := #[decl.name] ++ decl.dataTransDeps
   let externals := closure.foldl (init := ({} : Std.HashSet Name)) fun acc name =>
     match ctx.declByName.get? name with
     | none => acc
-    | some d => (graphDeps d).foldl (init := acc) fun acc dep =>
+    | some d => (meaningDeps d).foldl (init := acc) fun acc dep =>
         if ctx.declByName.contains dep then acc else acc.insert dep
   externals.toArray.qsort Name.lt
 
@@ -1092,7 +1092,10 @@ private def sorryChain (start : Name) (ctx : SiteContext) : Option (Array Name) 
         if d.hasOwnSorry then
           culprit? := some name
           break
-        for dep in graphDeps d do
+        -- `closureDeps`, not `meaningDeps`: a `sorry` reached only through a proof is still a real
+        -- gap, and `dependsOnSorry` — which this chain exists to explain — reports it. Narrowing to
+        -- meaning here would flag a declaration and then fail to find the chain that flagged it.
+        for dep in closureDeps d do
           if !visited.contains dep && ctx.declByName.contains dep then
             visited := visited.insert dep
             parents := parents.insert dep name
@@ -1134,7 +1137,7 @@ private def compactDepList (names : Array Name) (ctx : SiteContext) : Option (Bl
 measure and to rank claims: among results nothing else builds on, the one resting on the most
 machinery is usually the substantial one. -/
 private def closureSize (decl : DeclInfo) (ctx : SiteContext) : Nat :=
-  (decl.transDeps.filter ctx.declByName.contains).size
+  (decl.dataTransDeps.filter ctx.declByName.contains).size
 
 /-- A list of declarations rendered one per line with closure size, module, and trust status. The
 workhorse index rendering: used for module contents, claims, and the trust checklist. -/
@@ -1190,7 +1193,7 @@ private def reachedPackages (decls : Array DeclInfo) (ctx : SiteContext) : Array
 private def mkAuditBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
   Id.run do
   let externals := externalConstants decl ctx
-  let inProject := decl.transDeps.filter ctx.declByName.contains
+  let inProject := decl.dataTransDeps.filter ctx.declByName.contains
   let mut blocks : Array (Block Manual) := #[]
   blocks := blocks.push <| .para #[
     .bold #[.text "Audit surface: "],
@@ -1321,7 +1324,7 @@ Everything below is gated on `SiteContext.diff?`, i.e. on `--baseline` having be
 /-- How many declarations' *meaning* rests on this one: the size of the re-reading a change to it
 forces on someone who has already worked through the library.
 
-The reverse of `transDeps`, which follows `graphDeps`, so it counts the declarations whose
+The reverse of `dataTransDeps`, which follows `meaningDeps`, so it counts the declarations whose
 statements this one is part of and not the ones whose proofs merely call it. -/
 private def dependentCount (name : Name) (ctx : SiteContext) : Nat :=
   ctx.dependentCounts.getD name 0
@@ -1407,11 +1410,12 @@ what acceptance is taken to mean and why coverage is derived rather than recorde
 
 /-- The statement closure of a declaration, as links, in dependency order.
 
-The order is `transDeps`', which is topological — every dependency precedes what uses it — because
-that is what the extractor needs to emit a compilable minimal file. A reading queue wants exactly
-the same order, so it comes for free. -/
+The order is `dataTransDeps`', which is topological — every dependency precedes what uses it — for
+the same reason the extraction closure is: it is a dependency-respecting order. A reading queue wants
+exactly that, so it comes for free. The *contents* are the meaning closure, not the extraction one:
+a reader asked to accept this declaration is not asked to accept a lemma some proof merely called. -/
 private def auditClosureLinks (decl : DeclInfo) (ctx : SiteContext) : Array LinkInfo :=
-  decl.transDeps.filterMap fun dep =>
+  decl.dataTransDeps.filterMap fun dep =>
     if !ctx.declByName.contains dep then none
     else some { label := dep.toString, href? := ctx.declPageHrefs.get? dep }
 
@@ -1423,7 +1427,7 @@ private def mkAuditControlBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (
       closure := auditClosureLinks decl ctx
       meaning := meaningKeyOf decl
       -- Positionally parallel to `closure`, so it is filtered by the same predicate.
-      closureMeanings := decl.transDeps.filterMap fun dep =>
+      closureMeanings := decl.dataTransDeps.filterMap fun dep =>
         (ctx.declByName.get? dep).map meaningKeyOf
     }) #[]]
 
@@ -1446,7 +1450,7 @@ private def mkAuditData (decls : Array DeclInfo) (ctx : SiteContext) : AuditData
     unspecified := decl.isDefinitionLike && decl.specifiedBy.isEmpty && ctx.usesSpecs
     change := ((ctx.changes.get? decl.name).map (·.kind.slug)).getD ""
     meaning := meaningKeyOf decl
-    closure := decl.transDeps.filterMap index.get?
+    closure := decl.dataTransDeps.filterMap index.get?
     : AuditDecl
   }
   return {
@@ -1619,7 +1623,11 @@ Deliberately *not* a card per transitive dependency, which is what the previous 
 see `compactDepList`. -/
 private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   Id.run do
-  let pageDecls := #[decl] ++ (decl.transDeps.filterMap ctx.declByName.get?)
+  -- The graph's node set follows `meaningDeps` (via `dataTransDeps`), as everything the reader is
+  -- shown does: a declaration reachable only through a proof embedded in some definition's value is
+  -- not part of what this declaration means. The wider `transDeps` is the extraction closure and
+  -- appears nowhere on the page.
+  let graphDecls := #[decl] ++ (decl.dataTransDeps.filterMap ctx.declByName.get?)
   -- The minimal file is linked once, from `mkMinimalFileLink` below. There used to be a second
   -- link here whose relative path resolved *underneath* the declaration page and 404'd, and the
   -- page ended up advertising the same artifact three times.
@@ -1646,8 +1654,8 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   -- structure — every removed edge is still a real dependency, reachable along the path that
   -- remains.
   let graphData := transitiveReduce
-    (withUpstreamNodes (mkGraphData pageDecls ctx.declPageHrefs graphDeps (focus? := decl.name))
-      pageDecls ctx graphDeps)
+    (withUpstreamNodes (mkGraphData graphDecls ctx.declPageHrefs meaningDeps (focus? := decl.name))
+      graphDecls ctx meaningDeps)
   blocks := blocks.push (.para #[.bold #[.text "Dependency graph"]])
   -- Drawn even when there is nothing to draw. Gating it on having dependencies made the shape of a
   -- declaration page vary with its content, so a reader could not tell "this rests on nothing" from
@@ -1671,7 +1679,7 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
       (.para #[.bold #[.text s!"Its statement mentions ({directTypeDeps.size})"]])
     blocks := blocks.push block
   -- Layer 3: everything else it rests on. Affects trust rather than meaning, so it is folded.
-  let rest := decl.transDeps.filter fun n =>
+  let rest := decl.dataTransDeps.filter fun n =>
     ctx.declByName.contains n && !directTypeDeps.contains n
   if let some block := compactDepList rest ctx then
     blocks := blocks.push <|
@@ -1740,8 +1748,10 @@ private def mkModuleGraphData (modules : Array ModuleInfo) (ctx : SiteContext) :
       href := s!"{groupHrefOf modInfo.groupKey}{moduleHrefOf modInfo.path}"
       doc := summary }
   let edges := modules.foldl (init := #[]) fun acc modInfo =>
+    -- `closureDeps`: the module graph is about what a module needs in order to build, which a proof
+    -- reference establishes just as much as a statement reference does.
     let sources := modInfo.decls.foldl (init := ({} : Std.HashSet String)) fun acc decl =>
-      (graphDeps decl).foldl (init := acc) fun acc dep =>
+      (closureDeps decl).foldl (init := acc) fun acc dep =>
         match ctx.declByName.get? dep with
         | some d => if d.modulePath != modInfo.path && paths.contains d.modulePath then
             acc.insert d.modulePath
@@ -2668,7 +2678,7 @@ private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Wo
   let packages := packageInfosOf ws rootPrefix
   let decls ← collectDecls projectDir rootPrefix ws.root env packages
   let decls := decls |> dropUnsafeDeps |> attachReverseDeps |> attachTransitiveDeps
-    |> attachSpecifiedBy |> attachUpstreamPackages
+    |> attachDataTransitiveDeps |> attachSpecifiedBy |> attachUpstreamPackages
   -- Semantic hashes, when a `semantic_hash export` file was given. Coverage is reported rather
   -- than assumed: a hash file collected against a different revision of the project silently
   -- covers almost nothing, and the count is the only thing that says so before the diff does.
@@ -2849,13 +2859,13 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
           pretty-printed elaborated types; collect both revisions on the same toolchain, or with \
           --hashes, for a meaningful diff."
       pure (some report)
-  -- Reverse `transDeps`, counted once. Built for a baseline or a ledger, since both order their
+  -- Reverse `dataTransDeps`, counted once. Built for a baseline or a ledger, since both order their
   -- queues by it: a changed statement forty results rest on is a different size of problem from
   -- one nothing uses, and that ordering is the only thing on either page that says so.
   let dependentCounts : Std.HashMap Name Nat :=
     if diff?.isNone && provenance?.isNone then {}
     else data.decls.foldl (init := {}) fun acc decl =>
-      decl.transDeps.foldl (init := acc) fun acc dep => acc.insert dep (acc.getD dep 0 + 1)
+      decl.dataTransDeps.foldl (init := acc) fun acc dep => acc.insert dep (acc.getD dep 0 + 1)
   let ctx : SiteContext := {
     repoUrl? := cfg.repoUrl
     siteUrl? := cfg.siteUrl

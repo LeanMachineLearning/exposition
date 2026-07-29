@@ -63,7 +63,12 @@ private def mkDecl (name : Name) (statement : String := "True") (body : String :
   source? := none
   deps := #[]
   typeDeps := #[]
+  -- Both closures, from the one parameter. These fixtures exercise *propagation*, which walks the
+  -- meaning closure (`dataTransDeps`); `transDeps` is set alongside it because nothing here means to
+  -- distinguish the two, and leaving it empty would make the fixture describe a declaration whose
+  -- extraction closure contradicts its meaning closure.
   transDeps := transDeps
+  dataTransDeps := transDeps
   dependsOnSorry := dependsOnSorry
   axioms := axioms
   specifiedBy := specifiedBy

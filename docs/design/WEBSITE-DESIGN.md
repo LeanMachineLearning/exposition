@@ -175,8 +175,8 @@ A theorem's audit surface is layered, and the layers are not equally important:
    of these is not what the reader assumes, the theorem is not the theorem;
 3. **the rest of the closure** (proof-side dependencies) — affects *trust*, not *meaning*.
 
-The tool already distinguishes these (`typeDeps` vs `deps`, and `graphDeps` follows type-only
-for theorems). The current site renders all three as an undifferentiated column of cards. The
+The tool already distinguishes these (`typeDeps` vs `deps` vs `dataDeps`, and `meaningDeps` follows
+type-only for theorems and data-only for definitions). The current site renders all three as an undifferentiated column of cards. The
 new site makes layer 2 prominent and instantaneous, and folds layer 3 behind an explicit
 "what does the proof lean on" affordance.
 

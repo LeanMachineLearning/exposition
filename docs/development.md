@@ -18,8 +18,14 @@
   [`LeanSpec/README.md`](../LeanSpec/README.md).
 - `Referee/Collect.lean` — walks the environment and builds one `DeclInfo` per exposed
   declaration (signature, docstring, source snippet, kind), delegating all dependency computation to
-  `LeanDeps` and deciding only which edges Referee follows (`graphDeps`: type-only for
-  theorems). `sorry` status is a single transitive flag (`dependsOnSorry`) obtained from
+  `LeanDeps` and deciding only which edges Referee follows. There are two such choices:
+  `closureDeps` (type-only for theorems) drives `transDeps`, which `Referee/Extract.lean` seeds each
+  standalone file from and which therefore has to stay closed over proofs; `meaningDeps` additionally
+  drops the proofs *inside* a definition's value (`LeanDeps.dataValueConstants`) and drives everything
+  the reader is shown — the dependency graph, the upstream-trust analysis, the audit closure and its
+  reading queues, and the revision diff — because a lemma called only by a bundled structure's
+  `left_inv` obligation is not part of what the definition means or of what a reader must trust.
+  `sorry` status is a single transitive flag (`dependsOnSorry`) obtained from
   `Lean.collectAxioms`, i.e. the same answer `#print axioms` gives. `@[specifies]` annotations are
   read here too and reversed by `attachSpecifiedBy`, the one field on `DeclInfo` that is not
   derived from the environment but taken from the author.

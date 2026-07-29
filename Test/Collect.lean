@@ -14,7 +14,7 @@ This module audits the *pure* logic of `Collect.lean`:
 
 * the small name/string helpers used to build hrefs and signatures;
 * the dependency-graph passes as they apply to a collected `DeclInfo` array
-  (`attachReverseDeps`, `attachTransitiveDeps`), i.e. the field plumbing and the `graphDeps` edge
+  (`attachReverseDeps`, `attachTransitiveDeps`), i.e. the field plumbing and the `closureDeps` edge
   choice — the passes themselves live in `LeanDeps` and are checked in `Test/Deps.lean`, together
   with the rest of the dependency analysis;
 * `attachSpecifiedBy`, which reverses the author's `@[specifies]` links, and `isDefinitionLike`,
@@ -207,7 +207,7 @@ private def loneAttribute : Array String :=
 
 These run on an already-collected `Array DeclInfo`, wrapping the graph passes of `LeanDeps`. What
 is checked here is the `DeclInfo` side: which field each pass writes, and which edges it follows
-(`graphDeps`: type-only for theorems). We build small synthetic graphs and check the derived
+(`closureDeps`: type-only for theorems). We build small synthetic graphs and check the derived
 fields. `mkDecl` fills the structure with inert defaults so each test only specifies the fields
 that matter (`name`, `deps`, `typeDeps`, `kind`).
 -/
@@ -393,24 +393,37 @@ private def pkgs : Array PackageInfo := #[
 #guard modulePackageOf #[{ name := `outer, roots := #[`Foo] }, { name := `inner, roots := #[`Foo.Bar] }]
   `Foo.Bar.Baz == some `inner
 
-/-! ### `trustDepsOf`
+/-! ### `closureDepsOf` and `meaningDepsOf`
 
-The single rule for "which edges does trust follow", now load-bearing in three places: `graphDeps`
-delegates to it, `collectDecls` uses it before a `DeclInfo` exists, and `externalPackageMap` uses it
-to decide which upstream constants can appear as graph nodes. Worth pinning directly rather than only
-through its callers. -/
+The two rules for "which edges does this follow". `closureDepsOf` is the wider one and has exactly
+one consumer, `transDeps`, which `Referee.Extract` seeds standalone files from and which therefore
+must stay closed over proofs. `meaningDepsOf` is what everything the reader is shown follows —
+the graph, the trust analysis, the audit closure, the revision diff.
 
--- A theorem contributes its statement; its proof was checked by the kernel.
-#guard trustDepsOf .theorem false #[`body] #[`stated] == #[`stated]
--- Everything else contributes its body too, because a definition's body is its meaning.
-#guard trustDepsOf .definition false #[`body] #[`stated] == #[`body]
-#guard trustDepsOf .structure false #[`body] #[`stated] == #[`body]
--- An `alias` is a theorem whose body is kept verbatim, so it follows the body like a definition.
-#guard trustDepsOf .theorem true #[`body] #[`stated] == #[`body]
+They differ in one case, the definition: `closureDepsOf` takes the whole body, `meaningDepsOf` takes
+the body's data and drops the proofs bundled into it. Worth pinning directly rather than only through
+their callers. -/
+
+-- A theorem contributes its statement under both rules; its proof was checked by the kernel.
+#guard closureDepsOf .theorem false #[`body] #[`stated] == #[`stated]
+#guard meaningDepsOf .theorem false #[`body] #[`stated] #[`data] == #[`stated]
+-- An `alias` is a theorem whose body is kept verbatim, so both follow the body.
+#guard closureDepsOf .theorem true #[`body] #[`stated] == #[`body]
+#guard meaningDepsOf .theorem true #[`body] #[`stated] #[`data] == #[`body]
+-- The case they differ in: a definition's whole body for the closure, its data alone for meaning.
+#guard closureDepsOf .definition false #[`body] #[`stated] == #[`body]
+#guard meaningDepsOf .definition false #[`body] #[`stated] #[`data] == #[`data]
+#guard closureDepsOf .structure false #[`body] #[`stated] == #[`body]
+#guard meaningDepsOf .structure false #[`body] #[`stated] #[`data] == #[`data]
+-- An empty `dataDeps` means the walk was never run, so meaning falls back to the whole body rather
+-- than reporting that the definition rests on nothing.
+#guard meaningDepsOf .definition false #[`body] #[`stated] #[] == #[`body]
+-- ...but a declaration that genuinely rests on nothing still reports nothing.
+#guard meaningDepsOf .definition false #[] #[] #[] == (#[] : Array Name)
 
 /-! ### `attachUpstreamPackages`
 
-Propagation follows `graphDeps`, and the reason is the whole point of the measure: an upstream
+Propagation follows `meaningDeps`, and the reason is the whole point of the measure: an upstream
 *proof* is not a trust dependency, because the kernel rechecked it and anything left unproved in it
 arrives as a `sorry` or an extra axiom, which the trust page counts separately. What a reader must
 take on faith is an upstream *definition* their statement is about.

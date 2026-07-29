@@ -61,8 +61,10 @@ What counts is an upstream *definition that a statement is about*. If a theorem'
 `Learning.IsAlgEnvSeq`, then what the theorem *means* depends on that definition being the intended
 one, and no proof anywhere settles it — the same gap `@[specifies]` records, one package up.
 
-So the measure follows `graphDeps`, the same edges the rest of the site uses: a theorem contributes
-its statement, everything else its body too, since a definition's body is part of its meaning. The
+So the measure follows `meaningDeps`, the same edges the rest of the site uses: a theorem contributes
+its statement, and a definition the *data* in its body — its body is part of its meaning, but the
+proof obligations bundled into it (`left_inv`, `map_add'`, …) are kernel-checked like any other
+proof and are dropped for the same reason a theorem's proof is. The
 difference is not cosmetic. On `AlphaRAR`, following proofs reported 172 declarations as resting on
 `batteries`; following statements reports none, because no statement in the project mentions a
 Batteries definition — every one of those 172 was a kernel-checked proof detail needing no audit.

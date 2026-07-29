@@ -13,7 +13,7 @@ It is a render-time flag like `--trust`, because the comparison is a pure functi
 files: no environment, no source tree, no re-import. Publishing `data.json` beside each released
 site is therefore the only thing an author has to do to make the next revision diffable.
 
-The classification is the site's own meaning/trust split (`graphDeps`) applied across time rather
+The classification is the site's own meaning/trust split (`meaningDeps`) applied across time rather
 than across the dependency graph:
 
 - a **statement change** invalidates any reading of the declaration;

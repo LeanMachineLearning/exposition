@@ -137,6 +137,75 @@ private def projA : Expr := .proj `A 0 (.bvar 0)
   (mkApp (mkConst ``id) (mkApp2 (mkConst ``Lean.Name.mkStr2) (mkStrLit "A") (mkStrLit "b")))).contains
   `A.b
 
+/-! ## Data dependencies: the proofs inside a value
+
+Unlike `usedConstantsOf` and `Context.declDeps`, these need only *an* `Environment`, not a project
+one, so they are checked here against this file's own — the declarations below are the fixtures.
+
+Each check is an `#eval` returning `Bool` rather than a `#guard`, because the functions run in
+`MetaM`; `#guard_msgs` turns a wrong answer into a build error just the same. -/
+
+structure Boxed where
+  val : Nat
+  isPos : 0 < val
+
+/-- Built by a constructor literal: `Nat.one_pos` fills the `Prop`-valued field `isPos`. -/
+def boxedLiteral : Boxed := ⟨1, Nat.one_pos⟩
+
+/-- Built by *calling* something that returns a `Boxed`, which is the shape the mask has to handle
+beyond constructors — `instance : NormedAddCommGroup … := Function.Injective.normedAddCommGroup …`
+is the same pattern. `Nat.lt_irrefl` here is an argument to an ordinary function, not a field. -/
+def boxedOfProof (n : Nat) (h : 0 < n) : Boxed := ⟨n, h⟩
+def boxedCalled : Boxed := boxedOfProof 2 (Nat.succ_pos 1)
+
+def mentions (declName constName : Name) (dataOnly : Bool) : MetaM Bool := do
+  let env ← getEnv
+  let some info := env.find? declName | return false
+  let consts ← if dataOnly then dataValueConstants info
+    else pure (usedConstantsOf env declName info (includeValue := true))
+  return consts.contains constName
+
+-- The proof filling a constructor's `Prop` field is dropped, while the data field is kept.
+/-- info: false -/
+#guard_msgs in
+#eval mentions ``boxedLiteral ``Nat.one_pos (dataOnly := true)
+/-- info: true -/
+#guard_msgs in
+#eval mentions ``boxedLiteral ``Boxed.mk (dataOnly := true)
+-- Positive control: the ordinary walk *does* report it, so the check above is not vacuous.
+/-- info: true -/
+#guard_msgs in
+#eval mentions ``boxedLiteral ``Nat.one_pos (dataOnly := false)
+
+-- The same for a proof passed to a non-constructor, which is what generalizing the mask beyond
+-- constructors buys. The data argument is kept.
+/-- info: true -/
+#guard_msgs in
+#eval mentions ``boxedCalled ``boxedOfProof (dataOnly := true)
+
+-- Here Lean abstracts the proof argument into an auxiliary `boxedCalled._proof_1` rather than
+-- leaving `Nat.succ_pos` in the term, so *neither* walk names the lemma directly and asking about
+-- it would prove nothing either way. What distinguishes them is the aux constant: the ordinary walk
+-- reports it (and `expandThroughInternals` would then pull its dependencies in), the data walk skips
+-- it along with the rest of the `Prop`-valued argument.
+/-- info: true -/
+#guard_msgs in
+#eval show MetaM Bool from do
+  let env ← getEnv
+  let some info := env.find? ``boxedCalled | return false
+  let data ← dataValueConstants info
+  let all := usedConstantsOf env ``boxedCalled info (includeValue := true)
+  return all.any isInternalName && !data.any isInternalName
+
+-- `constPropMask` reads declared types: `boxedOfProof`'s second parameter is the `Prop` one.
+/-- info: #[false, true] -/
+#guard_msgs in
+#eval constPropMask ``boxedOfProof
+-- An unknown constant masks nothing, so every argument stays data (the conservative direction).
+/-- info: #[] -/
+#guard_msgs in
+#eval constPropMask `No.Such.Constant
+
 /-! ## Graph passes
 
 These run on the plain `(name, deps)` graph, with the caller having already chosen which edges

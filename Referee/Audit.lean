@@ -27,7 +27,8 @@ So a declaration carries two things, and only one of them is the reader's to set
 
 The state worth having a name for is the third one this produces, `accepted but not covered`: a
 reader who believes they are finished and is not. Nothing else on the site can say it, and it falls
-straight out of `transDeps`, which already follows `graphDeps` and is already topologically ordered.
+straight out of `dataTransDeps`, which already follows `meaningDeps` and is already topologically
+  ordered.
 
 Deliberately orthogonal to trust. A `sorry`, an axiom or an unaudited package never blocks
 acceptance: accepting is a judgement about what a statement *means*, and whether it is *proved* is

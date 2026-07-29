@@ -23,7 +23,7 @@ reader can drive: click any declaration, axiom, `sorry`, or upstream package, an
 everything downstream that dies with it. `usedBy` and the reverse closure are already computed, so
 this is client-side.
 
-Two numbers, both cheap and genuinely different: the **meaning** blast radius (follow `graphDeps` —
+Two numbers, both cheap and genuinely different: the **meaning** blast radius (follow `meaningDeps` —
 what stops saying what it seems to say) and the **trust** blast radius (follow full `deps` — what
 stops being proved). Inverted, it ranks where audit effort pays: "the 10 declarations with the
 largest downstream footprint". That is the scheduling question a referee actually has, and the site

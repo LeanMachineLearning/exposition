@@ -269,6 +269,122 @@ def usedConstantsOf (env : Environment) (name : Name) (info : ConstantInfo)
       | _ => #[]
     typeUsed ++ valueUsed
 
+/-! ## Data dependencies: a value's meaning, minus the proofs inside it
+
+A bundled structure instance carries data fields *and* proof obligations:
+
+```lean
+noncomputable def SquareIntegrable.toL2Isom : SquareIntegrable ι E P 𝓕 ≃ₗᵢ[ℝ] lpMeas … where
+  toFun X := ⟨toL2 ι E P 𝓕 X, by …⟩
+  invFun X := …
+  left_inv X := by …
+  right_inv X := by …
+```
+
+`left_inv` and `right_inv` are proofs, kernel-checked exactly as a theorem's proof is. By the
+argument recorded in `Referee.Collect` — an upstream proof needs no trust, because the kernel
+rechecked it and anything left unproved arrives as a `sorry` or an extra axiom — they say nothing
+about what the definition *means*. Yet `usedConstantsOf … (includeValue := true)` reports every
+lemma their tactics happened to call: on the declaration above that is the difference between 103
+dependencies and 296, and it is what puts definitions at the top of every degree distribution while
+`structure`, `inductive` and `typeclass` (whose value contributions are field types and defaults,
+never proofs) show no excess at all.
+
+The walk below is `exprUsedConstants` with one change: at an application of a named constant it
+skips the arguments filling that constant's `Prop`-valued parameters (`constPropMask`). It recurses,
+so a proof nested inside a data field is skipped too — the `by` block above is the second field of a
+`Subtype.mk` sitting inside `toFun`, and is reached by exactly the same rule.
+
+The mask is read off *declared types*, not inferred from the arguments, which is what keeps it cheap
+and context-free: nothing here has to type-check a subterm sitting under binders.
+
+This is deliberately *not* applied to a theorem's own proof. `Referee.meaningDeps` already drops that wholesale
+by taking `typeDeps`, and the two mechanisms are kept separate so that neither has to be correct
+about the other's case.
+-/
+
+/-- For each parameter position of the constant `fn`, whether that parameter is `Prop`-valued, i.e.
+filled by a proof rather than by data.
+
+Read off `fn`'s *declared type*, which makes this both cheap and independent of any local context:
+telescoping `∀ (x₁ : T₁) … (xₙ : Tₙ), _` binds each parameter as a local hypothesis, so `isProof`
+can ask a well-posed question about it even when the argument at that position, in the term being
+walked, sits under binders of its own.
+
+Deliberately not restricted to constructors. A structure instance is very often built by *calling*
+something that returns the structure rather than by a constructor literal — `instance :
+NormedAddCommGroup … := Function.Injective.normedAddCommGroup hf hproof …` — and the proof
+obligations are then ordinary arguments to an ordinary function. Masking constructors alone left
+188 of `BrownianMotion`'s 263 non-theorem declarations completely unreduced, all of this shape.
+
+Returns `#[]` — every position data — when `fn` is unknown or its type will not telescope. That is
+the conservative direction: it can only keep edges a correct mask would have dropped, never drop one
+it would have kept. -/
+def constPropMask (fn : Name) : MetaM (Array Bool) := do
+  let some info := (← getEnv).find? fn | return #[]
+  try
+    Meta.forallTelescopeReducing info.type fun xs _ => xs.mapM Meta.isProof
+  catch _ =>
+    return #[]
+
+/-- Walk state for `dataValueConstants`: the memo over already-visited nodes (same rationale as
+`projStructureNames` — heavily shared proof terms must not be re-walked), the constructor masks
+computed so far (shared across declarations, since `Meta.forallTelescopeReducing` on a Mathlib
+structure is far from free), and the constants collected. -/
+private structure DataWalk where
+  seen : Std.HashSet Expr := {}
+  masks : Std.HashMap Name (Array Bool) := {}
+  acc : Array Name := #[]
+
+private partial def dataWalkGo (e : Expr) : StateT DataWalk MetaM Unit := do
+  if (← get).seen.contains e then
+    return
+  modify fun s => { s with seen := s.seen.insert e }
+  -- An application of a named constant is where the mask applies. Handled before the structural
+  -- match and returning early, so the spine's partial applications are never walked generically —
+  -- which is what makes skipping a proof argument actually skip it.
+  if e.isApp then
+    if let .const c _ := e.getAppFn then
+      let mask ← match (← get).masks.get? c with
+        | some m => pure m
+        | none =>
+          let m ← constPropMask c
+          modify fun s => { s with masks := s.masks.insert c m }
+          pure m
+      modify fun s => { s with acc := s.acc.push c }
+      let args := e.getAppArgs
+      for h : i in [0:args.size] do
+        -- `none` (over-application past the declared telescope) counts as data.
+        if mask[i]? != some true then
+          dataWalkGo args[i]
+      return
+  match e with
+  | .app f a => dataWalkGo f; dataWalkGo a
+  | .lam _ t b _ => dataWalkGo t; dataWalkGo b
+  | .forallE _ t b _ => dataWalkGo t; dataWalkGo b
+  | .letE _ t v b _ => dataWalkGo t; dataWalkGo v; dataWalkGo b
+  | .mdata _ b => dataWalkGo b
+  -- Same recovery as `projStructureNames`: the structure name of a `.proj` is otherwise lost.
+  | .proj s _ b => modify fun st => { st with acc := st.acc.push s }; dataWalkGo b
+  | .const c _ => modify fun st => { st with acc := st.acc.push c }
+  | _ => pure ()
+
+/-- The constants a declaration's *value* mentions outside the proofs inside it, or `#[]` when it
+has no value this applies to.
+
+Only `.defnInfo` — `def`, `abbrev` and `instance`, the kinds that can carry a bundled structure
+instance. A theorem's value is handled by `Referee.meaningDeps` taking `typeDeps`, and `structure`/`inductive`
+contribute field types and defaults rather than a value, with no proof excess to remove.
+
+Not `@[expose]`, for the same reason as `evalNameExpr?`: the body refers to the `private`
+`dataWalkGo`. Nothing is lost, since no importer needs to unfold this. -/
+@[no_expose] def dataValueConstants (info : ConstantInfo) : MetaM (Array Name) := do
+  match info with
+  | .defnInfo val =>
+    let (_, st) ← (dataWalkGo val.value).run {}
+    return st.acc
+  | _ => return #[]
+
 /-! ## Dependencies the elaborated term does not mention: notation -/
 
 /-- The `String` a string-literal `Expr` holds, if `e` is one. -/
@@ -447,6 +563,13 @@ structure DeclDeps where
   expansion references), expanded and deduplicated the same way. Never contains the declaration
   itself. -/
   deps : Array Name
+  /-- Like `deps`, but with the proofs inside the value skipped (`dataValueConstants`): what the
+  declaration's statement and *data* rest on, dropping the lemmas its embedded proof obligations
+  happen to call.
+
+  Equal to `deps` unless the `Context` was built with `withDataValueConsts` *and* this declaration
+  is a `.defnInfo`, so a caller that does not ask for the extra analysis sees no change. -/
+  dataDeps : Array Name
 deriving Repr, Inhabited
 
 /-- The project-wide tables the per-declaration analysis needs, computed once by `Context.of` and
@@ -468,6 +591,14 @@ structure Context where
   declModule : Std.HashMap Name Name
   /-- Project module ↦ the project modules it can see (`visibleProjectModules`). -/
   visibleModules : Std.HashMap Name (Std.HashSet Name)
+  /-- Declaration ↦ the constants its value mentions outside its proofs (`dataValueConstants`).
+
+  Empty unless `withDataValueConsts` has been run, and populated only for `.defnInfo`; `declDeps`
+  falls back to the full value walk for anything absent, so `DeclDeps.dataDeps` degrades to `deps`
+  rather than to nothing. Filling it needs `MetaM` (deciding whether a constructor field is
+  `Prop`-valued is a typing question), which is why it is a separate pass rather than part of the
+  pure `Context.of`. -/
+  dataValueConsts : Std.HashMap Name (Array Name) := {}
 
 /-- For each project module, the project modules it can see: itself plus everything it imports,
 transitively.
@@ -533,10 +664,22 @@ def Context.declDeps (ctx : Context) (cache : Cache) (name : Name) (info : Const
   -- is syntactic, and so is left to callers that have the source syntax at hand.
   let allUsedConstants :=
     addCoercionInsts (usedConstantsOf ctx.env name info true ++ ctx.notationDeps.getD name #[])
+  -- The same inputs as `allUsedConstants`, with the value's contribution replaced by its
+  -- proof-skipped form where one was computed. Everything downstream — coercion instances,
+  -- expansion through internal helpers, the visibility filter — is applied identically, so the
+  -- result is comparable to `deps` edge for edge.
+  let dataUsedConstants :=
+    match ctx.dataValueConsts.get? name with
+    | some valueConsts =>
+      addCoercionInsts (usedConstantsOf ctx.env name info false ++ valueConsts
+        ++ ctx.notationDeps.getD name #[])
+    | none => allUsedConstants
   let (typeExpanded, cache) :=
     expandThroughInternals ctx.env ctx.rootPrefix ctx.exposed cache typeUsedConstants
   let (allExpanded, cache) :=
     expandThroughInternals ctx.env ctx.rootPrefix ctx.exposed cache allUsedConstants
+  let (dataExpanded, cache) :=
+    expandThroughInternals ctx.env ctx.rootPrefix ctx.exposed cache dataUsedConstants
   -- A declaration can only reference what its own module can see. Any project-local dependency in
   -- a module this one does not import is impossible, so it is an artifact of the analysis (a
   -- too-eagerly replayed coercion instance, say) rather than a real edge. Constants outside the
@@ -550,7 +693,23 @@ def Context.declDeps (ctx : Context) (cache : Cache) (name : Name) (info : Const
   let dedup (cs : Array Name) : Array Name :=
     cs.foldl (fun acc dep =>
       if dep != name && importable dep && !acc.contains dep then acc.push dep else acc) #[]
-  ({ typeDeps := dedup typeExpanded, deps := dedup allExpanded }, cache)
+  ({ typeDeps := dedup typeExpanded, deps := dedup allExpanded, dataDeps := dedup dataExpanded },
+    cache)
+
+/-- Fills `Context.dataValueConsts` for every exposed `.defnInfo`, so that `declDeps` can report
+`DeclDeps.dataDeps`.
+
+Restricted to `.defnInfo` because that is where the excess is: `def` and `instance` account for
+essentially all of the gap between `typeDeps` and `deps` (on `BrownianMotion`, 6709 of 6711 edges),
+while `structure`, `inductive` and `typeclass` show none. That also keeps the cost proportional to a
+small minority of declarations — 263 of 1692 there — rather than to the whole project. -/
+def Context.withDataValueConsts (ctx : Context) : MetaM Context := do
+  let mut consts : Std.HashMap Name (Array Name) := {}
+  for (name, _, info) in ctx.constants do
+    if ctx.exposed.contains name then
+      if info matches .defnInfo _ then
+        consts := consts.insert name (← dataValueConstants info)
+  return { ctx with dataValueConsts := consts }
 
 /-- The dependencies of every exposed declaration of the project, in environment order, sharing one
 expansion cache. -/
