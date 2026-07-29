@@ -834,6 +834,38 @@ def asciiTagOf (name : Name) : String :=
     if c.isAlphanum then acc.push c
     else acc ++ s!"_x{String.ofList (Nat.toDigits 16 c.toNat)}_"
 
+/-! ### Page tags
+
+Verso keys every part by its `tag`, and two parts claiming the same one leaves one of them without
+an external ID — reported at render time as `No external ID for <title>`, naming one of the two and
+giving no hint that a collision is what happened.
+
+The three kinds of page can genuinely want the same tag, because a project may name a file after the
+definition it introduces. Mathlib does this everywhere: with `--root Mathlib.Logic`, the file
+`Mathlib/Logic/Denumerable.lean` sits directly under the root, so it is its own chapter *and* its own
+module, and it defines `Denumerable` — chapter, module and declaration all claiming `Denumerable`.
+`Mathlib.Order` has 31 such cases and `Mathlib.Logic` 6, while `brownian-motion`, `alpha-rar` and
+`LeanMachineLearning` have none between them: every one of their files lives in a subdirectory, so
+chapter, module and declaration are always three different strings.
+
+Prefixing by kind makes the collision impossible rather than unlikely. Within a kind the names are
+already unique — chapter keys, module names and (via `asciiTagOf`) declaration names.
+
+These are *not* the page's `file`, which is what its URL is built from and which was already distinct
+in every case. Changing a tag therefore moves no page and breaks no link. -/
+
+/-- Cross-reference tag of a chapter page. See *Page tags*. -/
+def chapterTagOf (groupKey : String) : String := s!"chapter-{groupKey}"
+
+/-- Cross-reference tag of a module page. See *Page tags*. -/
+def moduleTagOf (moduleName : Name) : String := s!"module-{moduleName}"
+
+/-- Cross-reference tag of a declaration page. See *Page tags*. -/
+def declTagOf (name : Name) : String := s!"decl-{asciiTagOf name}"
+
+/-- Cross-reference tag of a declaration's standalone-file page. See *Page tags*. -/
+def minimalFileTagOf (name : Name) : String := s!"minimal-{asciiTagOf name}"
+
 /-- Percent-encodes `s` (as UTF-8) for use in a URL path, escaping every byte outside the RFC 3986
 unreserved set (`A-Za-z0-9` and `-_.~`). -/
 def percentEncode (s : String) : String := Id.run do

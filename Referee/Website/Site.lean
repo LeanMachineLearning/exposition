@@ -675,6 +675,22 @@ private def upstreamJsFile (externals : Array ExternalDeclInfo) (trusted : Std.H
     contents := JS.mk s!"window.RefereeUpstream = {(Json.mkObj entries.toList).compress};"
     sourceMap? := none }
 
+/-- Declaration names whose page tags collide.
+
+Cross-*kind* collisions — a chapter, a module and a declaration all claiming one tag, which is what
+`Mathlib/Logic/Denumerable.lean` produced — are impossible by construction now that `chapterTagOf`,
+`moduleTagOf` and `declTagOf` prefix by kind. What remains is two declarations mapping to the same
+`asciiTagOf`, which that escaping is designed to prevent but which nothing checks.
+
+Worth checking rather than assuming, because the symptom is unhelpful: Verso reports a duplicate as
+`No external ID for <title>` while rendering, names one of the two pages, and does not say that a
+collision is what went wrong. On `Mathlib.Order` that took a bisection to identify. -/
+private def duplicateDeclTags (decls : Array DeclInfo) : Array (String × Array Name) :=
+  let byTag := decls.foldl (init := ({} : Std.HashMap String (Array Name))) fun acc d =>
+    let t := declTagOf d.name
+    acc.insert t ((acc.getD t #[]).push d.name)
+  byTag.toArray.filter (·.2.size > 1) |>.qsort (fun a b => a.1 < b.1)
+
 /-- Rendering configuration for the site output.
 
 Takes the upstream table because `upstreamJsFile` depends on the project, unlike every other asset
@@ -1661,7 +1677,7 @@ private def mkMinimalFilePart (decl : DeclInfo) (ctx : SiteContext) : Option (Pa
       metadata := some {
         file := some "minimal"
         shortTitle := some "Minimal file"
-        tag := some (.provided s!"minimal-{asciiTagOf decl.name}")
+        tag := some (.provided (minimalFileTagOf decl.name))
         number := false
       }
       content := #[
@@ -1801,7 +1817,7 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
       shortTitle := some decl.name.getString!
       -- Explicit, so Verso does not derive a tag from the title: names differing only by a
       -- non-ASCII character (`induction_on₂` vs `induction_on₃`) derive the same one.
-      tag := some (.provided (asciiTagOf decl.name))
+      tag := some (.provided (declTagOf decl.name))
       number := false
     }
     content := blocks
@@ -1815,7 +1831,7 @@ private def mkModulePart (moduleInfo : ModuleInfo) (ctx : SiteContext) : Part Ma
     titleString := moduleInfo.path
     metadata := some {
       file := some s!"module-{slugify moduleInfo.path}"
-      tag := some (.provided moduleInfo.name.toString)
+      tag := some (.provided (moduleTagOf moduleInfo.name))
       shortTitle := some moduleInfo.path
     }
     -- An index, not a transcript: one line per declaration rather than a full card each. Cards
@@ -1886,7 +1902,7 @@ private def mkGroupPart (group : GroupInfo) (ctx : SiteContext) : Part Manual :=
     metadata := some {
       file := some s!"chapter-{slugify group.key}"
       shortTitle := some title
-      tag := some (.provided group.key)
+      tag := some (.provided (chapterTagOf group.key))
     }
     -- Lists its modules itself rather than leaving that to Verso's automatic sub-page table of
     -- contents, which is switched off (see `renderConfig`) because on every other page it merely
@@ -3017,6 +3033,18 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
   }
   let overviewBlocks := mkProjectOverviewBlocks data.readmeText cfg.repoUrl
   let root := mkRootPart cfg data.rootPrefix groups data.decls ctx overviewBlocks
+  -- Fails here rather than mid-render. Verso reports a duplicate tag as `No external ID for
+  -- <title>`, which names one of the two pages and does not say that a collision is what went
+  -- wrong; on `Mathlib.Order` that took a bisection to identify. `chapterTagOf` and friends make the
+  -- cross-kind case impossible, so this is a backstop for whatever the next corpus does.
+  let dupes := duplicateDeclTags data.decls
+  if !dupes.isEmpty then
+    IO.eprintln "Duplicate declaration page tags — these would render as \"No external ID\":"
+    for (tagName, names) in dupes.toList.take 10 do
+      IO.eprintln s!"  {tagName}: {String.intercalate ", " (names.toList.map toString)}"
+    if dupes.size > 10 then
+      IO.eprintln s!"  … and {dupes.size - 10} more"
+    return 1
   let versoArgs :=
     match cfg.outputDir with
     | some out => ["--output", out]
