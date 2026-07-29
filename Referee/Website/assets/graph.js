@@ -25,6 +25,23 @@ document.addEventListener('DOMContentLoaded', () => {
   const UNIT = graph.unit || 'declaration';
   const UNITS = UNIT + 's';
   const hasFocus = allNodes.some(n => n.focus);
+
+  /* The reader's own verdicts, read through `audit.js` rather than out of localStorage, so the
+     graph, the Browse table and the declaration pages cannot disagree about what a verdict is.
+     Absent on a package graph, where a node is a package and there is nothing to accept.
+
+     A *stale* acceptance is deliberately not marked. It is an acceptance of a declaration as it
+     meant something else, and putting a tick on it here would be the one misleading thing this
+     picture could say — the same reason the audit page excludes those from its counts. */
+  const audit = (UNIT === 'package') ? null : (window.RefereeAudit || null);
+  const verdictMark = n => {
+    if (!audit || n.status === 'untrusted') return null;
+    const v = audit.verdictOf(n.id);
+    if (v === 'query') return { glyph: '?', fill: theme.sorry, title: 'you left a query on this' };
+    if (v !== 'accepted') return null;
+    if (audit.isStale && audit.isStale(n.id, n.meaning || '')) return null;
+    return { glyph: '✓', fill: theme.ok, title: 'you accepted this' };
+  };
   // Package graphs carry trust verdicts rather than chapters and `sorry` flags, so the
   // legend has to describe a different picture.
   const hasUntrusted = allNodes.some(n => n.status === 'untrusted');
@@ -61,6 +78,7 @@ document.addEventListener('DOMContentLoaded', () => {
     theme.focusInk = css('--site-surface', '#ffffff');
     theme.ink = css('--site-ink', '#14161a');
     theme.sorry = css('--site-warn', '#8a5a10');
+    theme.ok = css('--site-ok', '#2c7a51');
     /* Package graphs mark an unaudited dependency. Deliberately not `theme.sorry`: on this
        site amber-dashed means "depends on sorry", and an unaudited package is a different
        claim — the code may be perfectly correct, nobody has vouched for it. */
@@ -72,6 +90,48 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---------------------------------------------------------------- chrome
 
   const groupOptions = groups.map(g => `<option value="${g}">${g}</option>`).join('');
+
+  /* The key, as term-and-meaning pairs behind a disclosure rather than two paragraphs of prose.
+     It had grown to describe rows, arrows, transitive reduction, chapter colour, two kinds of
+     dashed outline, cycles and two verdict marks — accurate, and a wall of text above every graph
+     on the site, most of it about things a given picture does not contain.
+
+     So each entry is conditional on the picture actually containing what it describes: a project
+     with one chapter is not told that colour marks the chapter, and a graph with nothing unaudited
+     in it says nothing about grey dashes. What is left is short enough to read. */
+  const KEY_ITEMS = [
+    { term: 'Rows',
+      text: `Dependency depth. The top row depends on nothing, and each ${UNIT} sits one row below
+             its bottom-most dependency.` },
+    { term: 'Arrows',
+      text: 'Point from a dependency down to what uses it.' },
+    { term: 'Missing edges',
+      text: `An edge implied by a longer path is not drawn, so what you see is the essential
+             structure rather than every direct edge. Every ${UNIT} it connects is still reachable
+             along the path that remains.` },
+    groups.length > 1 && UNIT !== 'package'
+      ? { term: 'Colour', text: 'The chapter.' } : null,
+    hasFocus
+      ? { term: 'Filled node', text: `The ${UNIT} this page is about.` } : null,
+    UNIT === 'package'
+      ? { term: 'Grey dashed outline', text: 'A package nobody has vouched for.' }
+      : { term: 'Amber dashed outline',
+          text: 'Depends on <code>sorry</code>: something in its closure is unproved.' },
+    (UNIT !== 'package' && hasUntrusted)
+      ? { term: 'Grey dashed outline',
+          text: `A declaration from an unaudited upstream package. It has no page here, and
+                 trusting this result means trusting it.` } : null,
+    { term: 'Violet dashed edge, curving up',
+      text: `A dependency <em>cycle</em>: those ${UNITS} refer to each other, so no ordering of rows
+             can place both below everything they depend on.` },
+    audit ? { term: 'Green ✓',
+              text: 'Your verdict: you accepted this declaration.' } : null,
+    audit ? { term: 'Amber ?',
+              text: 'Your verdict: you left a query on it.' } : null,
+    audit ? { term: 'Neither',
+              text: `Unread — or accepted when it meant something else, which does not count as
+                     having read what is here now.` } : null,
+  ].filter(Boolean);
 
   /* A graph of one node with no edges is drawn anyway — a declaration page keeps the same shape
      whether or not anything is under it, so "this rests on nothing" is legible at a glance instead
@@ -93,21 +153,13 @@ document.addEventListener('DOMContentLoaded', () => {
     ${isLone
       ? `<p class="graph-hint">One node, no edges: this ${UNIT} rests on nothing else drawn
          here.</p>`
-      : `<p class="graph-hint">Rows are dependency depth: the top row depends on nothing, and each
-      ${UNIT} sits one row below its bottom-most dependency. Arrows point from a dependency
-      down to what uses it. Edges implied by a longer path are not drawn, so what you see is the
-      essential structure rather than every direct edge. Scroll to zoom, drag to pan, click a node
-      to focus it, double-click to open its page.</p>
-    <p class="graph-legend">${UNIT === 'package'
-      ? 'A grey dashed outline marks a package nobody has vouched for. '
-      : `${groups.length > 1 ? 'Colour marks the chapter. ' : ''}${hasFocus
-      ? 'The filled node is the declaration this page is about. '
-      : ''}An amber dashed outline marks something that depends on <code>sorry</code>. ${hasUntrusted
-      ? 'A grey dashed outline marks a declaration from an unaudited upstream package: it has no page here, and trusting this result means trusting it. '
-      : ''}`}A
-      violet dashed edge curving back upwards belongs to a dependency <em>cycle</em>: those
-      ${UNITS} refer to each other, so no ordering of rows can place both below everything they
-      depend on.</p>`}
+      : `<p class="graph-hint">Scroll to zoom, drag to pan, click a node to focus it, double-click
+         to open its page.</p>
+    <details class="graph-key" id="graph-key">
+      <summary>What the layout and marks mean</summary>
+      <dl class="graph-key-list">${KEY_ITEMS.map(
+        it => `<dt>${it.term}</dt><dd>${it.text}</dd>`).join('')}</dl>
+    </details>`}
     <div class="graph-layout${isLone ? ' graph-layout--lone' : ''}">
       <svg id="graph-svg" width="100%" height="${VIEW_H}"></svg>
       ${isLone ? '' : '<aside id="graph-panel" class="graph-panel"></aside>'}
@@ -121,6 +173,21 @@ document.addEventListener('DOMContentLoaded', () => {
   const panel = document.getElementById('graph-panel');
   const filterInput = document.getElementById('graph-filter');
   const groupSelect = document.getElementById('graph-group');
+
+  /* Collapsed by default, and remembered: a reader who wants the key open on one declaration page
+     wants it open on the next, and one who has learnt it should not have to close it again on
+     every page. Same storage discipline as the table of contents' open state. */
+  const keyBox = document.getElementById('graph-key');
+  if (keyBox) {
+    try {
+      if (localStorage.getItem('referee:graph-key') === 'open') keyBox.open = true;
+    } catch (e) { /* private mode */ }
+    keyBox.addEventListener('toggle', () => {
+      try {
+        localStorage.setItem('referee:graph-key', keyBox.open ? 'open' : 'closed');
+      } catch (e) { /* quota, private mode */ }
+    });
+  }
   const width = Math.max(720, root.clientWidth - 32);
   svg.attr('viewBox', [0, 0, width, VIEW_H]);
 
@@ -352,12 +419,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function render(nodes, edges) {
     const { rows, routed, extent } = buildLayers(nodes, edges);
-    // Height the drawing area to whatever the graph actually needs at the scale the width allows,
-    // between a floor that keeps tiny graphs from looking cramped and the full viewport. The floor
-    // is dropped for a lone node: 260px of empty canvas under a single box reads as a picture that
-    // failed to load, which is the opposite of what drawing it is meant to convey.
-    const floor = isLone ? 96 : 260;
-    viewH = Math.round(Math.max(floor, Math.min(VIEW_H, contentHeight(extent) * viewScale(extent) + 24)));
+    /* Height the drawing area to whatever the graph actually needs at the scale the width allows,
+       between a floor that keeps tiny graphs from looking cramped and the full viewport.
+
+       A lone node is sized without that scale. `viewScale` zooms a small graph up to 2.2x to fill
+       the column, which is right when there is structure to see and absurd when there is not: one
+       26px box would be given ~336px of canvas and sit alone at the top of it, reading as a picture
+       that failed to load rather than as an answer. */
+    viewH = isLone
+      ? Math.round(contentHeight(extent) + 8)
+      : Math.round(Math.max(260, Math.min(VIEW_H, contentHeight(extent) * viewScale(extent) + 24)));
     svg.attr('height', viewH).attr('viewBox', [0, 0, width, viewH]);
     /* A wide graph gets the full column, with the details panel below it rather than beside it.
        A whole-project module graph is several times wider than it is tall, and surrendering a
@@ -407,6 +478,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const enter = nodeSel.enter().append('g').attr('class', 'graph-node').style('cursor', 'pointer');
     enter.append('rect').attr('class', 'graph-box').attr('rx', 8).attr('ry', 8);
     enter.append('text').attr('class', 'graph-label');
+    // The verdict badge, in the node's top-right corner rather than inside it: the label is
+    // centred and truncated to the box width, so anything placed in the body would either collide
+    // with it or cost it characters. Two elements so the glyph reads against any chapter colour.
+    enter.append('circle').attr('class', 'graph-verdict-dot');
+    enter.append('text').attr('class', 'graph-verdict-mark');
     enter.append('title');
     const all = enter.merge(nodeSel);
 
@@ -433,7 +509,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const max = Math.floor((n.cell.w - 16) / 6.6);
         return n.label.length > max ? n.label.slice(0, Math.max(1, max - 1)) + '…' : n.label;
       });
-    all.select('title').text(n => `${n.kind}: ${n.id}\n${n.moduleName}`);
+    all.select('title').text(n => {
+      const m = verdictMark(n);
+      return `${n.kind}: ${n.id}\n${n.moduleName}` + (m ? `\n(${m.title})` : '');
+    });
+    paintVerdicts();
 
     all.on('mouseenter', (_, n) => highlight(n.id))
       .on('mouseleave', () => highlight(state.sel))
@@ -478,23 +558,42 @@ document.addEventListener('DOMContentLoaded', () => {
       });
   }
 
+  /* Paints the verdict badges over whatever is currently drawn.
+
+     Separate from `render` so that setting a verdict elsewhere on the page — the control under the
+     card, or the keyboard shortcuts — updates the picture without relaying it: the layout has not
+     changed, only the reader's opinion of it. */
+  function paintVerdicts() {
+    const R = 6.5;
+    nodeLayer.selectAll('g.graph-node').each(function (n) {
+      const g = d3.select(this);
+      const m = verdictMark(n);
+      const at = n.cell.w / 2 - R + 2;   // the corner, overlapping the rounded edge slightly
+      g.select('circle.graph-verdict-dot')
+        .attr('cx', at).attr('cy', -NODE_H / 2 + 1).attr('r', R)
+        .attr('fill', m ? m.fill : 'none')
+        .attr('stroke', m ? theme.focusInk : 'none').attr('stroke-width', 1)
+        .style('display', m ? null : 'none');
+      g.select('text.graph-verdict-mark')
+        .attr('x', at).attr('y', -NODE_H / 2 + 1)
+        .attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
+        .attr('font-size', 9).attr('font-weight', 700)
+        .attr('fill', theme.focusInk)
+        .style('display', m ? null : 'none')
+        .text(m ? m.glyph : '');
+    });
+  }
+
+  // A verdict set anywhere on the page repaints the badges here. `audit.js` dispatches this on
+  // every change, including the bulk "accept everything its statement rests on", which is exactly
+  // the action whose effect a reader wants to see land on this picture.
+  document.addEventListener('referee:auditchange', paintVerdicts);
+
   /* Declaration names are not safe to interpolate raw: Lean names legitimately contain `<` and `&`
      (`«term_<_»`, for one), which would otherwise be swallowed as markup. */
   const esc = s => String(s).replace(/[&<>"]/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-  function neighbourList(title, ids) {
-    if (!ids || !ids.length) return `<p><strong>${title}:</strong> none shown here.</p>`;
-    const items = ids.slice(0, 10).map(i => {
-      const n = state.byId.get(i);
-      if (!n) return '';
-      return n.href
-        ? `<li><a href="${esc(n.href)}"><code>${esc(n.label)}</code></a></li>`
-        : `<li><code>${esc(n.label)}</code></li>`;
-    }).join('');
-    const more = ids.length > 10 ? `<p>Showing 10 of ${ids.length}.</p>` : '';
-    return `<p><strong>${title}:</strong></p><ul class="graph-neighbor-list">${items}</ul>${more}`;
-  }
 
   function updatePanel() {
     // Absent on a lone-node graph, which has nothing to report about neighbours or rows.
@@ -509,8 +608,9 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     /* What the reader wants after clicking is what the declaration *says* — its statement and its
-       docstring. The row it sits in is not worth reporting: they just clicked it, so they can see
-       where it is. */
+       docstring. Nothing here restates the graph: the row it sits in, what it depends on and what
+       uses it are all already drawn, and clicking the node highlights exactly those edges. The
+       panel is for what the picture cannot show. */
     const n = state.byId.get(state.sel);
     const warn = n.status === 'sorry'
       ? '<p class="graph-panel-warn">⚠ depends on <code>sorry</code></p>'
@@ -526,9 +626,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ${warn}
       ${sig}
       ${doc}
-      ${n.href ? `<p><a class="decl-card-action" href="${esc(n.href)}">Open declaration</a></p>` : ''}
-      ${neighbourList('Depends on', state.up.get(n.id))}
-      ${neighbourList('Used by', state.down.get(n.id))}`;
+      ${n.href ? `<p><a class="decl-card-action" href="${esc(n.href)}">Open declaration</a></p>` : ''}`;
   }
 
   function fit() {

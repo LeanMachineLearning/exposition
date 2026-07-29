@@ -106,5 +106,6 @@ flag.
 
 Design notes, kept separate because they argue rather than instruct:
 [`KNOWN-ISSUES.md`](KNOWN-ISSUES.md) (what does not compile and which fixes were tried and measured
-to be worse), [`PROPOSED-TOOLS.md`](PROPOSED-TOOLS.md) (what was built, what was not, and why), and
+to be worse), [`PROPOSED-TOOLS.md`](PROPOSED-TOOLS.md) (what has not been built, and why it would be
+worth it), and
 [`WEBSITE-DESIGN.md`](WEBSITE-DESIGN.md).

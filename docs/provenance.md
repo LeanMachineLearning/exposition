@@ -55,6 +55,3 @@ attributed to an invented commit.
 Deliberately absent: authors, contribution counts, and commit-message mining. Who wrote something
 is not a referee question, and it invites inference about people from data that does not support
 it.
-
-[`PROPOSED-TOOLS.md`](../PROPOSED-TOOLS.md) records the design, including the parts deliberately not
-built.

@@ -196,6 +196,14 @@ document.addEventListener('DOMContentLoaded', function () {
 
     host.innerHTML = `
       <div class="audit-control">
+        <!-- Titled because everything else on the page is derived from the library and this is not:
+             it is the one box whose contents are the reader's own, and it should not be mistaken
+             for something the tool is asserting. The qualifier says where it lives, which is the
+             other thing a reader has to know before typing into it. -->
+        <div class="audit-control-head">
+          <span class="audit-control-title">Your audit</span>
+          <span class="audit-hint">private to this browser</span>
+        </div>
         <div class="audit-row">
           <div class="audit-verdicts" role="group" aria-label="Your verdict">
             ${VERDICTS.map(v => `<button type="button" class="audit-verdict" data-v="${v}">

@@ -531,12 +531,20 @@ block_extension Block.changeBanner (_payload : ChangeRowData) where
     let .ok (row : ChangeRowData) := FromJson.fromJson? data
       | Verso.reportError s!"Could not decode change banner data from {data.compress}"
         pure .empty
+    -- The baseline's date rides beside its name where a provenance ledger records one. "since
+    -- 78eb329" tells a reader which revision their reading is void against; it does not tell them
+    -- whether that was last week or last year, which is what decides how much has piled up behind
+    -- it.
     pure {{
       <aside class={{s!"change-banner change-banner--{row.kind}"}}>
         <div class="change-head">
           <span class={{s!"change-chip change-chip--{row.kind}"}}>{{row.label}}</span>
           {{if row.since.isEmpty then .empty
-            else {{<span class="change-banner-since">{{s!"since {row.since}"}}</span>}}}}
+            else {{<span class="change-banner-since">
+              {{s!"since {row.since}"}}
+              {{if row.sinceDate.isEmpty then .empty
+                else {{<span class="change-banner-date">{{s!"· {row.sinceDate}"}}</span>}}}}
+            </span>}}}}
         </div>
         {{changeBodyHtml row}}
       </aside>
@@ -604,8 +612,11 @@ private def graphJsFile : JsFile where
   filename := "graph.js"
   contents := JS.mk (include_str "assets/graph.js")
   sourceMap? := none
-  -- `graph.js` reads the `d3` global at load time, so it must come after it.
-  after := #["d3.v7.min.js"]
+  -- `graph.js` reads the `d3` global at load time, so it must come after it — and the
+  -- `RefereeAudit` global, which it needs to mark the nodes a reader has accepted. Both are
+  -- ordering constraints rather than preferences: handlers run in registration order, so a
+  -- `graph.js` registered first would paint its verdict marks before any verdict existed to read.
+  after := #["d3.v7.min.js", "audit.js"]
 
 /-- Applies the reader's stored light/dark choice to `<html>` before the page paints. -/
 private def themeBootJs : String :=
@@ -945,6 +956,7 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
     -- very long statements or docstrings. The panel is a preview; the page has the whole thing.
     signature := clipText 600 decl.displaySignature
     doc := clipText 600 (decl.docText?.getD "")
+    meaning := meaningKeyOf decl
   }
   let edges := decls.foldl (fun acc decl =>
     acc ++ (depsOf decl).filterMap (fun dep =>
@@ -1203,6 +1215,18 @@ private def mkAuditBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block M
   else
     blocks := blocks.push <| .para #[.bold #[.text "✓ Proved: "], .text "no ", .code "sorry",
       .text " anywhere in its closure"]
+    -- The caveat hangs under the checkmark and not under the warning above it. A reader who sees
+    -- "⚠ Not fully proved" already discounts the line; a checkmark is the one that invites being
+    -- read as a verdict, which is the reading this paragraph exists to refuse. It says what the
+    -- check *is* — this tool's reading of one build's recorded axioms — because every limitation
+    -- below follows from that and from nothing else.
+    blocks := blocks.push <| .para #[
+      .text "This is the tool's own reading of one build's recorded axioms, and it is not robust \
+        against an author who wants it to pass. Checking meant to be relied on should go through ",
+      .link #[.text "Comparator"] "https://github.com/leanprover/comparator",
+      .text ", which replays the proof through the kernel from an export against an explicit list \
+        of permitted axioms."
+    ]
   if !unusual.isEmpty then
     blocks := blocks.push <| .para <|
       #[.bold #[.text "Extra axioms: "]] ++
@@ -1325,6 +1349,7 @@ private def changeRowOf (change : DeclChange) (ctx : SiteContext) (since : Strin
     causes := change.causes.filterMap fun cause =>
       ctx.declPageHrefs.get? cause |>.map fun href =>
         { label := cause.toString, href? := some href }
+    sinceDate := (ctx.provenance?.bind (·.dateForRef? since)).getD ""
     trustNotes := change.trustNotes
     dependents := dependentCount change.name ctx
     since := since
@@ -1848,7 +1873,20 @@ private def mkClaimsPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
     subParts := #[]
   }
 
-/-- Builds the Changes page: what a reader who worked through the baseline has to read again.
+/-- What to call the baseline in prose, with the date the provenance ledger records for it.
+
+Every page that names the baseline goes through this, so the site cannot end up dating the same
+revision in one place and leaving a bare sha in another. `CollectedData` carries no timestamp of
+its own — two builds of identical source must produce identical data — so the date comes from the
+ledger or not at all. -/
+private def baselineName (report : DiffReport) (ctx : SiteContext) : String :=
+  let label := if report.baselineLabel.isEmpty then "the baseline" else report.baselineLabel
+  match ctx.provenance?.bind (·.dateForRef? report.baselineLabel) with
+  | some date => s!"{label} ({date})"
+  | none => label
+
+/-- Builds the baseline half of the Changes page: what a reader who worked through the baseline has
+to read again.
 
 Ordered by what it costs that reader, never alphabetically and never by module. The sections are,
 in order: statements that changed, results invalidated indirectly, definitions whose bodies moved,
@@ -1881,8 +1919,7 @@ private def mkBaselineBlocks (report : DiffReport) (ctx : SiteContext)
   let newClaims := added.filter fun c =>
     (ctx.declByName.get? c.name).map (·.isClaim) |>.getD false
   let mut blocks : Array (Block Manual) := #[]
-  let against :=
-    if report.baselineLabel.isEmpty then "the baseline" else report.baselineLabel
+  let against := baselineName report ctx
   blocks := blocks.push <| .para #[
     .text s!"Compared against {against}: {report.oldCount} declarations then, {report.newCount} \
       now. This page is for a reader who has already worked through that revision and needs to know \
@@ -2079,9 +2116,7 @@ private def mkChangesPart (report? : Option DiffReport) (decls : Array DeclInfo)
       let heading :=
         if ctx.provenance?.isNone then #[]
         else
-          let against :=
-            if report.baselineLabel.isEmpty then "the baseline" else report.baselineLabel
-          #[.other (Block.sectionHeading s!"Since {against}, in detail") #[]]
+          #[.other (Block.sectionHeading s!"Since {baselineName report ctx}, in detail") #[]]
       heading ++ mkBaselineBlocks report ctx
   {
     title := #[.text "Changes"]
@@ -2511,8 +2546,10 @@ private def mkLandingBlocks (rootPrefix : Name) (decls : Array DeclInfo) (ctx : 
   -- so it goes above the claims listing rather than below it.
   if let some report := ctx.diff? then
     let reaudit := report.needingReaudit
-    let against :=
-      if report.baselineLabel.isEmpty then "the baseline" else report.baselineLabel
+    -- Dated where the ledger knows the date, exactly as the Changes page and the per-declaration
+    -- banners are: a reader meeting a bare sha on the landing page cannot tell whether the work
+    -- behind it is a day's or a year's.
+    let against := baselineName report ctx
     blocks := blocks.push <| .para <|
       if reaudit.isEmpty then
         #[.bold #[.text s!"Nothing needs re-reading since {against}. "],

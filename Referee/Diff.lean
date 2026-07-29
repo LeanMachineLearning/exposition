@@ -479,6 +479,10 @@ structure ChangeRowData where
   /-- What the comparison is against, for the banner on a declaration page, which is read on its own
   and so has to name the baseline itself. Empty on the Changes page, which says it once at the top. -/
   since : String := ""
+  /-- When that revision was, `YYYY-MM-DD`, where a provenance ledger records it. A bare sha says
+  nothing about how long ago a reading went stale, which is the question the banner is answering.
+  Empty without a ledger, or where the baseline's name matches no revision in one. -/
+  sinceDate : String := ""
 deriving Repr, Inhabited, ToJson, FromJson
 
 /-- Data container for a list of rendered changes. -/

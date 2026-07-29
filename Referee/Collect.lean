@@ -267,6 +267,13 @@ structure GraphNode where
   signature : String := ""
   /-- The declaration's docstring, as written. Empty when it has none. -/
   doc : String := ""
+  /-- What this declaration means now (`meaningKeyOf`), so the graph can mark the nodes a reader
+  has accepted *without* marking the ones they accepted an earlier version of.
+
+  The verdict itself lives in the browser and is never collected; only the key it has to be checked
+  against travels with the node. Empty on a build without semantic hashes, which switches the
+  staleness half of the check off exactly as it is switched off everywhere else. -/
+  meaning : String := ""
 deriving Repr, ToJson, FromJson
 
 /-- Data container for GraphEdge. -/

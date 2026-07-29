@@ -177,6 +177,25 @@ def Provenance.revisionAt? (p : Provenance) (i : Nat) : Option RevisionInfo :=
 def Provenance.latest? (p : Provenance) : Option RevisionInfo :=
   p.revisions.back?
 
+/-- The date of a revision named by `label`, if the ledger has folded one.
+
+Exists so that a name appearing elsewhere on the site — a `--baseline-label`, most usefully — can
+be given the date the ledger already knows for it, rather than leaving the reader with a bare sha
+and no sense of how old it is. A `data.json` carries no timestamp of its own, deliberately: adding
+one would make two builds of identical source differ.
+
+Matched on the ref first, then on the sha, so a label written as a short sha finds a revision
+recorded under its full one and the other way round. Abbreviations shorter than seven characters
+are not matched at all: below that a prefix stops identifying a commit, and a confidently wrong
+date is worse than none. -/
+def Provenance.dateForRef? (p : Provenance) (label : String) : Option String := do
+  if label.isEmpty then none else
+  let exact := p.revisions.find? fun r => r.ref == label
+  let byPrefix := if label.length < 7 then none else p.revisions.find? fun r =>
+    (r.sha.startsWith label) || (!r.sha.isEmpty && label.startsWith r.sha)
+  let rev ← exact <|> byPrefix
+  if rev.date.isEmpty then none else some rev.date
+
 /-- Whether this revision is already the newest one on record, compared by sha.
 
 Folding the same commit twice would append a duplicate revision and reset nothing, leaving a ledger

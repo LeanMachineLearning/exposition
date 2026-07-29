@@ -1006,6 +1006,15 @@ body.hide-theorems [data-decl-group="theorem"] {
 
 .change-banner-since { color: var(--site-ink-3); font-size: .8rem; }
 
+/* The baseline's date, one step quieter than its name: the name is what a reader recognises and
+   the date is the context for it, so they should not compete. Spaced with a margin rather than a
+   text node, because the HTML quotation drops whitespace between adjacent inline elements. */
+.change-banner-date {
+  margin-left: .35rem;
+  opacity: .8;
+  white-space: nowrap;
+}
+
 /* ----------------------------------------------------------------- audit --- */
 
 /* The reader's own verdicts. Styled as a control surface rather than as content: this is the one
@@ -1018,6 +1027,27 @@ body.hide-theorems [data-decl-group="theorem"] {
   border-radius: var(--site-radius-sm);
   margin: 0 0 1.2rem;
   padding: .7rem .9rem;
+}
+
+/* Names the one box on a declaration page whose contents are the reader's rather than the
+   library's. Separated by a rule so the boundary reads even when the box is scrolled past its
+   own border. */
+.audit-control-head {
+  align-items: baseline;
+  border-bottom: 1px solid var(--site-border);
+  display: flex;
+  gap: .5rem;
+  justify-content: space-between;
+  margin: -.1rem 0 .6rem;
+  padding-bottom: .4rem;
+}
+
+.audit-control-title {
+  color: var(--site-ink-2);
+  font-size: .8rem;
+  font-weight: 600;
+  letter-spacing: .03em;
+  text-transform: uppercase;
 }
 
 .audit-row {
@@ -1258,12 +1288,52 @@ body.hide-theorems [data-decl-group="theorem"] {
   border-color: var(--site-border-strong);
 }
 
-.graph-hint,
-.graph-legend {
+.graph-hint {
   color: var(--site-ink-3);
   font-size: .84rem;
   line-height: 1.55;
   margin: .2rem 0 .7rem;
+}
+
+/* The key, collapsed by default. It describes rows, arrows, transitive reduction, colours, two
+   kinds of dashed outline, cycles and the verdict marks — worth having, and far too much to sit
+   open above every graph on the site. */
+.graph-key {
+  color: var(--site-ink-3);
+  font-size: .84rem;
+  margin: .2rem 0 .7rem;
+}
+
+.graph-key > summary {
+  cursor: pointer;
+  user-select: none;
+  width: fit-content;
+}
+
+.graph-key > summary:hover { color: var(--site-ink-2); }
+
+.graph-key-list {
+  display: grid;
+  gap: .25rem .8rem;
+  grid-template-columns: max-content minmax(0, 1fr);
+  line-height: 1.5;
+  margin: .5rem 0 0;
+  padding-left: .2rem;
+}
+
+.graph-key-list dt {
+  color: var(--site-ink-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.graph-key-list dd { margin: 0; }
+
+/* One column on narrow screens: the two-column grid puts a nine-word term beside a two-word
+   meaning and wraps both badly. */
+@media (max-width: 40rem) {
+  .graph-key-list { grid-template-columns: minmax(0, 1fr); }
+  .graph-key-list dd { margin: 0 0 .35rem; }
 }
 
 .graph-layout {
@@ -1359,13 +1429,6 @@ body.hide-theorems [data-decl-group="theorem"] {
 
 .graph-node rect.graph-box { transition: stroke-width .09s ease-out; }
 .graph-node, #graph-svg path { transition: opacity .09s ease-out; }
-
-.graph-neighbor-list {
-  margin: .6rem 0 0;
-  padding-left: 1.1rem;
-}
-
-.graph-neighbor-list li { margin-bottom: .3rem; }
 
 /* Set by the graph script when the drawing is much wider than the column; see `graph.js`. */
 .graph-layout--wide { grid-template-columns: minmax(0, 1fr); }

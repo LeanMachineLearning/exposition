@@ -38,6 +38,12 @@ What a reader does with it:
 - **Generate report** writes Markdown: claims and their coverage, the open queries with their notes,
   and what the library rests on. Most of a referee report, already written.
 
+Verdicts also show up on the **dependency graphs**: a green `✓` in a node's corner is a declaration
+you accepted, an amber `?` one you left a query on. That is where the question "how much of what
+this rests on have I already been through?" is actually asked, and the picture answers it without a
+detour to Browse. The marks update as you set verdicts, including the bulk *accept everything its
+statement rests on*, so the effect of that action lands where you can see it.
+
 **Verdicts remember what they were about.** Each one records the declaration's semantic hash at the
 moment it was set, which makes an exported file **self-baselining**: any later build can say which
 acceptances are of something that has since changed, with no access to the build they were made
@@ -45,6 +51,10 @@ against and no `--baseline`. Those appear as *accepted, then changed* — a thir
 *accepted but not covered*, and excluded from every count on the page for the same reason, because
 the flattering number is the one that misleads. Needs `--hashes`; without semantic hashes the check
 is off, since a toolchain upgrade would otherwise report every acceptance in the file as void.
+
+A stale acceptance carries **no graph mark**, for the same reason it is excluded from the counts: a
+tick on a node you accepted when it meant something else is the one genuinely misleading thing that
+picture could say.
 
 Three limits, stated on the page itself rather than only here:
 
