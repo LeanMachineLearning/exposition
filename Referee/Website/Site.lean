@@ -239,6 +239,129 @@ block_extension Block.specList (_payload : SpecListData) where
       }}
     pure {{<ul class="spec-list">{{rows}}</ul>}}
 
+/- A characterization listing: the claim that a property does not merely hold of a definition but
+*determines* it, up to a stated relation (`Block.charList`).
+
+Deliberately not a `specList`, though it shows the same statements. A specification is a flat list
+of properties and reads as one; a characterization is a single claim assembled from three
+declarations, and the thing a reader most needs is not in any of them individually — it is the
+relation the uniqueness theorem stops at. So each bundle is one card, banner first: `x = y` and
+`f =ᵐ[μ] g` are very different claims about how well a definition is pinned down, and the site would
+be overstating the second if it rendered them alike.
+
+An incomplete bundle is drawn as a gap rather than dropped, in the same spirit as the "No
+specification" note: the author began a claim and did not finish it, which is a finding.
+
+(A plain comment, not a docstring: `block_extension` does not take one.) -/
+block_extension Block.charList (_payload : CharListData) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI _goB _id data _ => do
+    let .ok (payload : CharListData) := FromJson.fromJson? data
+      | Verso.reportError s!"Could not decode characterization data from {data.compress}"
+        pure .empty
+    let rows := payload.entries.map fun entry =>
+      let complete := entry.hasExistence && entry.hasUniqueness
+      -- The banner reports the relation and the banner reports the gap; it never reports both as
+      -- if the claim held. An unfinished bundle keeps the warning colour even when it does have a
+      -- relation to show, because a relation nothing is known to satisfy is not reassurance.
+      let banner :=
+        if entry.relations.isEmpty then
+          {{
+            <div class="char-banner char-banner-gap">
+              <span class="char-banner-label">"Not determined"</span>
+              <span class="char-banner-rels">
+                <span class="char-relation-missing">"no uniqueness theorem"</span>
+              </span>
+            </div>
+          }}
+        else
+          {{
+            <div class={{if complete then "char-banner" else "char-banner char-banner-gap"}}>
+              <span class="char-banner-label">"Determined up to"</span>
+              <span class="char-banner-rels">
+                {{entry.relations.map fun (r : String) =>
+                    {{<code class="char-relation">{{r}}</code>}}}}
+              </span>
+            </div>
+          }}
+      -- One sentence saying exactly what the bundle establishes. It is the line most likely to be
+      -- the only thing read, so it must not claim uniqueness for a bundle that has not shown it.
+      let lede :=
+        if complete then
+          {{
+            <p class="char-lede">
+              "The unique object satisfying " <code>{{entry.property}}</code> "."
+            </p>
+          }}
+        else if entry.hasExistence then
+          {{
+            <p class="char-lede char-lede-gap">
+              "Satisfies " <code>{{entry.property}}</code>
+              ". No theorem here says that nothing else does, so as it stands this is a \
+                specification rather than a characterization."
+            </p>
+          }}
+        else if entry.hasUniqueness then
+          {{
+            <p class="char-lede char-lede-gap">
+              <code>{{entry.property}}</code>
+              " determines its subject, but no theorem here says that this definition satisfies \
+                it — nor, so far as this page knows, that anything does."
+            </p>
+          }}
+        else
+          {{
+            <p class="char-lede char-lede-gap">
+              "Put forward as characterizing this definition, with neither half of the claim \
+                supplied."
+            </p>
+          }}
+      let parts := entry.parts.map fun part =>
+        let nameHtml :=
+          if part.href.isEmpty then
+            {{<span class="spec-item-name"><code>{{part.name}}</code></span>}}
+          else
+            {{<a class="spec-item-name" href={{part.href}}><code>{{part.name}}</code></a>}}
+        let comment :=
+          if part.comment.isEmpty then .empty
+          else {{<p class="spec-item-comment">{{part.comment}}</p>}}
+        -- Repeated on the row as well as in the banner: with several uniqueness theorems the
+        -- banner cannot say which relation came from which, and that is the one ambiguity a
+        -- reader must not be left with here.
+        let relation :=
+          if part.relation.isEmpty then .empty
+          else
+            {{
+              <p class="char-part-relation">
+                "up to " <code>{{part.relation}}</code>
+              </p>
+            }}
+        let statement :=
+          if part.signature.isEmpty then .empty
+          else {{<pre class="spec-item-statement"><code>{{part.signature}}</code></pre>}}
+        {{
+          <li class="spec-item char-part">
+            <div class="spec-item-head">
+              <span class="char-part-role">{{part.role}}</span>
+              {{nameHtml}}
+              <span class="spec-item-kind">{{part.kind}}</span>
+            </div>
+            {{comment}}
+            {{relation}}
+            {{statement}}
+          </li>
+        }}
+      {{
+        <li class="char-bundle">
+          {{banner}}
+          {{lede}}
+          <ul class="spec-list char-parts">{{parts}}</ul>
+        </li>
+      }}
+    pure {{<ul class="char-list">{{rows}}</ul>}}
+
 /- A heading inside a page's content.
 
 Verso's `Block` has no heading constructor — document structure comes from `Part`s, and the
@@ -901,6 +1024,14 @@ private structure SiteContext where
   not auditing. Once one annotation exists the author has opted in, and silence about the rest
   becomes information. -/
   usesSpecs : Bool := false
+  /-- Whether the project carries any `@[characterization]` annotation at all.
+
+  A second gate rather than a reuse of `usesSpecs`, because the two opt-ins are separate: a project
+  may specify without characterizing, and the far rarer converse — a property annotated but neither
+  theorem written yet — leaves `usesSpecs` false while there is still a claim to show. Nothing about
+  characterizations is rendered without this, for the reason given above: a project that has never
+  heard of the attribute must not be told about it on every page. -/
+  usesChars : Bool := false
   /-- Whether the collected data carries semantic hashes, i.e. whether `collect --hashes` was given.
 
   Gates everything that compares one *meaning* against another across time: the staleness check on
@@ -1407,6 +1538,127 @@ private def specTargetRows (decl : DeclInfo) (ctx : SiteContext) : Array SpecRow
       kind := (target?.map (·.displayKind)).getD "Definition"
       comment := link.comment }
 
+/-! ### Characterizations
+
+The stronger claim, and the only one on the site whose *shape* has been machine-checked: that the
+property really is a predicate on the definition's type, that the existence theorem really states
+the definition satisfies it, that the uniqueness theorem really relates two objects satisfying it.
+
+None of which says the claim is worth anything. `IsEntropy x := (x = entropy p)` passes every one of
+those checks and pins nothing down, and a characterization up to a relation coarse enough — parity,
+say — is barely a characterization at all. So the rendering shows the property's body and the
+relation in full, and says plainly which half is checked and which half is the reader's job. A page
+that reported "characterized ✓" and left it there would be worse than one that said nothing. -/
+
+/-- One declaration of a characterization as a row: role, name, statement, and — on a uniqueness
+row — the relation it stops at. -/
+private def charPartRow (ctx : SiteContext) (role : String) (name : Name)
+    (comment : String := "") (relation : String := "") : CharPartRow :=
+  let decl? := ctx.declByName.get? name
+  { role
+    name := name.toString
+    href := ctx.declPageHrefs.getD name ""
+    kind := (decl?.map (·.displayKind)).getD ""
+    comment
+    relation
+    -- Empty for a part outside the project, which then renders as a bare labelled link. The
+    -- property is the one part where that really hurts, and it is also the part least likely to
+    -- be elsewhere: a predicate written to characterize a project's own definition lives with it.
+    signature := (decl?.map (·.displaySignature)).getD "" }
+
+/-- The characterizations claimed for `decl`, as rendered rows.
+
+The author's comment rides on the property row rather than on the bundle, because that is where
+they wrote it and what it is about: `"the Shannon axioms"` names the property, not the claim. -/
+private def charRows (decl : DeclInfo) (ctx : SiteContext) : Array CharRow :=
+  decl.characterizedBy.map fun bundle =>
+    { property := bundle.property.toString
+      relations := bundle.uniqueness.filterMap fun u =>
+        if u.relation.isEmpty then none else some u.relation
+      hasExistence := !bundle.existence.isEmpty
+      hasUniqueness := !bundle.uniqueness.isEmpty
+      parts :=
+        #[charPartRow ctx "Property" bundle.property (comment := bundle.comment)]
+          ++ bundle.existence.map (charPartRow ctx "Existence")
+          ++ bundle.uniqueness.map fun u =>
+              charPartRow ctx "Uniqueness" u.name (relation := u.relation) }
+
+/-- The claims `decl` is one of the three parts of, for its own page.
+
+The counterpart of `specTargetRows`, and no statements here for the same reason: the reader is on
+the part's page with its statement above, and what they are missing is the claim it serves. -/
+private def charPartOfRows (decl : DeclInfo) (ctx : SiteContext) : Array SpecRow :=
+  decl.characterizes.map fun link =>
+    { name := link.target.toString
+      href := ctx.declPageHrefs.getD link.target ""
+      kind :=
+        match link.role with
+        | "property" => "Characterizing property"
+        | "existence" => "Existence"
+        | "uniqueness" => "Uniqueness"
+        | other => other
+      comment :=
+        match link.role with
+        | "property" => "The property claimed to determine it."
+        | "existence" => s!"States that it satisfies {link.property}."
+        | "uniqueness" => s!"States that {link.property} determines its subject."
+        | _ => "" }
+
+/-- The characterization section of a declaration page.
+
+Above the specification, not below it, because it answers the same question and answers it better:
+a reader who has seen that `entropy` is the unique object with a given property does not need to
+weigh a list of properties it happens to satisfy. When there is no characterization the section is
+simply absent — unlike a missing specification, which is reported. A definition with no
+characterization is the overwhelmingly common case even in a project that uses the attribute, and a
+note on every page saying so would be nagging rather than auditing. -/
+private def mkCharBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
+  Id.run do
+  if !ctx.usesChars then
+    return #[]
+  if decl.characterizedBy.isEmpty then
+    -- A part of someone else's claim, which its own statement does not reveal. Rendered without a
+    -- section heading of its own: it is a cross-reference, not a section.
+    if decl.characterizes.isEmpty then
+      return #[]
+    return #[
+      .para #[.bold #[.text "Part of a characterization"]],
+      .other (Block.specList { entries := charPartOfRows decl ctx }) #[]
+    ]
+  let rows := charRows decl ctx
+  let complete := rows.filter fun r => r.hasExistence && r.hasUniqueness
+  let mut blocks : Array (Block Manual) := #[]
+  blocks := blocks.push <|
+    .other (Block.sectionHeading s!"Characterization ({decl.characterizedBy.size})") #[]
+  blocks := blocks.push <| .para <|
+    (if complete.isEmpty then
+      #[.text "A property its author put forward as characterizing ", .code decl.name.toString,
+        .text ", with the claim not yet complete — each card below says which half is missing. "]
+    else
+      #[.text "What the author offers as pinning ", .code decl.name.toString,
+        .text " down completely: a property it satisfies, and a theorem that nothing else does. "])
+    ++ #[.text "This is a stronger claim than a specification, and unlike a specification its \
+      shape is checked — that the property is a predicate on ", .code decl.name.toString,
+      .text "'s type, that the existence theorem states this definition satisfies it, and that the \
+        uniqueness theorem relates two objects that do."]
+  blocks := blocks.push <| .other (Block.charList { entries := rows }) #[]
+  -- The caveat is not boilerplate and is not optional. The checked half is easy to mistake for the
+  -- whole thing, and a reader who does so has been misled by this page rather than by the author.
+  blocks := blocks.push <| .para #[
+    .bold #[.text "What this does not settle. "],
+    .text "Nothing checks that the property says the right thing: a property that mentions ",
+    .code decl.name.toString,
+    .text " itself would satisfy every test above and pin nothing down. Nor is the relation \
+      anything but reported — a definition determined only up to a coarse relation is determined \
+      correspondingly less, and ",
+    .code "=", .text " is the strongest case rather than the only one. Both are printed above in \
+      full because reading them is the only way to tell."
+  ]
+  if !decl.characterizes.isEmpty then
+    blocks := blocks.push <| .para #[.bold #[.text "Part of a characterization"]]
+    blocks := blocks.push <| .other (Block.specList { entries := charPartOfRows decl ctx }) #[]
+  return blocks
+
 /-- The specification section of a declaration page: two directions and one absence.
 
 The absence is the reason this is worth rendering at all. A definition with a specification gets a
@@ -1769,6 +2021,9 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   blocks := blocks ++ mkAuditBlocks decl ctx
   -- Before the dependency machinery, because it answers a different and prior question. The
   -- closures below say what a declaration costs to accept; the specification says what it means.
+  -- The characterization comes first of the two: it answers the same question and settles it,
+  -- where a specification only narrows it, so a reader who has one has less use for the other.
+  blocks := blocks ++ mkCharBlocks decl ctx
   blocks := blocks ++ mkSpecBlocks decl ctx
   blocks := blocks ++ mkMinimalFileLink decl ctx
   -- Transitively reduced: 23 declarations here carry 68 direct edges, most of them implied by a
@@ -2803,7 +3058,8 @@ private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Wo
   let packages := packageInfosOf ws rootPrefix
   let decls ← collectDecls projectDir rootPrefix ws.root env packages
   let decls := decls |> dropUnsafeDeps |> attachReverseDeps |> attachTransitiveDeps
-    |> attachDataTransitiveDeps |> attachSpecifiedBy |> attachUpstreamPackages
+    |> attachDataTransitiveDeps |> attachSpecifiedBy |> attachCharacterizes
+    |> attachUpstreamPackages
   -- Semantic hashes, when a `semantic_hash export` file was given. Coverage is reported rather
   -- than assumed: a hash file collected against a different revision of the project silently
   -- covers almost nothing, and the count is the only thing that says so before the diff does.
@@ -3011,7 +3267,12 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     expandedPackages := data.expandedPackages.foldl (·.insert ·) {}
     toolchainPackages := data.packages.foldl
       (fun acc p => if p.isToolchain then acc.insert p.name else acc) {}
-    usesSpecs := data.decls.any (!·.specifies.isEmpty)
+    -- A characterization theorem also registers as a `@[specifies]` annotation, so the first
+    -- disjunct covers nearly everything; the second is the project that has annotated a property
+    -- and not yet written either theorem, where there is a gap to report and nothing else to
+    -- report it.
+    usesSpecs := data.decls.any (!·.specifies.isEmpty) || data.decls.any (!·.characterizedBy.isEmpty)
+    usesChars := data.decls.any (!·.characterizedBy.isEmpty)
     -- `all`, not `any`: a partially hashed build would check some verdicts and silently skip
     -- others, and a staleness list that is quietly incomplete is worse than one that is absent.
     usesMeanings := !data.decls.isEmpty && data.decls.all (·.proofIrrelHash?.isSome)

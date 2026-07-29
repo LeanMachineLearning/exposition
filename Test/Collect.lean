@@ -214,7 +214,8 @@ that matter (`name`, `deps`, `typeDeps`, `kind`).
 
 private def mkDecl (name : Name) (deps : Array Name := #[]) (typeDeps : Array Name := #[])
     (kind : DeclKind := .definition) (specifies : Array SpecLink := #[])
-    (upstreamPackages : Array Name := #[]) : DeclInfo := {
+    (upstreamPackages : Array Name := #[])
+    (characterizedBy : Array CharBundle := #[]) : DeclInfo := {
   upstreamPackages := upstreamPackages
   name := name
   moduleName := `Test.Mod
@@ -229,6 +230,7 @@ private def mkDecl (name : Name) (deps : Array Name := #[]) (typeDeps : Array Na
   deps := deps
   typeDeps := typeDeps
   specifies := specifies
+  characterizedBy := characterizedBy
 }
 
 /-- Look up one declaration's field after running a pass, for compact assertions. -/
@@ -320,6 +322,46 @@ private def specGraph : Array DeclInfo := #[
 #guard (attachSpecifiedBy specGraph).all (·.name != `Other.Upstream)
 -- The pass only writes the reverse direction; the forward links are the collected input.
 #guard field (attachSpecifiedBy specGraph) `thmA (·.specifiedBy) == some (#[] : Array SpecLink)
+
+/-! ### `attachCharacterizes` (`characterizes` = reverse of `characterizedBy`)
+
+The same shape as `attachSpecifiedBy`, over a claim with three parts rather than a link with two
+ends. What it has to get right is the role: a reader landing on `unique` is told it is the
+uniqueness half, and one landing on `IsDef` is told it is the property, and swapping the two would
+misdescribe both. -/
+
+private def charBundle : CharBundle := {
+  property := `IsDef
+  comment := "the defining equation"
+  existence := #[`isDef_def]
+  uniqueness := #[{ name := `IsDef.unique, relation := "a = b", relationHead := `Eq }]
+}
+
+private def charGraph : Array DeclInfo := #[
+  mkDecl `Def (characterizedBy := #[charBundle]),
+  mkDecl `IsDef,
+  mkDecl `isDef_def (kind := .theorem),
+  mkDecl `IsDef.unique (kind := .theorem),
+  mkDecl `Unrelated
+]
+
+#guard field (attachCharacterizes charGraph) `IsDef (·.characterizes) ==
+  some #[⟨`Def, `IsDef, "property"⟩]
+#guard field (attachCharacterizes charGraph) `isDef_def (·.characterizes) ==
+  some #[⟨`Def, `IsDef, "existence"⟩]
+#guard field (attachCharacterizes charGraph) `IsDef.unique (·.characterizes) ==
+  some #[⟨`Def, `IsDef, "uniqueness"⟩]
+-- The definition itself carries the bundle, not a link back to it.
+#guard field (attachCharacterizes charGraph) `Def (·.characterizes) ==
+  some (#[] : Array CharPartLink)
+#guard field (attachCharacterizes charGraph) `Unrelated (·.characterizes) ==
+  some (#[] : Array CharPartLink)
+
+-- `isComplete` is the specified/characterized distinction, and the whole reason an unfinished
+-- bundle is kept rather than dropped: it renders as a gap, not as a characterization.
+#guard charBundle.isComplete
+#guard !({ charBundle with uniqueness := #[] } : CharBundle).isComplete
+#guard !({ charBundle with existence := #[] } : CharBundle).isComplete
 
 /-! ### `isDefinitionLike`
 

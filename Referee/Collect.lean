@@ -211,6 +211,54 @@ structure SpecListData where
   entries : Array SpecRow
 deriving Repr, ToJson, FromJson, Inhabited
 
+/-- One of the three declarations a characterization is made of, as rendered: the predicate, a
+theorem that the definition satisfies it, or a theorem that nothing else does.
+
+Carries the statement for the same reason `SpecRow` does, and more urgently. A characterization is
+checked for *shape* and not for content, so the only thing that tells a reader whether it says
+anything is the property's own body and the relation the uniqueness theorem stops at — both of
+which are here. -/
+structure CharPartRow where
+  /-- `Property`, `Existence` or `Uniqueness`, as shown to the reader. -/
+  role : String
+  name : String
+  /-- Empty when the declaration is not exposed and so has no page of its own. -/
+  href : String := ""
+  /-- The label shown to the reader (`displayKindLabel`). -/
+  kind : String := ""
+  /-- The author's note, from the attribute. Empty when they wrote none. -/
+  comment : String := ""
+  /-- On a uniqueness row, the relation it establishes, as written in its conclusion. Empty
+  otherwise. -/
+  relation : String := ""
+  /-- The statement, source form. -/
+  signature : String := ""
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- One characterization of a definition, as rendered. -/
+structure CharRow where
+  /-- The characterizing predicate, for the header sentence. -/
+  property : String
+  /-- The relations its uniqueness theorems establish, as written. Empty when there are none. -/
+  relations : Array String := #[]
+  /-- Whether a theorem states that the definition satisfies the property. -/
+  hasExistence : Bool := false
+  /-- Whether a theorem states that the property determines its subject.
+
+  Kept apart from `hasExistence` rather than collapsed into one "complete" flag because the two
+  gaps read differently and the card has to say which one it is: existence without uniqueness is a
+  specification wearing a characterization's clothes, and uniqueness without existence is a claim
+  about a property that may hold of nothing at all. -/
+  hasUniqueness : Bool := false
+  /-- The property, then the existence theorems, then the uniqueness theorems. -/
+  parts : Array CharPartRow := #[]
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- Data container for `Block.charList`. -/
+structure CharListData where
+  entries : Array CharRow
+deriving Repr, ToJson, FromJson, Inhabited
+
 /-- One row of the Browse table: every exposed declaration, with the columns a reader sorts and
 filters on. Deliberately light — no docstring or statement — since every row of the library rides
 along in a single page. -/
@@ -330,6 +378,63 @@ structure SpecLink where
   comment : String := ""
 deriving Repr, BEq, ToJson, FromJson, Inhabited
 
+/-- A uniqueness theorem of a characterization, with the relation it stops at.
+
+The relation is the whole load-bearing part and the reason it is carried as text rather than as a
+name: `LeanSpec` reads it off the theorem's conclusion as written (`x = y`, `f =ᵐ[μ] g`,
+`IsoRel a b`), which is what a reader needs to see, while the head constant is only good for
+grouping. A characterization up to a coarse relation says correspondingly less, and nothing but
+showing the relation can convey that. -/
+structure CharUniqueness where
+  name : Name
+  /-- The relating conclusion as written, with the theorem's own variable names. -/
+  relation : String := ""
+  /-- Its head constant (`Eq`, `Filter.EventuallyEq`, …), anonymous when there is none. -/
+  relationHead : Name := .anonymous
+deriving Repr, BEq, ToJson, FromJson, Inhabited
+
+/-- One characterization claimed for a definition, as written with the `@[characterization]`
+attribute of the `LeanSpec` package: a predicate, the theorems saying the definition satisfies it,
+and the theorems saying nothing else does.
+
+Stronger than a `SpecLink` in exactly one way that matters to a reader, and it is worth being
+precise about which. `@[specifies]` is an unchecked claim; the shapes here *are* checked — the
+predicate really is a predicate on the definition's type, the existence theorem really states that
+the definition satisfies it, the uniqueness theorem really relates two objects that satisfy it. What
+is still not checked is whether the predicate says anything worth saying. So a complete bundle is
+evidence, not proof, and the site has to print the property and the relation rather than merely
+report that they exist. -/
+structure CharBundle where
+  /-- The characterizing predicate. -/
+  property : Name
+  /-- The author's note on the property, from the attribute. Empty when they wrote none. -/
+  comment : String := ""
+  /-- The theorems stating that the definition satisfies `property`, in declaration order. -/
+  existence : Array Name := #[]
+  /-- The theorems stating that `property` determines its subject, in declaration order. -/
+  uniqueness : Array CharUniqueness := #[]
+deriving Repr, BEq, ToJson, FromJson, Inhabited
+
+/-- Whether both halves of the claim are present. A property with an existence theorem and no
+uniqueness theorem says no more than a `@[specifies]` annotation does — the definition has the
+property, and so, for all this says, might anything else. -/
+def CharBundle.isComplete (b : CharBundle) : Bool :=
+  !b.existence.isEmpty && !b.uniqueness.isEmpty
+
+/-- The link from one of a characterization's three declarations back to the claim it is part of.
+
+The reverse index of `characterizedBy`, computed by `attachCharacterizes`, and the reason a reader
+who lands on `IsEntropy.unique` is told what it is for rather than left with a lemma about a
+predicate. -/
+structure CharPartLink where
+  /-- The definition characterized. -/
+  target : Name
+  /-- The characterizing predicate. -/
+  property : Name
+  /-- `property`, `existence` or `uniqueness`. -/
+  role : String
+deriving Repr, BEq, ToJson, FromJson, Inhabited
+
 /-- Fully collected metadata for one exposed declaration. -/
 structure DeclInfo where
   name : Name
@@ -381,6 +486,18 @@ structure DeclInfo where
   /-- For a definition: the exposed theorems that carry `@[specifies thisDeclaration …]`, in
   declaration order. The reverse index of `specifies`, computed by `attachSpecifiedBy`. -/
   specifiedBy : Array SpecLink := #[]
+  /-- For a definition: the characterizations its author claims for it — the strictly stronger
+  claim that a property does not merely hold of it but *determines* it, up to a stated relation.
+
+  Read from the same `LeanSpec` extension as `specifies`, and empty for a project that does not use
+  the attribute. Both theorems of a characterization also register as `@[specifies]` annotations, so
+  everything here is visible in `specifiedBy` too; this field is what lets the site tell a
+  definition that has been pinned down from one that has merely been described. -/
+  characterizedBy : Array CharBundle := #[]
+  /-- For a declaration that is one of the three parts of a characterization: which claims it
+  belongs to and in what role. The reverse index of `characterizedBy`, computed by
+  `attachCharacterizes`. -/
+  characterizes : Array CharPartLink := #[]
   /-- The upstream packages this declaration *directly* references, after `attachUpstreamPackages`
   has propagated them along the project's own dependency edges.
 
@@ -594,8 +711,9 @@ decode error when handed a JSON file written by an older `collect`.
 - 8: replaces `CollectedData.externalPackages` with `externalDecls`, which carries the signature and
   docstring of each upstream constant as well as its package
 - 9: adds `ExternalDeclInfo.value`/`deps` and `CollectedData.expandedPackages`, the internal
-  structure of the upstream packages small enough to walk -/
-def collectedDataVersion : Nat := 9
+  structure of the upstream packages small enough to walk
+- 10: adds `DeclInfo.characterizedBy` and `DeclInfo.characterizes` -/
+def collectedDataVersion : Nat := 10
 
 /-- The full result of the `collect` subcommand's analysis, persisted as JSON so `extract`
 and `build-site` can run without re-importing the target project. `moduleOrder` and
@@ -1949,6 +2067,19 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     (LeanSpec.specEntries env).foldl (init := {}) fun acc entry =>
       let link : SpecLink := { name := entry.target, comment := entry.comment }
       acc.insert entry.theoremName ((acc.getD entry.theoremName #[]).push link)
+  -- The `@[characterization]` annotations, already assembled into bundles by `LeanSpec` and keyed
+  -- by the definition each claims to pin down. Incomplete bundles are kept rather than dropped: a
+  -- property with no uniqueness theorem is a claim its author started and did not finish, which is
+  -- worth showing as such and not worth silently rendering as a characterization.
+  let charsByTarget : Std.HashMap Name (Array CharBundle) :=
+    (LeanSpec.characterizations env).foldl (init := {}) fun acc c =>
+      let bundle : CharBundle := {
+        property := c.property
+        comment := c.comment
+        existence := c.existence.map (·.declName)
+        uniqueness := c.uniqueness.map fun e =>
+          { name := e.declName, relation := e.relation, relationHead := e.relationHead } }
+      acc.insert c.target ((acc.getD c.target #[]).push bundle)
   let mut cache : LeanDeps.Cache := {}
   let mut fileLines : Std.HashMap System.FilePath (Array String) := {}
   let mut decls := #[]
@@ -2013,6 +2144,9 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       isInstanceDecl := isInstanceDecl
       isAlias := isAliasFromSource source? lines
       specifies := specsByTheorem.getD name #[]
+      -- Only the forward direction here; `attachCharacterizes` fills in `characterizes` on the
+      -- three declarations each bundle is made of, exactly as `attachSpecifiedBy` does.
+      characterizedBy := charsByTarget.getD name #[]
       -- One level here; `attachUpstreamPackages` propagates it along the project's own edges.
       -- The edges `closureDeps` picks: a theorem's *statement*, everything else's body too. A
       -- theorem's proof is not a trust dependency — the kernel checked it.
@@ -2071,6 +2205,27 @@ def attachSpecifiedBy (decls : Array DeclInfo) : Array DeclInfo :=
         let back : SpecLink := { name := decl.name, comment := link.comment }
         acc.insert link.name ((acc.getD link.name #[]).push back)
   decls.map fun decl => { decl with specifiedBy := rev.getD decl.name #[] }
+
+/-- Adds the reverse of the `@[characterization]` links: each of the three declarations a bundle is
+made of learns which definition it helps pin down, and in what role.
+
+The counterpart of `attachSpecifiedBy`, and needed for the same reason in the other direction. A
+reader who lands on `IsEntropy.unique` sees a lemma about a predicate; what they are missing is that
+it is the half of a claim about `entropy`, which nothing in the statement says. A part whose bundle
+names a definition outside the project has nowhere to land in `characterizedBy`, so it never reaches
+this function — the link is only ever built from bundles already attached to an exposed
+definition. -/
+def attachCharacterizes (decls : Array DeclInfo) : Array DeclInfo :=
+  let rev : Std.HashMap Name (Array CharPartLink) :=
+    decls.foldl (init := {}) fun acc decl =>
+      decl.characterizedBy.foldl (init := acc) fun acc bundle =>
+        let add (acc : Std.HashMap Name (Array CharPartLink)) (part : Name) (role : String) :=
+          let link : CharPartLink := { target := decl.name, property := bundle.property, role }
+          acc.insert part ((acc.getD part #[]).push link)
+        let acc := add acc bundle.property "property"
+        let acc := bundle.existence.foldl (fun acc n => add acc n "existence") acc
+        bundle.uniqueness.foldl (fun acc u => add acc u.name "uniqueness") acc
+  decls.map fun decl => { decl with characterizes := rev.getD decl.name #[] }
 
 /-! ## Semantic hashes
 

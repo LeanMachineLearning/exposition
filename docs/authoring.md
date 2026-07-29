@@ -55,3 +55,43 @@ The attribute is checked, not decorative: the target is an identifier, so a typo
 definition is a build error rather than a stale line in a metadata file. See
 [`LeanSpec/README.md`](../LeanSpec/README.md) for how to depend on it, what else it validates, and why
 the attribute is not called `spec`.
+
+**A characterization is the stronger claim, and the attribute checks it.** `@[specifies]` records
+that a theorem is *part of* what a definition means; `@[characterization]` records that a property
+pins the definition down *uniquely*, up to a stated relation — equality, a.e. equality, the
+existence of an isomorphism. It comes in three parts, on three declarations:
+
+```lean
+@[characterization property entropy "the Shannon axioms"]
+def IsEntropy (p : Distribution α) (h : ℝ) : Prop := …
+
+@[characterization existence]
+theorem isEntropy_entropy (p : Distribution α) : IsEntropy p (entropy p) := …
+
+@[characterization uniqueness]
+theorem IsEntropy.unique (h₁ : IsEntropy p x) (h₂ : IsEntropy p y) : x = y := …
+```
+
+The difference that matters for an auditor is that these shapes are *verified* — the existence
+theorem really has to state that the definition satisfies the property, the uniqueness theorem
+really has to relate two objects that satisfy it — so a complete bundle is a checked fact rather
+than an author's claim. What is still not checked is whether the property says anything worth
+saying, which is why the property and the relation are things a reader has to read.
+
+The site renders this as a **Characterization** section on the definition's page, above the
+Specification section and for the same reason the two are ordered that way: a characterization
+answers the same question and settles it, where a specification only narrows it. Each claim is one
+card, and the card leads with the relation — `x = y` and `f =ᵐ[μ] g` are very different statements
+about how well a definition is pinned down, so the site prints which one it is rather than reporting
+"characterized" and leaving it there. Underneath are the three declarations with their statements in
+full, since reading the property is the only way to tell whether the claim is worth anything, and a
+note saying exactly that. An unfinished claim — a property with no uniqueness theorem — is drawn as
+a gap rather than dropped, and says which half is missing. Each of the three declarations gets a
+*Part of a characterization* back-link on its own page, so a reader landing on `IsEntropy.unique`
+learns what it is for.
+
+Both theorems also register as `@[specifies]` annotations, so everything above applies to them
+unchanged: a characterized definition counts as specified on the Specifications page and the Browse
+column with no extra work. Those two pages do not yet separate the characterized from the merely
+specified; `LeanSpec.characterizations`, and `DeclInfo.characterizedBy` downstream of it, expose the
+distinction for when they do.

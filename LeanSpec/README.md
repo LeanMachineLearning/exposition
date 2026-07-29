@@ -1,8 +1,11 @@
 # LeanSpec
 
-A single attribute, `@[specifies]`, for recording which theorems are part of the **specification of
-a definition** — the properties their author offers as evidence that the definition is the intended
-one.
+Two attributes for recording what a formalization's *definitions* mean.
+
+`@[specifies]` records which theorems are part of the **specification of a definition** — the
+properties their author offers as evidence that the definition is the intended one.
+`@[characterization]` records the stronger claim that a property pins the definition down
+**uniquely**, up to a stated relation, and checks that the theorems supplied really say so.
 
 Depends on Lean core and nothing else. It lives in the
 [`exposition`](https://github.com/LeanMachineLearning/exposition) repository but is a separate Lake
@@ -66,21 +69,7 @@ Both arguments are optional:
 Apply it more than once for a theorem that specifies more than one definition:
 `@[specifies foo, specifies bar "relates the two"]`.
 
-### Importing under the module system
-
-A file using the `module` keyword must import this library at compile time, since applying an
-attribute is a compile-time act:
-
-```lean
-module
-meta import LeanSpec
-```
-
-A plain `public import LeanSpec` is not enough on its own — the attribute is registered by the
-module's initializer, which a runtime-phase import does not run, and `@[specifies]` is then
-reported as an unknown attribute. Files not using the module system just write `import LeanSpec`.
-
-## What is checked
+### What `@[specifies]` checks
 
 The attribute is not a comment. At elaboration time it rejects:
 
@@ -99,14 +88,121 @@ living in the target's own namespace, and it can be turned off entirely:
 set_option specifies.checkTargetMentioned false
 ```
 
+## Characterizations
+
+`@[specifies]` records a claim, and nothing checks it beyond the target resolving. A
+*characterization* is the stronger thing, and it is checkable. It has three parts:
+
+```lean
+@[characterization property entropy "the Shannon axioms"]
+def IsEntropy (p : Distribution α) (h : ℝ) : Prop := …
+
+@[characterization existence]
+theorem isEntropy_entropy (p : Distribution α) : IsEntropy p (entropy p) := …
+
+@[characterization uniqueness]
+theorem IsEntropy.unique (h₁ : IsEntropy p x) (h₂ : IsEntropy p y) : x = y := …
+```
+
+Together those say: `entropy p` is *the* real number with property `IsEntropy p`, up to equality.
+The relation is read off the uniqueness theorem's conclusion rather than assumed, because plenty
+of objects are only determined up to a.e. equality (`f =ᵐ[μ] g`) or up to isomorphism.
+
+The two theorems name the **predicate**, not the definition, and by default read it off their own
+statements — the head of the conclusion for existence, the head of a hypothesis for uniqueness.
+Name it explicitly (`@[characterization uniqueness IsEntropy]`) when the guess is wrong. The
+predicate is the hub because one definition can have several characterizations, and hanging every
+part off the definition would let a tool assemble the pieces of one into another.
+
+Two shapes of uniqueness theorem are accepted: `P x → P y → R x y`, and the `P x → R x definition`
+form Mathlib usually writes (`condExp_unique`). With the existence theorem in hand the second is
+just as good, and needs no symmetry of `R` to get there.
+
+### What is checked
+
+The shapes, by `isDefEq` rather than by matching syntax — so a theorem stated in unfolded form
+still counts, and the price is that the predicate has to be something the elaborator can see
+through rather than `opaque`. A tool reading a complete bundle back out can therefore report
+"characterized" as a *checked* fact, which is the whole difference from `@[specifies]`. Rejected:
+
+- a property that is not a predicate on the definition's type;
+- an existence theorem whose statement is not the property applied to the definition;
+- a uniqueness theorem that does not end in a relation between two objects its own hypotheses say
+  satisfy the property (or between one of them and the definition);
+- a theorem naming something never marked `@[characterization property]`;
+- a theorem whose property cannot be read off its statement and was not named;
+- the same misuses `@[specifies]` rejects: a proof where a definition belongs, a non-proposition
+  where a theorem belongs, a repeated registration, `local` or `scoped` application.
+
+### What is not
+
+That the characterization *says* anything. `P x := (x = definition)` is well-formed and conveys
+nothing, and so is a subtly wrong `P`. The checks buy well-formedness; the reader still has to read
+the property and the relation, which is why any presentation of a characterization has to show both
+in full. The one mechanical defence is a warning when the property mentions the definition it
+characterizes, silenced with:
+
+```lean
+set_option characterization.checkNotCircular false
+```
+
+Two further gaps are deliberate. Nothing requires the property to be invariant under the relation,
+so a bundle gives `P x → R x definition` and not the converse — the first is what a reader needs.
+And uniqueness is propositional: "unique up to *unique* isomorphism" is a term-level statement, and
+a characterization recorded with `R x y := Nonempty (x ≃ y)` loses the canonicity. For universal
+properties, Mathlib's bundled `IsColimit`-style formulation is the right tool and this is a weaker
+shadow of it.
+
+### Why one attribute name, and none on the relation
+
+Attribute names are global and unqualified, so three of them would be three chances to collide with
+another library and make the two mutually un-importable. The roles share one name, distinguished by
+a mandatory keyword.
+
+The relation gets no attribute because it could not have one: `Eq` is declared in core and
+`Filter.EventuallyEq` in Mathlib, and this library refuses to annotate an imported declaration —
+and a relation like `Setoid.r s` is a partial application with no declaration to annotate at all.
+It does have to be *applied*, though: the conclusion's last two arguments are the related pair, so
+a relation written inline as `Nonempty (x ≃ y)` has to be given a name and stated as `IsoRel x y`.
+A presentation wants that anyway, for the same reason it wants a named predicate.
+
+## Importing under the module system
+
+A file using the `module` keyword must import this library at compile time, since applying an
+attribute is a compile-time act:
+
+```lean
+module
+meta import LeanSpec
+```
+
+A plain `public import LeanSpec` is not enough on its own — the attributes are registered by the
+module's initializer, which a runtime-phase import does not run, and they are then reported as
+unknown attributes. Files not using the module system just write `import LeanSpec`.
+
 ## Reading the annotations back
 
 ```lean
 LeanSpec.specEntries (env : Environment) : Array LeanSpec.SpecEntry
 ```
 
-returns every annotation visible in `env` — theorem, target, comment — in declaration order.
-`specTargetsOf` and `specTheoremsFor` filter it in either direction.
+returns every `@[specifies]` annotation visible in `env` — theorem, target, comment — in
+declaration order. `specTargetsOf` and `specTheoremsFor` filter it in either direction.
+
+```lean
+LeanSpec.characterizations (env : Environment) : Array LeanSpec.Characterization
+```
+
+returns the characterizations, with the parts of each already grouped: the property, the target,
+and the existence and uniqueness theorems, each uniqueness entry carrying the relation it was
+stated up to. `Characterization.isComplete` is the distinction that matters — a property with an
+existence theorem and no uniqueness theorem says no more than a `@[specifies]` annotation does.
+`characterizationsOf` and `isCharacterized` answer the same questions per definition, and
+`charEntries` exposes the ungrouped entries.
+
+Both theorems of a characterization also write a `SpecEntry`, so a consumer that only knows about
+`@[specifies]` — "which definitions has nobody said anything about" — keeps working without
+learning about the second extension.
 
 A tool in a *different process* (one that imports a compiled project rather than being compiled
 into it) can read them too, but it must link this library and import with
@@ -125,8 +221,9 @@ identifier.
 
 ## Compatibility note for maintainers
 
-`SpecEntry`'s field layout is part of the `.olean` format: entries are deserialized as a memory
-image into whatever type the *reader's* copy of this library declares, and the reader may be built
-from a different revision than the project it reads. Adding or reordering fields is therefore not a
-backwards-compatible change. If it has to happen, rename the extension at the same time so that old
-entries are dropped rather than misread.
+`SpecEntry`'s and `CharEntry`'s field layouts, and `CharRole`'s constructor list, are part of the
+`.olean` format: entries are deserialized as a memory image into whatever type the *reader's* copy
+of this library declares, and the reader may be built from a different revision than the project it
+reads. Adding or reordering fields, or adding a constructor, is therefore not a backwards-compatible
+change. If it has to happen, rename the extension at the same time so that old entries are dropped
+rather than misread.

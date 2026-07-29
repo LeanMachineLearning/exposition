@@ -733,6 +733,126 @@ body.hide-theorems [data-decl-group="theorem"] {
   white-space: pre;
 }
 
+/* ------------------------------------------------ characterization listing */
+
+/* The claim that a property *determines* a definition, up to a stated relation
+   (`Block.charList`). One card per claim, with the three declarations it is made of nested inside
+   as ordinary `.spec-item`s.
+
+   The banner carries the whole weight. `x = y` and `f =ᵐ[μ] g` are very different claims about how
+   well a definition is pinned down, and a reader who skims the card and takes away "characterized"
+   without taking away "up to what" has read it wrong — so the relation is set larger than the
+   statements below it and is the first thing in the card. */
+
+.char-list {
+  list-style: none;
+  margin: .6rem 0 1.2rem;
+  padding: 0;
+}
+
+.char-bundle {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  border-radius: var(--site-radius);
+  margin-bottom: .9rem;
+  padding: .75rem .9rem .9rem;
+}
+
+.char-bundle:last-child { margin-bottom: 0; }
+
+.char-banner {
+  align-items: baseline;
+  border-bottom: 1px solid var(--site-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem .75rem;
+  padding-bottom: .55rem;
+}
+
+.char-banner-label {
+  color: var(--site-ok);
+  font-family: var(--verso-structure-font-family);
+  font-size: .74rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.char-banner-gap .char-banner-label { color: var(--site-warn); }
+
+/* A relation nothing is known to satisfy is not reassurance, so an unfinished bundle keeps the
+   warning colour even where it does have a relation to show. */
+.char-banner-gap .char-relation {
+  background: var(--site-warn-soft);
+  border: 1px solid var(--site-warn-border);
+}
+
+.char-banner-rels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem .6rem;
+  min-width: 0;
+}
+
+/* Larger than the statements below on purpose: this is the claim, they are the evidence. */
+.char-relation {
+  background: var(--site-ok-soft);
+  border-radius: var(--site-radius-sm);
+  font-family: var(--verso-code-font-family);
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+  padding: .1rem .45rem;
+}
+
+.char-relation-missing {
+  color: var(--site-warn);
+  font-size: .9rem;
+}
+
+.char-lede {
+  color: var(--site-ink-2);
+  font-size: .9rem;
+  margin: .55rem 0 0;
+}
+
+.char-lede-gap { color: var(--site-warn); }
+
+.char-lede code {
+  font-family: var(--verso-code-font-family);
+  overflow-wrap: anywhere;
+}
+
+.char-parts { margin: .55rem 0 0; }
+
+/* The three parts read as a sequence — property, then existence, then uniqueness — so they take
+   the theorem colour uniformly rather than the definition colour `.spec-item` defaults to. */
+.char-part { border-left-color: var(--site-kind-theorem); }
+
+.char-part-role {
+  color: var(--site-ink-3);
+  flex: 0 0 auto;
+  font-family: var(--verso-structure-font-family);
+  font-size: .72rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Repeated from the banner, for the case of several uniqueness theorems where the banner alone
+   cannot say which relation belongs to which. */
+.char-part-relation {
+  color: var(--site-ink-2);
+  font-size: .85rem;
+  margin: .35rem 0 0;
+}
+
+.char-part-relation code {
+  background: var(--site-surface-2);
+  border-radius: var(--site-radius-sm);
+  font-family: var(--verso-code-font-family);
+  padding: .05rem .3rem;
+}
+
 /* ----------------------------------------------------------------- browse */
 
 .browse-controls {

@@ -29,7 +29,12 @@ On top of that are the pages a referee needs and ordinary documentation does not
   no trust: the kernel rechecked them. Upstream *definitions your statements are about* do.
 - **[Specifications](docs/authoring.md)** — for projects that annotate with
   [`@[specifies]`](LeanSpec/): which definitions their author said something about, which they said
-  nothing about, and, on each definition's page, the properties themselves.
+  nothing about, and, on each definition's page, the properties themselves. Its stronger sibling
+  [`@[characterization]`](LeanSpec/) records the claim that a property pins the definition down
+  *uniquely*, up to a stated relation — and, unlike `@[specifies]`, the attribute checks that the
+  theorems really say so. Those get a section of their own above the specification, leading with the
+  relation, because "the unique such object up to `=`" and "up to a.e. equality" are different
+  claims and a page that says only "characterized" has told the reader the less useful half.
 - **[Audit state](docs/audit.md)** — what *you* have read. A declaration is *accepted* when you judge
   that it says what its name claims, and *covered* when everything its statement rests on is accepted
   too — so the page can report what a checkbox cannot: a claim accepted while resting on definitions

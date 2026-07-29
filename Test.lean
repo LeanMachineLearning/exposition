@@ -6,5 +6,6 @@ public import Test.Audit
 public import Test.Collect
 public import Test.Extract
 public import Test.Spec
+public import Test.Characterization
 
 @[expose] public section

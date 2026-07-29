@@ -240,4 +240,546 @@ initialize registerBuiltinAttribute {
       specExt.addEntry (asyncDecl := declName) env { theoremName := declName, target, comment }
 }
 
+/-!
+## `@[characterization]` — the theorems that pin a definition down
+
+`@[specifies]` records a claim, and nothing checks it beyond the target resolving. A
+*characterization* is the stronger thing, and it is checkable. It comes in three parts:
+
+* a **property** — a predicate `P` with an argument of the definition's type;
+* an **existence** theorem — that the definition satisfies `P`;
+* a **uniqueness** theorem — that anything satisfying `P` is related to anything else satisfying
+  `P` by some relation `R`.
+
+Together those say: the definition is *the* object with property `P`, up to `R`.
+
+```lean
+@[characterization property entropy "the Shannon axioms"]
+def IsEntropy (p : Distribution α) (h : ℝ) : Prop := …
+
+@[characterization existence]
+theorem isEntropy_entropy (p : Distribution α) : IsEntropy p (entropy p) := …
+
+@[characterization uniqueness]
+theorem IsEntropy.unique (h₁ : IsEntropy p x) (h₂ : IsEntropy p y) : x = y := …
+```
+
+The two theorems name the *predicate*, not the definition, and by default read it off their own
+statements. The predicate is the hub because a definition can have more than one characterization
+— entropy by the Shannon axioms and entropy by a variational formula — and hanging every part off
+the definition would let a tool assemble the pieces of one into the other.
+
+`R` is a relation rather than equality outright because plenty of objects are only determined up
+to a.e. equality, or up to isomorphism.
+
+### What is checked, and what is not
+
+The shapes are checked by `isDefEq`, not by matching syntax: the existence theorem's statement has
+to *be* `P … (definition …)`, and the uniqueness theorem's has to relate two objects that its own
+hypotheses say satisfy `P`. A tool reading a complete bundle back out can therefore report
+"characterized" as a checked fact rather than as an author's assertion, which is the whole
+difference from `@[specifies]`.
+
+What is *not* checked is that the characterization says anything. `P x := (x = definition)` is a
+well-formed characterization that conveys nothing, and so is a `P` that is subtly the wrong
+property. The checks buy well-formedness; the reader still has to read `P` and `R`, which is why
+any presentation of a characterization has to show both in full, and why a predicate mentioning
+the definition it characterizes draws a warning (`characterization.checkNotCircular`).
+
+Two further gaps, both deliberate:
+
+* nothing requires `P` to be `R`-invariant, so a bundle gives `P x → R x definition` and not the
+  converse. The first is what a reader needs; the second is extra work for no gain here.
+* uniqueness is propositional. "Unique up to *unique* isomorphism" is a term-level statement, and
+  a characterization recorded here with `R x y := Nonempty (x ≃ y)` loses the canonicity. For
+  universal properties, Mathlib's bundled `IsColimit`-style formulation is the right tool and this
+  is a weaker shadow of it.
+
+### Feeding `specEntries`
+
+Both theorems of a characterization are also, trivially, part of the specification of the
+definition, so each writes a `SpecEntry` as well. A consumer that only knows about `@[specifies]`
+— "which definitions has nobody said anything about" — keeps working without learning about the
+second extension.
+
+### One attribute name, and no attribute on the relation
+
+Attribute names are global and unqualified, and a collision between two libraries makes them
+mutually un-importable (see the note on the `specifies` name above). The three roles therefore
+share one registered name, distinguished by a mandatory keyword.
+
+The relation gets no attribute at all: it is read off the uniqueness theorem's conclusion. That is
+the only thing that could work — `Eq` is declared in core, `Filter.EventuallyEq` in Mathlib, and
+this file refuses to annotate an imported declaration; and a relation like `Setoid.r s` is a
+partial application with no declaration to annotate in the first place.
+
+### The same `.olean` caveats
+
+`CharEntry`'s field layout, `CharRole`'s constructor list, and the name of `charExt` are all part
+of the on-disk format, for exactly the reasons spelled out for `SpecEntry` in the module docstring.
+-/
+
+/-- Which of the three parts of a characterization a `@[characterization …]` annotation records.
+
+The constructor list is part of the `.olean` format — see the note on compatibility in the module
+docstring before changing it. -/
+inductive CharRole where
+  /-- The predicate an object of the definition's type may or may not satisfy. -/
+  | property
+  /-- The theorem that the definition satisfies the predicate. -/
+  | existence
+  /-- The theorem that the predicate determines its subject up to a relation. -/
+  | uniqueness
+deriving Repr, Inhabited, BEq
+
+/-- The keyword that selects this role in the attribute. -/
+def CharRole.keyword : CharRole → String
+  | .property => "property"
+  | .existence => "existence"
+  | .uniqueness => "uniqueness"
+
+/-- One `@[characterization …]` annotation: the declaration it was written on, which part of a
+characterization that declaration is, and the predicate/definition pair the part belongs to.
+
+Both `property` and `target` are recorded on every entry, including the theorems, so that the
+parts of one characterization can be grouped without re-deriving anything — a predicate may
+characterize more than one definition, and a theorem belongs to exactly one of those bundles.
+
+The field layout is part of the `.olean` format — see the note on compatibility in the module
+docstring before changing it. -/
+structure CharEntry where
+  /-- The annotated declaration. -/
+  declName : Name
+  /-- What this declaration contributes. -/
+  role : CharRole
+  /-- The characterizing predicate. Equal to `declName` on a `.property` entry. -/
+  property : Name
+  /-- The definition being characterized. -/
+  target : Name
+  /-- On a `.uniqueness` entry, the theorem's conclusion as written, pretty-printed with its own
+  variable names (`x = y`, `f =ᵐ[μ] g`) — the "up to what" of the characterization, and the thing
+  a presentation should show. Empty on the other roles. -/
+  relation : String := ""
+  /-- On a `.uniqueness` entry, the head constant of that conclusion (`Eq`,
+  `Filter.EventuallyEq`, …), for grouping and filtering. Anonymous when there is none, and on the
+  other roles. -/
+  relationHead : Name := .anonymous
+  /-- The author's justification, as written in the attribute. Empty when omitted. -/
+  comment : String := ""
+deriving Repr, Inhabited, BEq
+
+/-- Every `@[characterization]` annotation of the current module and of everything it imports, in
+declaration order. -/
+initialize charExt : SimplePersistentEnvExtension CharEntry (Array CharEntry) ←
+  registerSimplePersistentEnvExtension {
+    addEntryFn := Array.push
+    addImportedFn := fun entries => entries.flatten
+  }
+
+/-- Every characterization annotation visible in `env`, in declaration order. The entry point for
+tools that want the parts; most will want `characterizations` instead, which assembles them. -/
+def charEntries (env : Environment) : Array CharEntry :=
+  charExt.getState env
+
+/-- The definitions `pred` is registered as characterizing. Empty for a predicate that carries no
+`@[characterization property]`, which is what the attribute uses to reject a theorem pointing at
+something nobody declared to be a characterizing property. -/
+def characterizedBy (env : Environment) (pred : Name) : Array Name :=
+  (charEntries env).filterMap fun e =>
+    if e.role == .property && e.property == pred then some e.target else none
+
+/-- One definition, one property claimed to characterize it, and the theorems supplying the two
+halves of that claim.
+
+Assembled from `charEntries`; not itself persisted, so its layout is free to change. -/
+structure Characterization where
+  /-- The characterizing predicate. -/
+  property : Name
+  /-- The definition it characterizes. -/
+  target : Name
+  /-- The author's note on the predicate. -/
+  comment : String := ""
+  /-- The theorems stating that `target` satisfies `property`. -/
+  existence : Array CharEntry := #[]
+  /-- The theorems stating that `property` determines its subject up to a relation. -/
+  uniqueness : Array CharEntry := #[]
+deriving Repr, Inhabited
+
+/-- Whether both halves of the claim are present. A characterization with a property and an
+existence theorem but no uniqueness theorem says no more than a `@[specifies]` annotation does:
+the definition has the property, and so might anything else. -/
+def Characterization.isComplete (c : Characterization) : Bool :=
+  !c.existence.isEmpty && !c.uniqueness.isEmpty
+
+/-- Every characterization visible in `env`, complete or not, in declaration order of the
+predicates.
+
+Quadratic in the number of annotations, like `specTheoremsFor`; group `charEntries` yourself if
+you need this for a whole library at once. -/
+def characterizations (env : Environment) : Array Characterization :=
+  let entries := charEntries env
+  entries.filterMap fun p =>
+    if p.role != .property then none
+    else some {
+      property := p.property
+      target := p.target
+      comment := p.comment
+      existence := entries.filter fun e =>
+        e.role == .existence && e.property == p.property && e.target == p.target
+      uniqueness := entries.filter fun e =>
+        e.role == .uniqueness && e.property == p.property && e.target == p.target }
+
+/-- The characterizations claimed for `target`, complete or not. -/
+def characterizationsOf (env : Environment) (target : Name) : Array Characterization :=
+  (characterizations env).filter (·.target == target)
+
+/-- Whether some property is claimed to characterize `target` *and* both halves of that claim have
+been supplied. This is the question the audit asks: a definition that is merely specified is one a
+reader has to take partly on faith, and one that is characterized is not. -/
+def isCharacterized (env : Environment) (target : Name) : Bool :=
+  (characterizationsOf env target).any (·.isComplete)
+
+/-! ### Reading the shapes
+
+Everything below decides, from elaborated types, whether a declaration really has the shape its
+annotation claims. Three rules hold throughout:
+
+* comparison is `isDefEq`, not syntactic matching, so a theorem stated in unfolded form still
+  counts. The price is that the predicate has to be a `def`, `structure` or `class` the elaborator
+  can see through, not something `opaque`.
+* metavariables are created *inside* whatever telescope they will be unified against. A
+  metavariable cannot be assigned a free variable introduced after it was created, so opening the
+  predicate before entering the theorem's binders would make every check fail.
+* a trial that may fail runs under `withoutModifyingState`, since a failed `isDefEq` can leave
+  partial assignments behind that would poison the next trial.
+-/
+
+/-- `pred` applied to fresh metavariables, paired with the metavariable in its last argument
+position — the *characterized slot*, the one an object of the definition's type goes into.
+
+`none` when `pred` is not a predicate at all: it has to take at least one argument and land in
+`Prop`. The last argument is the slot by convention; a predicate with several arguments of the
+definition's type characterizes the last of them. -/
+private def openPredicate (pred : Name) : MetaM (Option (Expr × Expr)) := do
+  let P ← Meta.mkConstWithFreshMVarLevels pred
+  let (args, _, body) ← Meta.forallMetaTelescope (← Meta.inferType P)
+  if args.isEmpty then return none
+  unless (← instantiateMVars body).isProp do return none
+  return some (mkAppN P args, args.back!)
+
+/-- `target` applied to fresh metavariables, at every arity from fully applied down to bare.
+
+A characterization can be of the definition applied to its arguments (`IsCondExp μ f (μ[f|m])`,
+the usual case) or of the definition itself as a function, and nothing in the annotation says
+which, so both are tried — fully applied first, since that is what authors mean far more often. -/
+private def openTargetAtEachArity (target : Name) : MetaM (Array Expr) := do
+  let d ← Meta.mkConstWithFreshMVarLevels target
+  let (args, _, _) ← Meta.forallMetaTelescope (← Meta.inferType d)
+  return (Array.range (args.size + 1)).reverse.map fun k => mkAppN d (args.extract 0 k)
+
+/-- Whether `pred` is a predicate on the type of `target`: its characterized slot accepts `target`
+applied to some prefix of `target`'s own arguments. -/
+private def isPredicateOn (pred target : Name) : MetaM Bool := do
+  let some (_, slot) ← openPredicate pred | return false
+  let slotType ← Meta.inferType slot
+  for t in ← openTargetAtEachArity target do
+    let tType ← Meta.inferType t
+    if ← withoutModifyingState (Meta.isDefEq slotType tType) then return true
+  return false
+
+/-- Whether `thmType` states that `target` satisfies `pred` — that is, whether it is, under its
+binders, `pred` applied to arguments whose last is `target` applied to some prefix of its own.
+
+Forcing the slot to be `target` *before* unifying the whole statement is what makes a single
+error message possible: without it a statement of the right shape about the wrong object would
+leave the slot holding something else, or nothing at all.
+
+The one false negative worth knowing about: the witness has to be *built from* the definition,
+syntactically. `IsDouble 2 4` says that `double 2` satisfies `IsDouble 2`, and says it
+definitionally, but unification cannot run `double` backwards to discover that, so it is rejected.
+Writing the witness as `double 2` is both accepted and clearer. -/
+private def statesExistence (thmType : Expr) (pred target : Name) : MetaM Bool :=
+  Meta.forallTelescopeReducing thmType fun _ concl => do
+    let some (papp, slot) ← openPredicate pred | return false
+    for t in ← openTargetAtEachArity target do
+      let ok ← withoutModifyingState do
+        if ← Meta.isDefEq slot t then Meta.isDefEq concl papp else return false
+      if ok then return true
+    return false
+
+/-- If `e` is `pred` applied to arguments, the object in its characterized slot.
+
+`none` also when the slot comes back undetermined: a hypothesis that does not say *which* object
+satisfies the property is not one the conclusion can be relating. -/
+private def predSlotIn? (pred : Name) (e : Expr) : MetaM (Option Expr) :=
+  withoutModifyingState do
+    let some (papp, slot) ← openPredicate pred | return none
+    unless ← Meta.isDefEq e papp do return none
+    let s ← instantiateMVars slot
+    -- `s` is built from the ambient free variables, so it outlives the state restore; a leftover
+    -- metavariable would not.
+    return if s.hasExprMVar then none else some s
+
+/-- Whether `thmType` states that `pred` determines its subject up to a relation, and if so that
+relation: the conclusion as written, and its head constant.
+
+Two shapes are accepted, both after telescoping the binders:
+
+* `… → pred … x → … → pred … y → R x y`, two hypotheses in `pred`, related to each other;
+* `… → pred … x → … → R x (target …)`, one hypothesis, related to the definition itself. That is
+  the form Mathlib usually writes (`condExp_unique`) and it is just as good: with the existence
+  theorem in hand, `P x → R x definition` is exactly the conclusion a reader wants, and no
+  symmetry of `R` is needed to get there.
+
+The relation has to be *applied* — the conclusion's last two arguments are the related pair. One
+written inline, as `Nonempty (x ≃ y)` is, has to be given a name and stated as `IsoRel x y`, which
+a presentation wants anyway for the same reason it wants a named predicate: something to show the
+reader and link to. -/
+private def statesUniqueness (thmType : Expr) (pred target : Name) :
+    MetaM (Option (String × Name)) :=
+  Meta.forallTelescopeReducing thmType fun binders concl => do
+    let args := concl.getAppArgs
+    if args.size < 2 then return none
+    let lhs := args[args.size - 2]!
+    let rhs := args[args.size - 1]!
+    let sameTerm (x y : Expr) : MetaM Bool := withoutModifyingState (Meta.isDefEq x y)
+    -- whether the conclusion relates `a` and `b`, in either order
+    let relates (a b : Expr) : MetaM Bool := do
+      if (← sameTerm lhs a) && (← sameTerm rhs b) then return true
+      if (← sameTerm lhs b) && (← sameTerm rhs a) then return true
+      return false
+    let mut slots := #[]
+    for b in binders do
+      if let some s ← predSlotIn? pred (← Meta.inferType b) then
+        slots := slots.push s
+    let mut ok := false
+    for a in slots do
+      for b in slots do
+        unless a == b do
+          if ← relates a b then ok := true
+    unless ok do
+      let targets ← openTargetAtEachArity target
+      for a in slots do
+        for t in targets do
+          if ← relates a t then ok := true
+    unless ok do return none
+    return some ((← Meta.ppExpr concl).pretty (width := 1000),
+      concl.getAppFn.constName?.getD .anonymous)
+
+/-- The characterizing property `declName` is about, guessed from its own statement: for an
+existence theorem the head of the conclusion, for a uniqueness theorem the head of the first
+hypothesis that names one. Only constants already registered as characterizing properties count,
+which is what keeps the guess from latching onto an unrelated `Membership` or `Filter`.
+
+Deliberately syntactic where the shape checks are not: this decides *which* claim is being made,
+and a near-miss here would silently file the annotation under the wrong predicate rather than
+report that the author has to be explicit. -/
+private def inferProperty (env : Environment) (thmType : Expr) (role : CharRole) :
+    MetaM (Option Name) :=
+  Meta.forallTelescopeReducing thmType fun binders concl => do
+    let registered (n : Name) : Bool := !(characterizedBy env n).isEmpty
+    if role == .existence then
+      match concl.getAppFn.constName? with
+      | some n => return if registered n then some n else none
+      | none => return none
+    for b in binders do
+      if let some n := (← Meta.inferType b).getAppFn.constName? then
+        if registered n then return some n
+    return none
+
+/-- The constants a candidate property is built out of. A `structure` or `class` has its fields'
+types nowhere in here, so the circularity check below does not see through one — a limitation, not
+a soundness hole, since the check is a warning either way. -/
+private def predicateUses (info : ConstantInfo) : Array Name :=
+  info.type.getUsedConstants ++ (info.value?.map Expr.getUsedConstants).getD #[]
+
+/-- `` `a` ``, `` `a` and `b` ``, `` `a`, `b` and `c` `` — for listing candidate targets in an
+error message. -/
+private def andList (ns : Array Name) : MessageData :=
+  match ns.toList.reverse with
+  | [] => m!"nothing"
+  | [n] => m!"`{n}`"
+  | n :: rest =>
+    m!"{MessageData.joinSep (rest.reverse.map fun r => m!"`{r}`") ", "} and `{n}`"
+
+/-! ### The attribute -/
+
+/--
+`@[characterization property definition "why"]`, `@[characterization existence]` and
+`@[characterization uniqueness]` mark the three parts of a claim that a definition is *the* object
+with a given property: the predicate, the theorem that the definition satisfies it, and the
+theorem that nothing else does — up to a relation read off that theorem's own conclusion.
+
+```lean
+@[characterization property entropy "the Shannon axioms"]
+def IsEntropy (p : Distribution α) (h : ℝ) : Prop := …
+
+@[characterization existence]
+theorem isEntropy_entropy (p : Distribution α) : IsEntropy p (entropy p) := …
+
+@[characterization uniqueness]
+theorem IsEntropy.unique (h₁ : IsEntropy p x) (h₂ : IsEntropy p y) : x = y := …
+```
+
+The role keyword is required. The predicate on the two theorems is optional — by default it is
+read off the statement — and can be given when the guess is wrong or ambiguous, as
+`@[characterization uniqueness IsEntropy]`. A comment may follow in either position; on the
+property it is the place to say what the characterization is *called*.
+
+Unlike `@[specifies]`, the shapes are checked: a theorem whose statement is not what its role
+claims is a build error, not a wrong entry in a published specification.
+-/
+syntax (name := characterization) (priority := high) &"characterization"
+  ppSpace (&"property" <|> &"existence" <|> &"uniqueness")
+  (ppSpace ident)? (ppSpace str)? : attr
+
+register_option characterization.checkNotCircular : Bool := {
+  defValue := true
+  descr := "warn when a predicate carrying `@[characterization property f]` mentions `f`, which \
+    would make the characterization vacuous"
+}
+
+/-- The role named by `stx`.
+
+Three shapes have to be read, because the same source text arrives differently depending on which
+parser produced it: a `&"keyword"` in an alternation becomes a wrapper node of kind
+`token.property`, a bare one becomes an atom (whose kind is its own text), and `Attr.simple` would
+deliver an identifier. All three carry the word in the last component of the kind, or in the
+identifier. -/
+private def roleOf? (stx : Syntax) : Option CharRole :=
+  let word :=
+    if stx.isIdent then toString stx.getId
+    else match stx.getKind with
+      | .str _ s => s
+      | _ => ""
+  match word with
+  | "property" => some .property
+  | "existence" => some .existence
+  | "uniqueness" => some .uniqueness
+  | _ => none
+
+initialize registerBuiltinAttribute {
+  name := `characterization
+  descr := "mark this declaration as one of the three parts of a characterization of a definition"
+  applicationTime := .afterTypeChecking
+  add := fun declName stx attrKind => do
+    unless attrKind == .global do
+      throwError "`characterization` must be a global attribute: a characterization is a claim \
+        about the definition, not about a section or a namespace"
+
+    -- `@[characterization existence]` is an identifier followed by one identifier, which is also
+    -- exactly what `Attr.simple` accepts. `priority := high` should mean the parser above wins,
+    -- but both shapes are handled so that a change in that resolution is not a silent failure.
+    let (roleStx, hubStx?, commentStx?) :=
+      if stx.getKind == ``Lean.Parser.Attr.simple then
+        (stx[1][0], none, none)
+      else
+        (stx[1], stx[2].getOptional?, stx[3].getOptional?)
+    let some role := roleOf? roleStx
+      | throwError "invalid `characterization` attribute, expected `@[characterization property \
+          myDefinition]`, `@[characterization existence]` or `@[characterization uniqueness]`"
+    let comment := (commentStx?.bind Syntax.isStrLit?).getD ""
+
+    let env ← getEnv
+    unless (env.getModuleIdxFor? declName).isNone do
+      throwError "cannot apply `characterization` to `{declName}`, which is declared in an \
+        imported module: the annotation would not be recorded in this module's `.olean`"
+    let some info := env.find? declName
+      | throwError "unknown declaration `{declName}`"
+
+    if role == .property then
+      if ← isProof info then
+        throwError "`characterization property` belongs on a predicate, but `{declName}` is a \
+          proof. The property is the statement a characterization is *about*; the theorem that \
+          the definition satisfies it carries `@[characterization existence]`"
+      let some hubStx := hubStx?
+        | throwError "`@[characterization property]` needs the definition it characterizes, as \
+            `@[characterization property myDefinition]`"
+      let target ← Elab.realizeGlobalConstNoOverloadWithInfo hubStx
+      if target == declName then
+        throwError "`{declName}` cannot characterize itself"
+      let some targetInfo := env.find? target
+        | throwError "unknown declaration `{target}`"
+      if ← isProof targetInfo then
+        throwError "`{target}` is itself a proof, but `characterization property` names the \
+          definition the annotated predicate is a property of"
+      unless ← Meta.MetaM.run' (isPredicateOn declName target) do
+        throwError "`{declName}` cannot characterize `{target}`: a characterizing property has to \
+          land in `Prop` with a last argument of the type its definition has, or returns, so that \
+          `{declName} … ({target} …)` is a proposition. Here the property is\
+          {indentExpr info.type}\nand the definition is{indentExpr targetInfo.type}"
+      if (charEntries env).any fun e =>
+          e.role == .property && e.declName == declName && e.target == target then
+        throwError "`{declName}` is already registered as a characterizing property of `{target}`"
+
+      -- A property that refers to the definition it characterizes is satisfied by that definition
+      -- for no reason at all, and pins nothing down. Nearly always a mistake, but only nearly —
+      -- the reference can sit in a side condition that carries none of the content — so it is a
+      -- warning, as the corresponding check on `@[specifies]` is.
+      if characterization.checkNotCircular.get (← getOptions) then
+        if (predicateUses info).contains target then
+          logWarning m!"`{declName}` is marked as a characterizing property of `{target}`, but it \
+            mentions `{target}`: a property that refers to the definition it characterizes pins \
+            nothing down. Set `characterization.checkNotCircular` to `false` to silence this."
+
+      modifyEnv fun env =>
+        charExt.addEntry (asyncDecl := declName) env
+          { declName, role := .property, property := declName, target, comment }
+    else
+      unless ← isProof info do
+        throwError "`characterization {role.keyword}` belongs on a theorem, but `{declName}` is \
+          not a proposition"
+      let pred ← match hubStx? with
+        | some id => Elab.realizeGlobalConstNoOverloadWithInfo id
+        | none =>
+          match ← Meta.MetaM.run' (inferProperty env info.type role) with
+          | some p => pure p
+          | none =>
+            throwError "cannot tell which characterizing property `{declName}` is part of: \
+              nothing in its statement is registered with `@[characterization property]`. Name it \
+              explicitly, as `@[characterization {role.keyword} MyProperty]`"
+      let targets := characterizedBy env pred
+      if targets.isEmpty then
+        throwError "`{pred}` is not a characterizing property: mark it with \
+          `@[characterization property theDefinition]` before naming it here"
+
+      -- A predicate may characterize more than one definition, and this theorem belongs to
+      -- exactly one of those bundles; which one is settled by the statement, not by the author.
+      let mut found : Option (Name × String × Name) := none
+      for target in targets do
+        if found.isSome then continue
+        if role == .existence then
+          if ← Meta.MetaM.run' (statesExistence info.type pred target) then
+            found := some (target, "", .anonymous)
+        else
+          if let some (rel, relHead) ← Meta.MetaM.run' (statesUniqueness info.type pred target) then
+            found := some (target, rel, relHead)
+      let some (target, relation, relationHead) := found
+        | if role == .existence then
+            throwError "`{declName}` does not state that {andList targets} satisfies `{pred}`: \
+              that would be `{pred} … x`, with `x` built from the definition. Its statement is\
+              {indentExpr info.type}"
+          else
+            throwError "`{declName}` does not state that `{pred}` determines its subject: that \
+              would end in a relation between two objects its hypotheses say satisfy `{pred}`, \
+              or between one such object and {andList targets}. Its statement is\
+              {indentExpr info.type}"
+
+      if (charEntries env).any fun e =>
+          e.role == role && e.declName == declName && e.property == pred && e.target == target then
+        throwError "`{declName}` is already registered as the {role.keyword} part of the \
+          characterization of `{target}` by `{pred}`"
+
+      modifyEnv fun env =>
+        charExt.addEntry (asyncDecl := declName) env
+          { declName, role, property := pred, target, relation, relationHead, comment }
+      -- A theorem of a characterization is a fortiori part of the specification of the
+      -- definition, so it is recorded as one too — see the note on `specEntries` above. Skipped
+      -- when the author also wrote `@[specifies]`, whose own duplicate check is an error.
+      unless (specEntries env).any fun e => e.theoremName == declName && e.target == target do
+        modifyEnv fun env =>
+          specExt.addEntry (asyncDecl := declName) env
+            { theoremName := declName, target, comment }
+}
+
 end LeanSpec
