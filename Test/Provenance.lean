@@ -181,7 +181,24 @@ private def rowIn (p : Provenance) (n : Name) (edits : Array (Name × EditInfo) 
 -- Never changed within the ledger, so the page must say "since the ledger began" rather than imply
 -- it was seen to change at v1.
 #guard (rowIn v3 `B).map (·.sinceFirstSeen) == some true
+#guard (rowIn v3 `B).map (·.seenFromStart) == some true
 #guard (rowIn v3 `Absent).isNone
+
+/-! ### Added later, and never moved since
+
+A change count of zero has two causes, and only one of them means "has always been this way". `C`
+first appears at `v2`: it has never changed, so `sinceFirstSeen` holds, but it was not there at the
+oldest revision. Reporting the two alike printed `v2` — the *newest* revision — as the oldest on
+record, and a declaration added in the latest commit as part of the original library. -/
+
+#guard (rowIn withNew `C).map (·.sinceFirstSeen) == some true
+#guard (rowIn withNew `C).map (·.seenFromStart) == some false
+-- `changedAt` equals `firstSeenAt` when nothing has changed, so the ref is already the right one
+-- and only the wording has to differ.
+#guard (rowIn withNew `C).map (·.changedRef) == some "v2"
+-- The declarations that really were there from the start keep the other phrasing.
+#guard (rowIn withNew `A).map (·.seenFromStart) == some true
+#guard (rowIn withNew `B).map (·.seenFromStart) == some true
 
 /-! ### The sentence the declaration page exists to print
 

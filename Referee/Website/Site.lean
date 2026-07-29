@@ -637,7 +637,14 @@ block_extension Block.provenanceLine (_payload : ProvenanceRow) where
       | Verso.reportError s!"Could not decode provenance data from {data.compress}"
         pure .empty
     let meaningPart :=
-      if row.sinceFirstSeen then
+      -- Never changed, but not there from the start: it was *added* at this revision. Saying
+      -- "unchanged since the oldest revision on record" here would name the newest revision and
+      -- call it the oldest, reporting a declaration added yesterday as part of the original
+      -- library — the one thing a provenance line must not get backwards.
+      if row.sinceFirstSeen && !row.seenFromStart then
+        {{<span>"New in "<strong>{{row.changedRef}}</strong>" ("{{row.changedDate}}"), and its
+          meaning has not changed since."</span>}}
+      else if row.sinceFirstSeen then
         {{<span>"Meaning unchanged since "<strong>{{row.changedRef}}</strong>", the oldest
           revision on record ("{{row.changedDate}}")."</span>}}
       else
@@ -1823,6 +1830,7 @@ private def mkRevisionPickerBlocks (decls : Array DeclInfo) (ctx : SiteContext)
         href := (ctx.declPageHrefs.get? decl.name).getD ""
         module := decl.modulePath
         changedAt := entry.changedAt
+        firstSeenAt := entry.firstSeenAt
         everChanged := entry.changeCount > 0
         kind := entry.lastKind
         dependents := dependentCount decl.name ctx
@@ -2559,8 +2567,8 @@ private def mkChangesPart (report? : Option DiffReport) (decls : Array DeclInfo)
       #[.other (Block.sectionHeading "Since a revision you choose") #[],
         .para #[
           .text "Every revision this project has recorded provenance for. Pick the one you last \
-            worked through and the queue below is what no longer means what it meant then, \
-            heaviest first."
+            worked through and the queue below is what has appeared since, plus what no longer \
+            means what it meant then, heaviest first."
         ]] ++ mkRevisionPickerBlocks decls ctx
   let baselineBlocks := match report? with
     | none => #[]
@@ -3590,9 +3598,16 @@ private def runProvenance (cfg : Cli) : IO UInt32 := do
   let out := { folded with edits := edits, dirty := dirty }
   IO.FS.writeFile ledgerPath (ToJson.toJson out).compress
   let rev := out.revisions.back!
+  -- Derived rather than stored: a first sighting is not a change, so `changedCount` alone reports
+  -- a revision that only added declarations as having done nothing. Counting the entries whose
+  -- first sighting is this revision needs no field in the ledger, and so is exact for every
+  -- revision including those folded by an older build.
+  let idx := out.revisions.size - 1
+  let added := out.entries.foldl (init := 0) fun n e => if e.firstSeenAt == idx then n + 1 else n
   IO.println s!"Folded {ref} ({head.shortSha}, {head.date}) into {ledgerPath}: \
-    {out.revisions.size} revisions recorded, {rev.changedCount} of {data.decls.size} declarations \
-    changed meaning, blame for {edits.size} in {(← IO.monoMsNow) - startMs}ms"
+    {out.revisions.size} revisions recorded, {added} of {data.decls.size} declarations new and \
+    {rev.changedCount} changed meaning, blame for {edits.size} in \
+    {(← IO.monoMsNow) - startMs}ms"
   if out.revisions.size == 1 then
     IO.println "This is the first revision in the ledger, so nothing is reported as changed. \
       Provenance starts accumulating from the next one."

@@ -37,6 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   const KIND_LABEL = {
+    new: 'new declaration',
     statement: 'statement changed',
     body: 'definition changed',
     indirect: 'meaning changed indirectly',
@@ -63,42 +64,62 @@ document.addEventListener('DOMContentLoaded', () => {
   function render() {
     const since = Number(select.value);
     const chosen = revisions[since];
-    // Strictly after: a declaration that changed *at* the chosen revision changed as part of it,
-    // and a reader who worked through that revision read the result.
-    const moved = decls.filter(d => d.everChanged && d.changedAt > since);
-    moved.sort((a, b) => (b.dependents - a.dependents) || a.name.localeCompare(b.name));
+    // Strictly after, in both directions: a declaration that changed *at* the chosen revision
+    // changed as part of it, and a reader who worked through that revision read the result.
+    //
+    // Additions are their own category rather than a kind of change. A first sighting is
+    // deliberately not counted as a change in the ledger (see `foldRevision`), so filtering on
+    // `everChanged` alone drops every declaration added since — which reported a revision that
+    // added six declarations, and a page that had never seen them, as changing nothing at all.
+    // A declaration that is both new and has since moved counts once, as new: the reader has to
+    // read the whole of it either way, and "changed meaning" would understate that.
+    const isNew = d => d.firstSeenAt > since;
+    const fresh = decls.filter(isNew);
+    const moved = decls.filter(d => d.everChanged && d.changedAt > since && !isNew(d));
+    const byWeight = (a, b) => (b.dependents - a.dependents) || a.name.localeCompare(b.name);
+    fresh.sort(byWeight);
+    moved.sort(byWeight);
+    const queue = fresh.concat(moved);
 
     const counts = {};
     moved.forEach(d => { counts[d.kind] = (counts[d.kind] || 0) + 1; });
-    const breakdown = Object.keys(counts).sort((a, b) => counts[b] - counts[a])
-      .map(k => `${counts[k]} ${esc(KIND_LABEL[k] || k)}`).join(' · ');
+    const breakdown = (fresh.length ? [`${fresh.length} ${esc(KIND_LABEL.new)}`] : [])
+      .concat(Object.keys(counts).sort((a, b) => counts[b] - counts[a])
+        .map(k => `${counts[k]} ${esc(KIND_LABEL[k] || k)}`)).join(' · ');
 
     const spanned = revisions.length - 1 - since;
-    if (!moved.length) {
-      result.innerHTML = `<p><strong>Nothing has changed meaning since
+    if (!queue.length) {
+      result.innerHTML = `<p><strong>Nothing is new or has changed meaning since
         ${esc(chosen.ref)}.</strong> ${spanned} later
-        ${spanned === 1 ? 'revision was' : 'revisions were'} recorded, and no declaration means
-        anything different from what it meant then.</p>`;
+        ${spanned === 1 ? 'revision was' : 'revisions were'} recorded, and every declaration that
+        was there then still means what it meant.</p>`;
       return;
     }
 
     result.innerHTML = `
-      <p><strong>${moved.length} ${moved.length === 1 ? 'declaration means' : 'declarations mean'}
-         something different from ${esc(chosen.ref)}</strong>${breakdown ? ` — ${breakdown}` : ''}.
-         Ordered by how much rests on each, so the expensive re-reading comes first.</p>
-      <p class="rev-caveat">This is the queue, not a diff: the ledger records that the meaning moved
-         and at which revision, not what the statement used to say. For the statements side by side,
-         build with <code>--baseline</code> against that revision's <code>data.json</code>.</p>
+      <p><strong>${queue.length} ${queue.length === 1
+           ? 'declaration is new or means something different'
+           : 'declarations are new or mean something different'}
+         from ${esc(chosen.ref)}</strong>${breakdown ? ` — ${breakdown}` : ''}.
+         Ordered by how much rests on each, so the expensive reading comes first.</p>
+      <p class="rev-caveat">This is the queue, not a diff: the ledger records that a declaration
+         appeared or that its meaning moved, and at which revision, not what the statement used to
+         say. For the statements side by side, build with <code>--baseline</code> against that
+         revision's <code>data.json</code>.</p>
       <ul class="audit-list">
-        ${moved.slice(0, 400).map(d => `<li class="audit-item">
-          <a class="audit-name" href="${esc(d.href)}"><code>${esc(d.name)}</code></a>
-          <span class="audit-meta">${d.dependents} rest on it · ${esc(d.module)}</span>
-          <span class="audit-meta">${esc(revisions[d.changedAt] ? revisions[d.changedAt].ref : '')}
-            ${esc(KIND_LABEL[d.kind] || d.kind || '')}</span>
-        </li>`).join('')}
+        ${queue.slice(0, 400).map(d => {
+          const at = isNew(d) ? d.firstSeenAt : d.changedAt;
+          const label = isNew(d) ? KIND_LABEL.new : (KIND_LABEL[d.kind] || d.kind || '');
+          return `<li class="audit-item">
+            <a class="audit-name" href="${esc(d.href)}"><code>${esc(d.name)}</code></a>
+            <span class="audit-meta">${d.dependents} rest on it · ${esc(d.module)}</span>
+            <span class="audit-meta">${esc(revisions[at] ? revisions[at].ref : '')}
+              ${esc(label)}</span>
+          </li>`;
+        }).join('')}
       </ul>
-      ${moved.length > 400
-        ? `<p class="rev-caveat">Showing the first 400 of ${moved.length}.</p>`
+      ${queue.length > 400
+        ? `<p class="rev-caveat">Showing the first 400 of ${queue.length}.</p>`
         : ''}`;
   }
 

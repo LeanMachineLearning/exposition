@@ -23,6 +23,11 @@ combines them:
 > Meaning unchanged since v0.1, the oldest revision on record (2026-07-28). Its file was edited
 > 2026-07-29 (`e2aaa83`, “reformat DiffReport.byName”) without changing what it means.
 
+A declaration added part-way through gets the other phrasing — *New in v0.3 (2026-07-29), and its
+meaning has not changed since* — because "unchanged since the oldest revision on record" is a claim
+about a declaration that was there at the start, and saying it of one added yesterday reports the
+opposite of what a reader needs.
+
 Shown only where the ledger is a good enough measure to support it. Without a ledger no page
 mentions when anything changed, and `provenance` refuses to run on data collected without
 `--hashes` rather than falling back to comparing pretty-printed types — the ledger is append-only,
@@ -33,7 +38,10 @@ so a text-keyed one would record the mass false change of a toolchain upgrade *p
 - the line above, under every declaration's card;
 - a **Meaning moved** column on Browse, sortable — ascending is what has been settled longest;
 - a **revision selector** on the Changes page: pick the revision you last worked through and the
-  queue is what no longer means what it meant then, ordered by how much rests on each. It works
+  queue is what has appeared since, plus what no longer means what it meant then, ordered by how
+  much rests on each. Additions are their own category and not a kind of change: a first sighting
+  has nothing to have changed *from*, so the ledger does not count it as a change, but a
+  declaration that did not exist when you last read is still something you have to read. It works
   client-side because the ledger is one integer per declaration. It gives the queue and its
   breakdown, *not* a diff — the ledger stores hashes, not the text at every revision, so for the
   statements side by side you still want `--baseline` against that revision's `data.json`. The page

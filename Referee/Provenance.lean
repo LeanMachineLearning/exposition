@@ -279,6 +279,14 @@ structure ProvenanceRow where
   the ledger began" rather than "unchanged since v0.2" — which would imply it was seen to change
   then. -/
   sinceFirstSeen : Bool := true
+  /-- True when the declaration was already there at the ledger's *oldest* revision.
+
+  With `sinceFirstSeen` this is what separates the two ways a declaration can have a change count of
+  zero: one that has been there all along and never moved, and one that was added at some later
+  revision and has not moved since. Both have never changed, and only the first can be described as
+  unchanged since the beginning — saying that of the second reports a declaration added yesterday as
+  part of the original library, which is the opposite of what a reader needs to know. -/
+  seenFromStart : Bool := true
   changeCount : Nat := 0
   /-- `ChangeKind.slug` of the last change, empty if it never changed. -/
   lastKind : String := ""
@@ -310,6 +318,9 @@ def Provenance.rowFor (p : Provenance) (name : Name)
     changedRef := rev.ref
     changedDate := rev.date
     sinceFirstSeen := entry.changeCount == 0
+    -- `changedAt` equals `firstSeenAt` whenever the count is zero, so `changedRef` above already
+    -- names the revision this one appeared at; only the wording has to change.
+    seenFromStart := entry.firstSeenAt == 0
     changeCount := entry.changeCount
     lastKind := entry.lastKind
     editedDate := editedDate
@@ -342,6 +353,13 @@ structure RevisionPickerDecl where
   module : String := ""
   /-- Index into `RevisionPickerData.revisions` of the revision at which its meaning last changed. -/
   changedAt : Nat := 0
+  /-- Index into `RevisionPickerData.revisions` of the revision at which it first appeared.
+
+  A declaration that did not exist at the revision a reader worked through is something they have to
+  read, and `everChanged` alone cannot say so: a first sighting is deliberately not counted as a
+  change (see `foldRevision`), so without this the selector filters every newly added declaration
+  out of its own queue and reports a revision that added a hundred of them as changing nothing. -/
+  firstSeenAt : Nat := 0
   /-- Whether it has ever been seen to change within the ledger. One that has not is reported as
   such rather than as having changed at the oldest recorded revision, which would be an artefact of
   when the ledger started rather than a fact about the library. -/
