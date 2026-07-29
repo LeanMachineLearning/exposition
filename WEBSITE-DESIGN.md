@@ -112,10 +112,11 @@ declaration chunks, minimal `.lean` files, highlighting, search index. The Verso
 client of it; so is anything else anyone builds. It also makes version-to-version diffing
 ("what changed in this library") nearly free — which nothing today can do.
 
-Corollary: **no HTML, CSS, or JavaScript authored inside Lean string literals.** Today
-[Theme.lean](Referee/Website/Theme.lean) is CSS in a string and
-[GraphJs.lean](Referee/Website/GraphJs.lean) is 489 lines of JavaScript in a string, so
-changing a margin means rebuilding a Lean executable against Verso. The fix is Verso's own asset
+Corollary: **no HTML, CSS, or JavaScript authored inside Lean string literals.** When this was
+written, `Referee/Website/Theme.lean` was CSS in a string and `Referee/Website/GraphJs.lean` was 489
+lines of JavaScript in a string, so changing a margin meant rebuilding a Lean executable against
+Verso. (Both files are gone: this proposal was carried out — see
+[Working on Referee](docs/development.md).) The fix is Verso's own asset
 system — `CssFile`/`JsFile` whose `contents` come from `include_str` of a real `.css`/`.js`
 file, which is precisely how Verso vendors popper and tippy
 ([WebAssets.lean](.lake/packages/verso/src/verso/Verso/Code/Highlighted/WebAssets.lean)). Real

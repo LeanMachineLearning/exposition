@@ -10,8 +10,8 @@ wrong, and cannot record what the referee has *done*. Those are the first three 
 
 Status: (1), (3) and (10) are built — see [Revisions](#revisions-the-user-experience),
 [Audit state](#audit-state-what-was-built) and [Provenance](#provenance-what-was-built) for their
-designs, and the `--baseline`, `--hashes` and `--provenance` flags in [README.md](README.md). The
-rest are proposals.
+designs, and [Comparing revisions](docs/revisions.md), [Semantic hashes](docs/semantic-hashes.md)
+and [Provenance](docs/provenance.md) for how to use them. The rest are proposals.
 
 Two of them changed shape after the fact, and the note is worth keeping: (1) was rewritten around
 [`semantic_hash`](https://github.com/mathlib-initiative/semantic_hash) once that existed, which
