@@ -857,49 +857,11 @@ def leanEditorUrl (base : String) (name : Name) : String :=
   let sep := if base.endsWith "/" then "" else "/"
   s!"https://live.lean-lang.org/#url={base}{sep}extracted/{percentEncode (anchorIdOf name)}.lean"
 
-/-- Helper for mkInlineText. -/
-def mkInlineText (s : String) : Inline Manual :=
-  .text s
-
-/-- Helper for mkCodeLink. -/
-def mkCodeLink (link : LinkInfo) : Inline Manual :=
-  match link.href? with
-  | some href => .link #[.code link.label] href
-  | none => .code link.label
-
 /-- Helper for joinInlines. -/
 def joinInlines (xs : List (Array (Inline Manual))) (sep : Array (Inline Manual)) : Array (Inline Manual) :=
   match xs with
   | [] => #[]
   | x :: rest => rest.foldl (fun acc item => acc ++ sep ++ item) x
-
-/-- Helper for depParagraph. -/
-def depParagraph (label : String) (links : Array LinkInfo) : Option (Block Manual) :=
-  if links.isEmpty then
-    none
-  else
-    let entries := links.toList.map fun link => #[mkCodeLink link]
-    some <| .para <|
-      #[.bold #[.text s!"{label}: "]] ++
-      joinInlines entries #[.text " · "]
-
-/-- Helper for depListBlock. -/
-def depListBlock (links : Array LinkInfo) : Option (Block Manual) :=
-  if links.isEmpty then
-    none
-  else
-    let items := links.map fun link => Verso.Doc.ListItem.mk #[.para #[mkCodeLink link]]
-    some <| .ul items
-
-/-- Helper for codeListParagraph. -/
-def codeListParagraph (label : String) (items : Array String) : Option (Block Manual) :=
-  if items.isEmpty then
-    none
-  else
-    let entries := items.toList.map fun item => #[.code item]
-    some <| .para <|
-      #[.bold #[.text s!"{label}: "]] ++
-      joinInlines entries #[.text " · "]
 
 /-- Helper for mkLinkParagraph. -/
 def mkLinkParagraph (sourceUrl? issueUrl? : Option String) : Option (Block Manual) :=
@@ -1504,7 +1466,7 @@ def isJsonSafeName (n : Name) : Bool :=
 
 /-- Drops names that don't round-trip through JSON (see `isJsonSafeName`) from `deps`/`typeDeps`,
 so that serializing `decls` for the `collect` subcommand can't fail. Safe to do unconditionally:
-every consumer of `deps`/`typeDeps` (graph edges, "Type/Body uses" links, the extraction closure)
+every consumer of `deps`/`typeDeps` (graph edges, the closure listings, the extraction closure)
 already discards anything that isn't itself an exposed project declaration, and a name needing
 this escape hatch is never one (`shouldExpose` already excludes internal/auto-generated names from
 being exposed), so this can only drop names that were already inert. -/

@@ -929,11 +929,6 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
   Id.run do
     let issueUrl := issueUrlOf ctx.repoUrl? decl.name decl.moduleName decl.source? decl.dependsOnSorry
     let sourceUrl := sourceUrlOf ctx.repoUrl? decl.source? ctx.sourceRef
-    let mkLinks (deps : Array Name) := deps.filterMap fun dep =>
-      ctx.declHrefs.get? dep |>.map fun href => { label := dep.getString!, href? := some href }
-    let typeDepLinks := mkLinks decl.typeDeps
-    let proofDepLinks := mkLinks <| decl.deps.filter (!decl.typeDeps.contains ·)
-    let usedByLinks := mkLinks decl.usedBy
     let mut blocks : Array (Block Manual) := #[]
     blocks := blocks ++ decl.docBlocks
     let hasDoc := !decl.docBlocks.isEmpty
@@ -954,16 +949,16 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
     blocks := blocks.push <|
       if showsBody then leanCodeBlock (ctx.declHighlights.get? decl.name) decl.displaySignature
       else .code decl.displaySignature
-    if let some block := depListBlock typeDepLinks then
-      blocks := blocks.push <| .other (Block.details { summary := s!"Type uses ({typeDepLinks.size})" }) #[block]
-    if let some block := depListBlock proofDepLinks then
-      blocks := blocks.push <| .other (Block.details { summary := s!"Body uses ({proofDepLinks.size})" }) #[block]
-    if let some block := depListBlock usedByLinks then
-      blocks := blocks.push <| .other (Block.details { summary := s!"Used by ({usedByLinks.size})" }) #[block]
-    if let some block := mkLinkParagraph sourceUrl issueUrl then
-      blocks := blocks.push block
+    -- The proof, then the links. Nothing about the declaration's dependencies: "Type uses" is the
+    -- expanded *Its statement mentions* list further down, "Body uses" is inside *Everything it rests
+    -- on*, and both are drawn in the graph as well — three renderings of one fact, the first of them
+    -- in the place a reader looks for what the declaration *says*. "Used by" had no second home but
+    -- answers a question this page is not for: who else depends on this is a property of the library,
+    -- not of the claim.
     if let some proof := decl.proofText? then
       blocks := blocks.push <| .other (Block.details { summary := "Proof" }) #[.code proof]
+    if let some block := mkLinkParagraph sourceUrl issueUrl then
+      blocks := blocks.push block
     let cardData : DeclCardData := {
       anchorId := anchorIdOf decl.name
       shortName := decl.name.getString!
