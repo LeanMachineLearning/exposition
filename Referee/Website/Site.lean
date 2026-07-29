@@ -18,6 +18,7 @@ public import Referee.Diff
 public import Referee.Extract
 public import Referee.ExtractFlat
 public import Referee.Highlight
+public import Referee.Provenance
 
 open Lake
 open Lean
@@ -449,6 +450,73 @@ block_extension Block.auditData (_payload : AuditData) where
           (.text false (ToJson.toJson payload).compress)}}
     }}
 
+/- The revision selector: pick what you last read, get what to read again.
+
+Only the mount point and the data are emitted; `revisions.js` builds the control. See the note in
+`Referee/Provenance.lean` for why this is possible on a static site and what it deliberately cannot
+show.
+
+(A plain comment, not a docstring: `block_extension` does not take one.) -/
+block_extension Block.revisionPicker (_payload : RevisionPickerData) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI _goB _id data _ => do
+    pure {{
+      <div>
+        <script id="revisions-data" type="application/json">{{data.compress}}</script>
+        <div id="revisions-root"></div>
+      </div>
+    }}
+
+/- When a declaration last meant something else, and when its file was last touched.
+
+Two facts kept apart on purpose. Blame says somebody edited these lines; the ledger says the
+meaning moved. A referee who is shown only the first re-reads a declaration that did not change,
+which is precisely the work this site exists to save them.
+
+Rendered below the card rather than above it: unlike the change banner, this is context for a
+reader who has decided to look, not a warning to one who has not.
+
+(A plain comment, not a docstring: `block_extension` does not take one.) -/
+block_extension Block.provenanceLine (_payload : ProvenanceRow) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI _goB _id data _ => do
+    let .ok (row : ProvenanceRow) := FromJson.fromJson? data
+      | Verso.reportError s!"Could not decode provenance data from {data.compress}"
+        pure .empty
+    let meaningPart :=
+      if row.sinceFirstSeen then
+        {{<span>"Meaning unchanged since "<strong>{{row.changedRef}}</strong>", the oldest
+          revision on record ("{{row.changedDate}}")."</span>}}
+      else
+        {{<span>"Meaning last changed in "<strong>{{row.changedRef}}</strong>" ("
+          {{row.changedDate}}")"
+          {{if row.changeCount > 1 then
+              {{<span>", the "{{toString row.changeCount}}"th recorded change"</span>}}
+            else .empty}}
+          "."</span>}}
+    -- The reassuring half, and the reason the two facts are collected separately at all.
+    let editPart :=
+      if row.editedWithoutMeaningChange then
+        {{<span>" Its file was edited "{{row.editedDate}}
+          {{if row.editedSha.isEmpty then .empty
+            else {{<span>" ("<code>{{row.editedSha}}</code>
+              {{if row.editedSubject.isEmpty then .empty
+                else {{<span>", “"{{row.editedSubject}}"”"</span>}}}}")"</span>}}}}
+          " without changing what it means."</span>}}
+      else .empty
+    let pendingPart :=
+      if row.uncommitted then
+        {{<span>" Some of its lines are not committed, so this page was built from a working tree
+          rather than from a revision anyone can check out."</span>}}
+      else .empty
+    pure {{
+      <p class="provenance-line">{{meaningPart}}{{editPart}}{{pendingPart}}</p>
+    }}
+
 /- The banner at the top of a declaration page whose meaning moved.
 
 Above the declaration card rather than below it: a reader who accepted this declaration in the
@@ -554,6 +622,11 @@ private def auditJsFile : JsFile where
   contents := JS.mk (include_str "assets/audit.js")
   sourceMap? := none
 
+private def revisionsJsFile : JsFile where
+  filename := "revisions.js"
+  contents := JS.mk (include_str "assets/revisions.js")
+  sourceMap? := none
+
 private def browseJsFile : JsFile where
   filename := "browse.js"
   contents := JS.mk (include_str "assets/browse.js")
@@ -582,7 +655,7 @@ private def renderConfig : RenderConfig :=
     rootTocDepth := some 0
     sectionTocDepth := some 0
     extraCssFiles := {refereeCssFile}
-    extraJsFiles := {d3JsFile, graphJsFile, tocJsFile, auditJsFile, browseJsFile}
+    extraJsFiles := {d3JsFile, graphJsFile, tocJsFile, auditJsFile, revisionsJsFile, browseJsFile}
     -- Inline and in `<head>`, so the stored theme is applied before the first paint. Loading this
     -- as a file would let the light theme flash before the script ran.
     extraHead := #[Html.tag "script" #[] (.text false themeBootJs)]
@@ -755,6 +828,13 @@ private structure SiteContext where
   not auditing. Once one annotation exists the author has opted in, and silence about the rest
   becomes information. -/
   usesSpecs : Bool := false
+  /-- Whether the collected data carries semantic hashes, i.e. whether `collect --hashes` was given.
+
+  Gates everything that compares one *meaning* against another across time: the staleness check on
+  the reader's own verdicts, and the prose that explains it. See `meaningKeyOf` for why the textual
+  fallback is not good enough to carry that particular feature — a check that reports every
+  acceptance as void after a toolchain upgrade is worse than no check. -/
+  usesMeanings : Bool := false
   /-- The comparison against an earlier `collect` output, when `--baseline` was given.
 
   Gated exactly as `usesSpecs` is, and for the same reason: a site built without a baseline must not
@@ -767,6 +847,20 @@ private structure SiteContext where
   counted once rather than per lookup. Built only when there is a baseline, since nothing else on
   the site asks for it. -/
   dependentCounts : Std.HashMap Name Nat := {}
+  /-- The provenance ledger, when `--provenance` was given.
+
+  Gated exactly as `diff?` is: without it no page mentions when anything changed. Half of this
+  feature is the ability to say "edited, but its meaning did not move", and a site that could only
+  say the first half would be worse than one that says neither. -/
+  provenance? : Option Provenance := none
+  /-- Declaration ↦ its ledger entry, resolved once rather than per page. -/
+  provEntries : Std.HashMap Name ProvenanceEntry := {}
+  /-- Declaration ↦ where its source was last touched, resolved once. -/
+  provEdits : Std.HashMap Name EditInfo := {}
+  /-- The git ref source links should point at: the revision the ledger was last folded at, so a
+  published site's links keep showing the code it was built from rather than drifting with the
+  branch. `main` without a ledger, which is what the site did before there was anything better. -/
+  sourceRef : String := "main"
 
 /-- Renders one declaration card with docs, statement, links, and dependencies.
 
@@ -777,7 +871,7 @@ on. -/
 private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
   Id.run do
     let issueUrl := issueUrlOf ctx.repoUrl? decl.name decl.moduleName decl.source? decl.dependsOnSorry
-    let sourceUrl := sourceUrlOf ctx.repoUrl? decl.source?
+    let sourceUrl := sourceUrlOf ctx.repoUrl? decl.source? ctx.sourceRef
     let mkLinks (deps : Array Name) := deps.filterMap fun dep =>
       ctx.declHrefs.get? dep |>.map fun href => { label := dep.getString!, href? := some href }
     let typeDepLinks := mkLinks decl.typeDeps
@@ -1250,6 +1344,37 @@ private def mkChangeBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block 
     else #[]
   | _, _ => #[]
 
+/-- The revision selector's payload, or nothing without a ledger. -/
+private def mkRevisionPickerBlocks (decls : Array DeclInfo) (ctx : SiteContext)
+    : Array (Block Manual) :=
+  match ctx.provenance? with
+  | none => #[]
+  | some p =>
+    let rows := decls.filterMap fun decl =>
+      (ctx.provEntries.get? decl.name).map fun entry => {
+        name := decl.name.toString
+        href := (ctx.declPageHrefs.get? decl.name).getD ""
+        module := decl.modulePath
+        changedAt := entry.changedAt
+        everChanged := entry.changeCount > 0
+        kind := entry.lastKind
+        dependents := dependentCount decl.name ctx
+        : RevisionPickerDecl
+      }
+    #[.other (Block.revisionPicker { revisions := p.revisions, decls := rows }) #[]]
+
+/-- The provenance line for one declaration, or nothing at all.
+
+Nothing without `--provenance`, and nothing for a declaration the ledger has never seen — which is
+the normal state of anything added since the last fold, and says nothing worth a line. -/
+private def mkProvenanceBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
+  match ctx.provenance? with
+  | none => #[]
+  | some p =>
+    match p.rowFor decl.name ctx.provEntries ctx.provEdits with
+    | none => #[]
+    | some row => #[.other (Block.provenanceLine row) #[]]
+
 /-! ## Audit state
 
 What a *reader* has decided, as opposed to what the environment says. See `Referee/Audit.lean` for
@@ -1271,6 +1396,10 @@ private def mkAuditControlBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (
       name := decl.name.toString
       project := ctx.rootPrefix.toString
       closure := auditClosureLinks decl ctx
+      meaning := meaningKeyOf decl
+      -- Positionally parallel to `closure`, so it is filtered by the same predicate.
+      closureMeanings := decl.transDeps.filterMap fun dep =>
+        (ctx.declByName.get? dep).map meaningKeyOf
     }) #[]]
 
 /-- The whole library, as the audit page needs it.
@@ -1291,6 +1420,7 @@ private def mkAuditData (decls : Array DeclInfo) (ctx : SiteContext) : AuditData
     sorryDep := decl.dependsOnSorry
     unspecified := decl.isDefinitionLike && decl.specifiedBy.isEmpty && ctx.usesSpecs
     change := ((ctx.changes.get? decl.name).map (·.kind.slug)).getD ""
+    meaning := meaningKeyOf decl
     closure := decl.transDeps.filterMap index.get?
     : AuditDecl
   }
@@ -1335,6 +1465,18 @@ private def mkAuditPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manu
         .link #[.text "Trust"] "trust/", .text " reports the rest."
       ],
       .other (Block.auditData (mkAuditData decls ctx)) #[],
+    ] ++ (if !ctx.usesMeanings then #[] else #[
+      .para #[
+        .bold #[.text "Verdicts remember what they were about. "],
+        .text "Each verdict is recorded against the declaration's meaning at the moment you set \
+          it — a structural hash of the elaborated term, not of how it prints. So a later build of \
+          a revised library can tell you which of your acceptances are of something that has since \
+          changed, and it needs neither the old build nor a ",
+        .code "--baseline", .text " to do it: the exported file carries its own reference points. \
+          Those acceptances are listed above, and they are excluded from every count on this page \
+          rather than quietly inflating it."
+      ]
+    ]) ++ #[
       .para #[
         .bold #[.text "What this is not. "],
         .text "Nothing here is checked or authenticated. The exported file is plain JSON that \
@@ -1461,6 +1603,10 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   -- learn that their reading is void *before* re-reading it, not after.
   blocks := blocks ++ mkChangeBlocks decl ctx
   blocks := blocks.push (mkDeclBlock decl ctx)
+  -- Immediately under the card and before the verdict control: "has this changed since I read it"
+  -- is the question a returning reader asks before deciding whether to read it again, so it comes
+  -- before the control that records the answer.
+  blocks := blocks ++ mkProvenanceBlocks decl ctx
   -- Directly under the card: this is the action the page exists to enable, and burying it below
   -- the closure listings would put it past the fold on every page that has one.
   blocks := blocks ++ mkAuditControlBlocks decl ctx
@@ -1469,16 +1615,29 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   -- closures below say what a declaration costs to accept; the specification says what it means.
   blocks := blocks ++ mkSpecBlocks decl ctx
   blocks := blocks ++ mkMinimalFileLink decl ctx
-  if pageDecls.size > 1 then
-    blocks := blocks.push (.para #[.bold #[.text "Dependency graph"]])
-    -- Transitively reduced: 23 declarations here carry 68 direct edges, most of them implied by a
-    -- longer path, and drawing all of them buries the structure in crossings and forces the layout
-    -- so wide that it no longer fits the viewport. What survives is the *essential* dependency
-    -- structure — every removed edge is still a real dependency, reachable along the path that
-    -- remains.
-    blocks := blocks.push (.other (Block.graph (transitiveReduce
-      (withUpstreamNodes (mkGraphData pageDecls ctx.declPageHrefs graphDeps (focus? := decl.name))
-        pageDecls ctx graphDeps))) #[])
+  -- Transitively reduced: 23 declarations here carry 68 direct edges, most of them implied by a
+  -- longer path, and drawing all of them buries the structure in crossings and forces the layout
+  -- so wide that it no longer fits the viewport. What survives is the *essential* dependency
+  -- structure — every removed edge is still a real dependency, reachable along the path that
+  -- remains.
+  let graphData := transitiveReduce
+    (withUpstreamNodes (mkGraphData pageDecls ctx.declPageHrefs graphDeps (focus? := decl.name))
+      pageDecls ctx graphDeps)
+  blocks := blocks.push (.para #[.bold #[.text "Dependency graph"]])
+  -- Drawn even when there is nothing to draw. Gating it on having dependencies made the shape of a
+  -- declaration page vary with its content, so a reader could not tell "this rests on nothing" from
+  -- "the graph is somewhere further down"; a lone node answers the question at a glance, and the
+  -- answer is worth having. It also used to hide a graph that did have something to show: a
+  -- declaration with no *project* dependencies can still name constants from an unaudited upstream
+  -- package, and `withUpstreamNodes` draws those.
+  if graphData.nodes.size <= 1 then
+    blocks := blocks.push (.para #[
+      .emph #[.text "Nothing to draw. "],
+      .text "Its statement rests on no other declaration in this project, and names nothing from a \
+        package left unaudited — so the graph is this declaration alone. That is the answer, not a \
+        missing picture."
+    ])
+  blocks := blocks.push (.other (Block.graph graphData) #[])
   -- Layer 2 of the audit: what the *statement* mentions. This is where "does this say what I
   -- think it says" is decided, so it is shown expanded and before the rest of the closure.
   let directTypeDeps := decl.typeDeps.filter ctx.declByName.contains
@@ -1698,7 +1857,8 @@ given — the proof-only changes that need no re-reading at all.
 
 That last section is half the value of the page. The bulk of any real revision lands in it, and
 telling a referee what they may skip is as useful as telling them what they may not. -/
-private def mkChangesPart (report : DiffReport) (ctx : SiteContext) : Part Manual := Id.run do
+private def mkBaselineBlocks (report : DiffReport) (ctx : SiteContext)
+    : Array (Block Manual) := Id.run do
   let rowsOf (changes : Array DeclChange) : Array ChangeRowData :=
     -- Largest blast radius first: a changed statement forty results rest on is a different size of
     -- problem from one nothing uses, and the ordering is the only thing that says so.
@@ -1888,7 +2048,42 @@ private def mkChangesPart (report : DiffReport) (ctx : SiteContext) : Part Manua
           elaborated term, which removes that over-reporting and makes a toolchain upgrade a \
           non-event. Whether an extracted file still compiles is not compared at all, since that \
           lives in the build output rather than in the collected data."]
-  return {
+  return blocks
+
+/-- Builds the Changes page.
+
+Exists when there is a baseline, a provenance ledger, or both, because the two answer the same
+question from opposite ends. A baseline compares this build against one file chosen when the site
+was built and can show the statements side by side; the ledger lets the *reader* choose which
+revision they last worked through, over the whole recorded history, and can only say that the
+meaning moved.
+
+Neither subsumes the other, so where both exist both are shown, and the selector goes first:
+choosing the revision you actually read beats being handed the one whoever built the site picked. -/
+private def mkChangesPart (report? : Option DiffReport) (decls : Array DeclInfo)
+    (ctx : SiteContext) : Part Manual :=
+  let pickerBlocks :=
+    if ctx.provenance?.isNone then #[]
+    else
+      #[.other (Block.sectionHeading "Since a revision you choose") #[],
+        .para #[
+          .text "Every revision this project has recorded provenance for. Pick the one you last \
+            worked through and the queue below is what no longer means what it meant then, \
+            heaviest first."
+        ]] ++ mkRevisionPickerBlocks decls ctx
+  let baselineBlocks := match report? with
+    | none => #[]
+    | some report =>
+      -- Headed only when the selector is above it. Alone on the page it needs no heading, and
+      -- adding one would put a section title above what is simply the page.
+      let heading :=
+        if ctx.provenance?.isNone then #[]
+        else
+          let against :=
+            if report.baselineLabel.isEmpty then "the baseline" else report.baselineLabel
+          #[.other (Block.sectionHeading s!"Since {against}, in detail") #[]]
+      heading ++ mkBaselineBlocks report ctx
+  {
     title := #[.text "Changes"]
     titleString := "Changes"
     metadata := some {
@@ -1897,7 +2092,7 @@ private def mkChangesPart (report : DiffReport) (ctx : SiteContext) : Part Manua
       tag := some (.provided "changes")
       number := false
     }
-    content := blocks
+    content := pickerBlocks ++ baselineBlocks
     subParts := #[]
   }
 
@@ -2005,6 +2200,11 @@ private def mkBrowsePart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
       -- `none` throughout when no baseline was given, which is what makes the column disappear.
       change := if ctx.diff?.isNone then none
         else some ((ctx.changes.get? decl.name).map (·.kind.slug) |>.getD "unchanged")
+      meaning := meaningKeyOf decl
+      changedRef := (ctx.provenance?.bind fun p =>
+        (p.rowFor decl.name ctx.provEntries ctx.provEdits).map (·.changedRef))
+      changedDate := (ctx.provenance?.bind fun p =>
+        (p.rowFor decl.name ctx.provEntries ctx.provEdits).map (·.changedDate)).getD ""
       : BrowseRow
     }
   {
@@ -2350,12 +2550,12 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
     content := mkLandingBlocks rootPrefix decls ctx
       ++ mkDashboardBlocks groups
       ++ overviewBlocks
-    -- Changes comes first when there is a baseline: a returning reader's first question is what
-    -- their earlier reading no longer covers, and every other page answers a question they have
-    -- already asked once. Absent `--baseline` the page does not exist at all.
-    subParts := (match ctx.diff? with
-        | some report => #[mkChangesPart report ctx]
-        | none => #[])
+    -- Changes comes first when there is anything to say: a returning reader's first question is
+    -- what their earlier reading no longer covers, and every other page answers a question they
+    -- have already asked once. With neither `--baseline` nor `--provenance` the page does not
+    -- exist at all.
+    subParts := (if ctx.diff?.isNone && ctx.provenance?.isNone then #[]
+        else #[mkChangesPart ctx.diff? decls ctx])
       ++ #[mkClaimsPart decls ctx]
       ++ (if ctx.usesSpecs then #[mkSpecificationsPart decls ctx] else #[])
       ++ #[mkBrowsePart decls ctx, mkModulesPart groups ctx, mkTrustPart decls ctx,
@@ -2555,6 +2755,35 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
       Run the `highlight` subcommand for interactive Lean."
   else
     IO.println s!"Loaded highlighting for {declHighlights.size} declarations"
+  -- The provenance ledger, if one was given. Read-only here: `build-site` never folds, so
+  -- rendering a site can neither extend the record nor corrupt it.
+  let provenance? ← match cfg.provenancePath with
+    | none => pure none
+    | some path => do
+      if !(← System.FilePath.pathExists path) then
+        IO.eprintln s!"warning: no provenance ledger at {path}; the site will say nothing about \
+          when anything changed. Run the `provenance` subcommand to create one."
+        pure none
+      else
+        let raw ← IO.FS.readFile path
+        match Json.parse raw >>= FromJson.fromJson? (α := Provenance) with
+        | .error e =>
+          IO.eprintln s!"warning: could not read the provenance ledger at {path}: {e}"
+          pure none
+        | .ok (p : Provenance) =>
+          if p.version != provenanceVersion then
+            IO.eprintln s!"warning: {path} is provenance format version {p.version}, this build \
+              expects {provenanceVersion}; ignoring it"
+            pure none
+          else
+            let covered := (data.decls.filter fun d => p.byName.contains d.name).size
+            IO.println s!"Provenance {path}: {p.revisions.size} revisions, \
+              {(p.latest?.map (·.ref)).getD "?"} newest, covering {covered} of \
+              {data.decls.size} declarations"
+            if p.dirty then
+              IO.eprintln "warning: the ledger was folded from a working tree with uncommitted \
+                changes, so its newest revision corresponds to no commit"
+            pure (some p)
   -- The baseline comparison. A pure function of the two JSON files, so it belongs here with the
   -- other render-time flags rather than in a phase of its own; see `Referee/Diff.lean`.
   let diff? ← match cfg.baselinePath with
@@ -2583,9 +2812,11 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
           pretty-printed elaborated types; collect both revisions on the same toolchain, or with \
           --hashes, for a meaningful diff."
       pure (some report)
-  -- Reverse `transDeps`, counted once. Only when there is a baseline: nothing else asks for it.
+  -- Reverse `transDeps`, counted once. Built for a baseline or a ledger, since both order their
+  -- queues by it: a changed statement forty results rest on is a different size of problem from
+  -- one nothing uses, and that ordering is the only thing on either page that says so.
   let dependentCounts : Std.HashMap Name Nat :=
-    if diff?.isNone then {}
+    if diff?.isNone && provenance?.isNone then {}
     else data.decls.foldl (init := {}) fun acc decl =>
       decl.transDeps.foldl (init := acc) fun acc dep => acc.insert dep (acc.getD dep 0 + 1)
   let ctx : SiteContext := {
@@ -2603,6 +2834,21 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     externalPackages := data.externalPackages.foldl (fun acc (c, pkg) => acc.insert c pkg) {}
     trusted := trustClosure data.packages cfg.trustedPackages
     usesSpecs := data.decls.any (!·.specifies.isEmpty)
+    -- `all`, not `any`: a partially hashed build would check some verdicts and silently skip
+    -- others, and a staleness list that is quietly incomplete is worse than one that is absent.
+    usesMeanings := !data.decls.isEmpty && data.decls.all (·.proofIrrelHash?.isSome)
+    provenance? := provenance?
+    provEntries := (provenance?.map (·.byName)).getD {}
+    provEdits := (provenance?.map fun p =>
+      p.edits.foldl (fun acc (k, v) => acc.insert k v) {}).getD {}
+    -- Pinned to the commit the ledger was last folded at, but only when that commit exists: a
+    -- ledger folded from a dirty tree names a revision no one can check out, and a link into it
+    -- would 404 rather than merely drift.
+    sourceRef := (do
+      let p ← provenance?
+      if p.dirty then none else
+      let latest ← p.latest?
+      if latest.sha.isEmpty then none else some latest.sha).getD "main"
     diff? := diff?
     changes := (diff?.map (·.byName)).getD {}
     dependentCounts := dependentCounts
@@ -2772,6 +3018,70 @@ private def runHighlightExtracted (cfg : Cli) : IO UInt32 := do
   -- known-broken extractions are exactly what P11 asks the site to be honest about.
   return 0
 
+/-- `provenance`: folds this revision into the ledger and refreshes the blame.
+
+Needs a git working tree and `data.json`, and no Lean environment at all — so it sits between
+`collect` and `build-site` as a phase of its own rather than inside either.
+
+Refuses to run without semantic hashes, rather than falling back to comparing text. The ledger is
+append-only, so a text-keyed one would record the mass false change of a toolchain upgrade
+*permanently*; see the module docstring in `Referee/Provenance.lean`. -/
+private def runProvenance (cfg : Cli) : IO UInt32 := do
+  let some dataPath := cfg.dataPath
+    | IO.eprintln "provenance requires --data PATH"
+      return 1
+  let some ledgerPath := cfg.provenancePath
+    | IO.eprintln "provenance requires --provenance PATH (the ledger to create or extend)"
+      return 1
+  let data ← loadCollectedData dataPath
+  let unhashed := (data.decls.filter (·.proofIrrelHash?.isNone)).size
+  if unhashed > 0 then
+    IO.eprintln s!"provenance needs semantic hashes: {unhashed} of {data.decls.size} declarations \
+      in {dataPath} have none. Re-run `collect --hashes hashes.jsonl` first — there is \
+      deliberately no fallback to comparing pretty-printed types, because a ledger is append-only \
+      and would record a toolchain upgrade as a permanent library-wide change."
+    return 1
+  let projectDir : System.FilePath := "."
+  let some (head, describedRef) ← headCommit projectDir
+    | IO.eprintln "provenance could not read git history from the current directory. It must run \
+        inside the target project's working tree, and that tree must be a git repository."
+      return 1
+  let ref := cfg.revisionRef.getD describedRef
+  let dirty ← isDirty projectDir
+  if dirty then
+    IO.eprintln s!"warning: the working tree has uncommitted changes, so this revision does not \
+      correspond to any commit. Recorded as {ref} and flagged in the ledger."
+  let existing ← if (← System.FilePath.pathExists ledgerPath) then do
+      let raw ← IO.FS.readFile ledgerPath
+      match Json.parse raw >>= FromJson.fromJson? (α := Provenance) with
+      | .ok (p : Provenance) =>
+        if p.version != provenanceVersion then
+          IO.eprintln s!"warning: {ledgerPath} was written by format version {p.version}, this is \
+            {provenanceVersion}; starting a new ledger rather than folding into it"
+          pure ({ project := data.rootPrefix.toString } : Provenance)
+        else pure p
+      | .error e =>
+        IO.eprintln s!"error: could not read the ledger at {ledgerPath}: {e}"
+        throw (IO.userError "unreadable ledger")
+    else pure ({ project := data.rootPrefix.toString } : Provenance)
+  if existing.alreadyAt head.sha then
+    IO.println s!"Ledger at {ledgerPath} is already folded at {head.shortSha}; nothing to add"
+    return 0
+  let startMs ← IO.monoMsNow
+  let edits ← blameDeclarations projectDir data.decls
+  let folded := foldRevision existing
+    { ref := ref, sha := head.sha, date := head.date } data.decls
+  let out := { folded with edits := edits, dirty := dirty }
+  IO.FS.writeFile ledgerPath (ToJson.toJson out).compress
+  let rev := out.revisions.back!
+  IO.println s!"Folded {ref} ({head.shortSha}, {head.date}) into {ledgerPath}: \
+    {out.revisions.size} revisions recorded, {rev.changedCount} of {data.decls.size} declarations \
+    changed meaning, blame for {edits.size} in {(← IO.monoMsNow) - startMs}ms"
+  if out.revisions.size == 1 then
+    IO.println "This is the first revision in the ledger, so nothing is reported as changed. \
+      Provenance starts accumulating from the next one."
+  return 0
+
 /-- `build-site`: reads collected data from `cfg.dataPath` and renders the Verso site. No Lean
 environment or project access at all. -/
 private def runBuildSite (cfg : Cli) : IO UInt32 := do
@@ -2806,6 +3116,7 @@ split (bare flags, no subcommand) keep working unchanged. -/
     | "highlight-module" :: rest => ("highlight-module", rest)
     | "highlight-extracted" :: rest => ("highlight-extracted", rest)
     | "highlight-file" :: rest => ("highlight-file", rest)
+    | "provenance" :: rest => ("provenance", rest)
     | "build-site" :: rest => ("build-site", rest)
     | "all" :: rest => ("all", rest)
     | rest => ("all", rest)
@@ -2823,6 +3134,7 @@ split (bare flags, no subcommand) keep working unchanged. -/
   | "highlight-module" => runHighlightModule cfg
   | "highlight-extracted" => runHighlightExtracted cfg
   | "highlight-file" => runHighlightFile cfg
+  | "provenance" => runProvenance cfg
   | "build-site" => runBuildSite cfg
   | _ => runAll cfg
 

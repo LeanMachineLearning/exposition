@@ -72,8 +72,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---------------------------------------------------------------- chrome
 
   const groupOptions = groups.map(g => `<option value="${g}">${g}</option>`).join('');
+
+  /* A graph of one node with no edges is drawn anyway — a declaration page keeps the same shape
+     whether or not anything is under it, so "this rests on nothing" is legible at a glance instead
+     of being indistinguishable from a graph further down the page. What is dropped is the chrome
+     that would then describe things the reader cannot see: rows, arrows, cycles, colour-by-chapter,
+     and a filter over a single node. */
+  const isLone = allNodes.length <= 1 && allEdges.length === 0;
+
   root.innerHTML = `
-    <div class="graph-toolbar">
+    ${isLone ? '' : `<div class="graph-toolbar">
       <input id="graph-filter" type="search" placeholder="Filter ${UNITS} by name" />
       ${groups.length > 1 ? `<select id="graph-group">
         <option value="">All chapters</option>
@@ -81,8 +89,11 @@ document.addEventListener('DOMContentLoaded', () => {
       </select>` : ''}
       <button id="graph-fit" type="button">Fit view</button>
       <button id="graph-clear" type="button">Clear focus</button>
-    </div>
-    <p class="graph-hint">Rows are dependency depth: the top row depends on nothing, and each
+    </div>`}
+    ${isLone
+      ? `<p class="graph-hint">One node, no edges: this ${UNIT} rests on nothing else drawn
+         here.</p>`
+      : `<p class="graph-hint">Rows are dependency depth: the top row depends on nothing, and each
       ${UNIT} sits one row below its bottom-most dependency. Arrows point from a dependency
       down to what uses it. Edges implied by a longer path are not drawn, so what you see is the
       essential structure rather than every direct edge. Scroll to zoom, drag to pan, click a node
@@ -96,10 +107,10 @@ document.addEventListener('DOMContentLoaded', () => {
       : ''}`}A
       violet dashed edge curving back upwards belongs to a dependency <em>cycle</em>: those
       ${UNITS} refer to each other, so no ordering of rows can place both below everything they
-      depend on.</p>
-    <div class="graph-layout">
+      depend on.</p>`}
+    <div class="graph-layout${isLone ? ' graph-layout--lone' : ''}">
       <svg id="graph-svg" width="100%" height="${VIEW_H}"></svg>
-      <aside id="graph-panel" class="graph-panel"></aside>
+      ${isLone ? '' : '<aside id="graph-panel" class="graph-panel"></aside>'}
     </div>
   `;
 
@@ -342,8 +353,11 @@ document.addEventListener('DOMContentLoaded', () => {
   function render(nodes, edges) {
     const { rows, routed, extent } = buildLayers(nodes, edges);
     // Height the drawing area to whatever the graph actually needs at the scale the width allows,
-    // between a floor that keeps tiny graphs from looking cramped and the full viewport.
-    viewH = Math.round(Math.max(260, Math.min(VIEW_H, contentHeight(extent) * viewScale(extent) + 24)));
+    // between a floor that keeps tiny graphs from looking cramped and the full viewport. The floor
+    // is dropped for a lone node: 260px of empty canvas under a single box reads as a picture that
+    // failed to load, which is the opposite of what drawing it is meant to convey.
+    const floor = isLone ? 96 : 260;
+    viewH = Math.round(Math.max(floor, Math.min(VIEW_H, contentHeight(extent) * viewScale(extent) + 24)));
     svg.attr('height', viewH).attr('viewBox', [0, 0, width, viewH]);
     /* A wide graph gets the full column, with the details panel below it rather than beside it.
        A whole-project module graph is several times wider than it is tall, and surrendering a
@@ -483,6 +497,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function updatePanel() {
+    // Absent on a lone-node graph, which has nothing to report about neighbours or rows.
+    if (!panel) return;
     const shown = state.byId.size;
     const rows = state.rows.length;
     if (!state.sel || !state.byId.has(state.sel)) {
@@ -551,13 +567,24 @@ document.addEventListener('DOMContentLoaded', () => {
     highlight(state.sel);
   }
 
-  filterInput.addEventListener('input', e => { query = e.target.value.trim().toLowerCase(); apply(); });
+  /* Every control is optional: a lone-node graph renders none of them, because filtering,
+     fitting and clearing a focus are all operations on something the reader can already see
+     whole. */
+  if (filterInput) {
+    filterInput.addEventListener('input', e => {
+      query = e.target.value.trim().toLowerCase(); apply();
+    });
+  }
   // The chapter filter is only rendered when there is more than one chapter to choose between.
   if (groupSelect) groupSelect.addEventListener('change', e => { group = e.target.value; apply(); });
-  document.getElementById('graph-fit').addEventListener('click', fit);
-  document.getElementById('graph-clear').addEventListener('click', () => {
-    state.sel = null; highlight(null); updatePanel();
-  });
+  const fitButton = document.getElementById('graph-fit');
+  if (fitButton) fitButton.addEventListener('click', fit);
+  const clearButton = document.getElementById('graph-clear');
+  if (clearButton) {
+    clearButton.addEventListener('click', () => {
+      state.sel = null; highlight(null); updatePanel();
+    });
+  }
 
   document.addEventListener('referee:themechange', () => {
     readTheme();

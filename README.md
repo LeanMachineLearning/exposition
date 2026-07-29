@@ -77,6 +77,7 @@ environment produces **data**, and rendering is a pure function of that data.
 | phase | needs `lake env`? | produces |
 |---|---|---|
 | `collect` | yes | `data.json` — declarations, dependencies, docstrings, axioms, `sorry` status, and (given `--hashes`) semantic hashes |
+| `provenance` | no (needs git) | `provenance.json` — when each declaration's meaning last changed, and where its source was last edited |
 | `extract` | yes | `extracted/*.lean` — the self-contained minimal file per declaration |
 | `highlight` | yes | `highlighting/*.json` — interactive Lean for each project module |
 | `highlight-extracted` | yes | `extracted-highlighting/*.json` — interactive Lean for each minimal file, **and whether it compiles** |
@@ -212,6 +213,12 @@ file for the declarations whose readable version does not compile. See
   meaning moved, and a Browse column and filter. Omit it and the site says nothing about revisions
   at all
 - `--baseline-label S`: what to call the baseline on the page (default: its file name)
+- `--provenance PATH`: the [provenance ledger](#provenance) — when each declaration's meaning last
+  changed, and in which revision. Written and extended by the `provenance` subcommand, read by
+  `build-site`. Adds a line under every declaration, a Browse column, and a revision selector on
+  the Changes page, and pins source links to the commit rather than to `main`. Omit it and the site
+  says nothing about when anything changed
+- `--ref NAME`: what to call this revision in the ledger (default: `git describe --tags --always`)
 - `--hashes PATH`: JSONL written by [`semantic_hash export`](#semantic-hashes), giving each
   declaration a rename-invariant structural hash of its elaborated term. Unlike the two flags
   above this one is read by `collect`, not by `build-site`: the hashes are a property of the
@@ -248,6 +255,11 @@ file for the declarations whose readable version does not compile. See
   `Lean.collectAxioms`, i.e. the same answer `#print axioms` gives. `@[specifies]` annotations are
   read here too and reversed by `attachSpecifiedBy`, the one field on `DeclInfo` that is not
   derived from the environment but taken from the author.
+- `Referee/Provenance.lean` — the provenance ledger (`--provenance`). The fold is pure — ledger,
+  revision, declarations in; ledger out — and unit-tested in `Test/Provenance.lean`, which matters
+  more here than elsewhere because the file is append-only: a fold that records a change where none
+  happened writes that into the record for good. The git reading (`blame`, `log`, `describe`) is
+  the only part that shells out, and it is one `git blame` per *file* rather than per declaration.
 - `Referee/Audit.lean` — the payloads the audit page and the per-declaration control hand to
   `assets/audit.js`, plus `dataFingerprint`, the stamp an exported audit file carries so it can be
   matched against the build it was made against. The verdicts, coverage, queue, import and export
@@ -364,6 +376,14 @@ What a reader does with it:
 - **Generate report** writes Markdown: claims and their coverage, the open queries with their notes,
   and what the library rests on. Most of a referee report, already written.
 
+**Verdicts remember what they were about.** Each one records the declaration's semantic hash at the
+moment it was set, which makes an exported file **self-baselining**: any later build can say which
+acceptances are of something that has since changed, with no access to the build they were made
+against and no `--baseline`. Those appear as *accepted, then changed* — a third state alongside
+*accepted but not covered*, and excluded from every count on the page for the same reason, because
+the flattering number is the one that misleads. Needs `--hashes`; without semantic hashes the check
+is off, since a toolchain upgrade would otherwise report every acceptance in the file as void.
+
 Three limits, stated on the page itself rather than only here:
 
 - **Nothing is authenticated.** The file is plain JSON that anyone can edit, and an accepted
@@ -478,6 +498,62 @@ Cost is negligible next to `collect`: 237k constants hashed in about 7 seconds o
 
 Both revisions have to carry hashes for a comparison to use them — collecting only the new one
 leaves the diff on the text path, and says so.
+
+## Provenance
+
+`--baseline` compares this build against one file, chosen when the site was built. Provenance
+answers the question a returning referee actually asks, which is narrower: **when did this last
+change, and is that after I read it?**
+
+```bash
+lake env "$REFEREE" collect --root MyLibrary --hashes hashes.jsonl --data data.json
+"$REFEREE" provenance --data data.json --provenance provenance.json --ref v0.3
+"$REFEREE" build-site --data data.json --provenance provenance.json --output "$OUT"
+```
+
+`provenance` needs a git working tree but no Lean environment, so it is a phase of its own between
+`collect` and `build-site`. Commit `provenance.json` and run the subcommand once per release (or
+per commit, in CI); each run folds that revision into the ledger and the file accumulates.
+
+**Two facts, never merged.** Every declaration carries when its *file* was last edited (`git blame`
+over its source range — textual, and no evidence at all about meaning) and when its *meaning* last
+changed (the newest recorded revision at which its semantic hash differs from the one before —
+exact). Keeping them apart is the whole point, because the sentence a referee needs is the one that
+combines them:
+
+> Meaning unchanged since v0.1, the oldest revision on record (2026-07-28). Its file was edited
+> 2026-07-29 (`e2aaa83`, “reformat DiffReport.byName”) without changing what it means.
+
+Shown only where the ledger is a good enough measure to support it. Without a ledger no page
+mentions when anything changed, and `provenance` refuses to run on data collected without
+`--hashes` rather than falling back to comparing pretty-printed types — the ledger is append-only,
+so a text-keyed one would record the mass false change of a toolchain upgrade *permanently*.
+
+**What it adds to the site**, all of it gated on `--provenance`:
+
+- the line above, under every declaration's card;
+- a **Meaning moved** column on Browse, sortable — ascending is what has been settled longest;
+- a **revision selector** on the Changes page: pick the revision you last worked through and the
+  queue is what no longer means what it meant then, ordered by how much rests on each. It works
+  client-side because the ledger is one integer per declaration. It gives the queue and its
+  breakdown, *not* a diff — the ledger stores hashes, not the text at every revision, so for the
+  statements side by side you still want `--baseline` against that revision's `data.json`. The page
+  says so where the selector is;
+- **source links pinned to the commit** the ledger was folded at, instead of `blob/main`. A
+  published site's links otherwise drift: they keep pointing at line 88 of a file that has moved on.
+
+**Resolution is exactly your build cadence.** Per-commit CI dates changes to commits; per-release
+runs date them to releases. The ledger records what was actually folded, so the site states its own
+resolution instead of implying a precision it does not have.
+
+Three things to know before trusting the blame half: squash merges collapse provenance to the
+squash commit; `actions/checkout` defaults to `fetch-depth: 1`, which makes blame attribute an
+entire library to one commit; and lines not yet committed are reported as such rather than
+attributed to an invented commit.
+
+Deliberately absent: authors, contribution counts, and commit-message mining. Who wrote something
+is not a referee question, and it invites inference about people from data that does not support
+it.
 
 [`PROPOSED-TOOLS.md`](PROPOSED-TOOLS.md) records the design, including the parts deliberately not
 built.

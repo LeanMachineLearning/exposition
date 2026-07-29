@@ -48,6 +48,23 @@ open Lean
 
 namespace Referee
 
+/-- What a verdict is recorded *against*: the declaration's proof-irrelevant semantic hash.
+
+A reader accepts a declaration as it stood when they read it. Recording that alongside the verdict
+makes an exported audit file **self-baselining**: any later build can compare what the reader
+accepted against what the declaration now means, and say so, without needing the old `data.json`
+that `--baseline` requires. It is the difference between "this file was made against some other
+build" and "these eleven of your acceptances are of something else now".
+
+Empty when the build has no semantic hashes, and that emptiness switches the whole check off. The
+fallback used elsewhere — `statementKey`, the pretty-printed elaborated type — is deliberately
+*not* used here. A toolchain upgrade repretty-prints every statement in a library at once, which
+under this check would mark every acceptance in the file stale; a feature whose failure mode is
+telling a reader that all of their work is void is worse than no feature. So it exists only where
+the measure can carry it, on the same gating discipline as `usesSpecs` and `--baseline`. -/
+def meaningKeyOf (decl : DeclInfo) : String :=
+  decl.proofIrrelHash?.getD ""
+
 /-- One declaration, as the audit page needs it.
 
 `closure` holds *indices into `AuditData.names`* rather than names. The closures of a library this
@@ -71,6 +88,9 @@ structure AuditDecl where
   /-- How it changed since the baseline (`ChangeKind.slug`), or empty without one. What lets an
   imported file say which of its acceptances a revision has voided. -/
   change : String := ""
+  /-- What this declaration means now (`meaningKeyOf`), for comparison against what a verdict was
+  recorded against. Empty on a build without semantic hashes, which switches the check off. -/
+  meaning : String := ""
   /-- Indices into `AuditData.names`: the project declarations this one's *statement* rests on, in
   dependency order, so a reading queue can be walked from the bottom up. -/
   closure : Array Nat := #[]
@@ -104,6 +124,15 @@ structure AuditControlData where
   project : String := ""
   /-- The project declarations its statement rests on, with links. Dependency-ordered. -/
   closure : Array LinkInfo := #[]
+  /-- What this declaration means now (`meaningKeyOf`), recorded alongside any verdict set here. -/
+  meaning : String := ""
+  /-- The same, for each entry of `closure`, positionally.
+
+  A parallel array rather than a field on `LinkInfo`, which is shared with half the site and has no
+  business knowing about audit state. It is needed because the bulk action — *accept this and
+  everything its statement rests on* — sets verdicts for declarations other than this one, and a
+  verdict recorded without a meaning can never be checked for staleness afterwards. -/
+  closureMeanings : Array String := #[]
 deriving Repr, Inhabited, ToJson, FromJson
 
 /-- A fingerprint of the collected declarations: their names paired with what they meant.

@@ -9,13 +9,19 @@ document.addEventListener('DOMContentLoaded', () => {
      simply not shown — removing a page can no longer leave a dead link here, which is exactly how
      a "Graph" link outlived the graph page. */
   const utilityLinks = [
+    /* First, and only built with `--baseline` or `--provenance`: a returning reader's first
+       question is what their earlier reading no longer covers. The derive-from-the-entry rule
+       above is what makes listing it here safe for a site that has neither. */
+    { slug: 'changes', label: 'Changes' },
     { slug: 'claims', label: 'Claims' },
-    /* Only built for a project that uses `@[specifies]`; the derive-from-the-entry rule above is
-       what makes listing it here safe for every other project. */
+    /* Only built for a project that uses `@[specifies]`; same rule again. */
     { slug: 'specifications', label: 'Specifications' },
     { slug: 'browse', label: 'Browse' },
     { slug: 'modules', label: 'Modules' },
-    { slug: 'trust', label: 'Trust' }
+    { slug: 'trust', label: 'Trust' },
+    /* Last, because it is the only one of these that is about the reader rather than the
+       library. */
+    { slug: 'audit', label: 'Audit' }
   ];
 
   const normalizeHref = href => {

@@ -36,6 +36,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // "unchanged" on every row would be noise.
   const hasChanges = rows.some(r => r.change != null);
 
+  // Provenance: when each declaration's meaning last changed. Absent without a ledger, in which
+  // case the column and its sort simply do not exist — the same gating every other optional column
+  // on this table uses.
+  const hasProvenance = rows.some(r => r.changedRef != null);
+
   // Which change kinds mean "your earlier reading of this no longer covers it". Proof-only changes
   // are deliberately not among them: the kernel rechecked the proof, and a proof cannot change what
   // a theorem says.
@@ -45,7 +50,15 @@ document.addEventListener('DOMContentLoaded', () => {
   // declaration pages cannot disagree about what a verdict is. Absent if that script failed to
   // load, in which case the column simply does not appear.
   const audit = window.RefereeAudit || null;
-  const verdictOf = r => (audit ? audit.verdictOf(r.name) : 'unread');
+  // `stale` is a fourth value the reader never sets: an acceptance recorded against a meaning this
+  // build no longer has. It is reported here rather than folded into `accepted` for the same reason
+  // the audit page excludes it from its counts — it is precisely the row that would otherwise look
+  // done and not be.
+  const verdictOf = r => {
+    if (!audit) return 'unread';
+    if (audit.isStale && audit.isStale(r.name, r.meaning || '')) return 'stale';
+    return audit.verdictOf(r.name);
+  };
 
   const CHANGE_LABEL = {
     statement: 'statement changed',
@@ -88,6 +101,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <option value="">Any verdict</option>
         <option value="unread">Unread</option>
         <option value="accepted">Accepted</option>
+        <option value="stale">Accepted, then changed</option>
         <option value="query">Query</option>
       </select>` : ''}
       <button id="browse-reset" type="button">Reset</button>
@@ -104,6 +118,8 @@ document.addEventListener('DOMContentLoaded', () => {
             <th data-sort="ext" class="browse-sortable browse-num">External</th>
             ${hasSpecs ? '<th data-sort="specs" class="browse-sortable browse-num">Spec</th>' : ''}
             ${hasChanges ? '<th data-sort="change" class="browse-sortable">Changed</th>' : ''}
+            ${hasProvenance
+              ? '<th data-sort="changedDate" class="browse-sortable">Meaning moved</th>' : ''}
             ${audit ? '<th data-sort="verdict" class="browse-sortable">Verdict</th>' : ''}
             <th data-sort="trust" class="browse-sortable">Status</th>
           </tr>
@@ -146,6 +162,14 @@ document.addEventListener('DOMContentLoaded', () => {
     statement: 0, indirect: 1, upstream: 2, body: 3, added: 4, proof: 5, unchanged: 6,
   };
 
+  // Ref and date together: the ref is what a reader recognises, the date is what tells them
+  // whether it predates their reading. Sorting is on the date, which is why it is `YYYY-MM-DD`.
+  const movedCell = r => {
+    if (r.changedRef == null) return '<span class="browse-change-na">\u2014</span>';
+    return `<span class="browse-moved-ref">${esc(r.changedRef)}</span>
+            <span class="browse-moved-date">${esc(r.changedDate || '')}</span>`;
+  };
+
   const changeCell = r => {
     if (r.change == null || r.change === 'unchanged') {
       return '<span class="browse-change-na">—</span>';
@@ -155,13 +179,17 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // Unread sorts first: the point of sorting this column is to bring what is left to the top.
-  const VERDICT_RANK = { unread: 0, query: 1, accepted: 2 };
+  // Sorted by how much is left to do, so ascending brings the work to the top. `stale` outranks
+  // `unread`: something read once and since changed is a shorter job than something never read.
+  const VERDICT_RANK = { unread: 0, stale: 1, query: 2, accepted: 3 };
+
+  const VERDICT_LABEL = { stale: 'accepted, then changed' };
 
   const verdictCell = r => {
     const v = verdictOf(r);
     if (v === 'unread') return '<span class="browse-change-na">unread</span>';
     const cls = v === 'accepted' ? 'browse-flag-ok' : 'browse-flag-warn';
-    return `<span class="browse-flag ${cls}">${v}</span>`;
+    return `<span class="browse-flag ${cls}">${VERDICT_LABEL[v] || v}</span>`;
   };
 
   const statusCell = r => {
@@ -225,6 +253,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <td class="browse-num">${r.ext}</td>
         ${hasSpecs ? `<td class="browse-num">${specCell(r)}</td>` : ''}
         ${hasChanges ? `<td>${changeCell(r)}</td>` : ''}
+        ${hasProvenance ? `<td class="browse-moved">${movedCell(r)}</td>` : ''}
         ${audit ? `<td>${verdictCell(r)}</td>` : ''}
         <td>${statusCell(r)}</td>
       </tr>`).join('');

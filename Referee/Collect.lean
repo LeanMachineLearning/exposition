@@ -82,6 +82,16 @@ structure Cli where
   other thing derived from it. Optional — without it every hash is `none` and the revision diff
   compares text, exactly as it did before the field existed. -/
   hashesPath : Option String := none
+  /-- The provenance ledger (`--provenance`): written and updated by the `provenance` subcommand,
+  read by `build-site`.
+
+  One file for both directions, because the ledger is append-only: each run folds the current
+  revision into whatever is already there. A render-time flag for `build-site`, gated exactly as
+  `--baseline` is — without it the site says nothing about when anything changed. -/
+  provenancePath : Option String := none
+  /-- What to call this revision in the ledger (`--ref`). Defaults to `git describe --tags
+  --always`, which prefers a tag and falls back to a short sha. -/
+  revisionRef : Option String := none
 deriving Repr
 
 /-- Classification of exposed Lean declarations. -/
@@ -214,6 +224,15 @@ structure BrowseRow where
   without `--baseline`. The column and its filter exist only in the `some` case, so a site with no
   baseline is exactly the site it was before the field existed. -/
   change : Option String := none
+  /-- What this declaration means now (`meaningKeyOf`), so the Verdict column can mark an
+  acceptance recorded against a different meaning. Empty on a build without semantic hashes. -/
+  meaning : String := ""
+  /-- The revision at which its meaning last changed, or `none` without a provenance ledger — which
+  is what makes the column and its sort disappear on a site that has none. -/
+  changedRef : Option String := none
+  /-- The date of that revision, `YYYY-MM-DD`, which is also what the column sorts on: it orders
+  correctly as a string, and it is what a reader scans for. -/
+  changedDate : String := ""
 deriving Repr, ToJson, FromJson, Inhabited
 
 /-- Data container for BrowseData. -/
@@ -527,6 +546,9 @@ def usage : String :=
     "  highlight-extracted  Elaborate each extracted minimal .lean file and write its highlighting,",
     "                       plus whether it compiles, to <output>/extracted-highlighting. Requires",
     "                       `extract` to have run first.",
+    "  provenance           Fold this revision into the provenance ledger: when each declaration's",
+    "                       meaning last changed, and where its source was last edited. Needs a git",
+    "                       working tree and semantic hashes, but no Lean environment.",
     "  build-site           Read collected data and render the Verso HTML site (no Lean env",
     "                       needed).",
     "  all                  Run collect, extract, and build-site in one process, without a JSON",
@@ -562,6 +584,11 @@ def usage : String :=
     "                       rename-invariant semantic hash. Read by `collect` and stored in the",
     "                       data file, where it becomes the key the revision diff compares on",
     "                       instead of pretty-printed types. Optional",
+    "  --provenance PATH    The provenance ledger: when each declaration's meaning last changed,",
+    "                       and in which revision. Written and extended by `provenance`, read by",
+    "                       `build-site`. Optional; without it the site says nothing about when",
+    "                       anything changed",
+    "  --ref NAME           What to call this revision in the ledger (default: git describe)",
     "  --module NAME        Internal: the module `highlight-module` should process",
     "  --input FILE         Internal: the file `highlight-file` should process",
   ]
@@ -616,6 +643,12 @@ def parseArgs : List String → Except String Cli
   | "--hashes" :: path :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with hashesPath := some path }
+  | "--provenance" :: path :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with provenancePath := some path }
+  | "--ref" :: name :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with revisionRef := some name }
   | flag :: _ =>
       .error s!"Unknown or incomplete option: {flag}\n\n{usage}"
 
@@ -1311,15 +1344,23 @@ def issueUrlOf (repoUrl? : Option String) (decl : Name) (moduleName : Name) (sou
     ]
     s!"{repoUrl}/issues/new?title={title}&body={body}&labels=referee-review"
 
-/-- Builds a repository source link for a declaration location. -/
-def sourceUrlOf (repoUrl? : Option String) (source? : Option SourceInfo) : Option String :=
+/-- Builds a repository source link for a declaration location.
+
+`ref` is the branch or commit to link into. It defaults to `main`, which is what every link here
+used to be pinned to — and which quietly rots: a published site keeps pointing at line 88 of a file
+that has moved on, so the link lands on whatever now happens to be there. Given a provenance
+ledger, `build-site` passes the commit the ledger was folded at instead, and the links keep showing
+the code the site was actually built from. -/
+def sourceUrlOf (repoUrl? : Option String) (source? : Option SourceInfo) (ref : String := "main")
+    : Option String :=
   match repoUrl?, source? with
-  | some repoUrl, some src => some s!"{repoUrl}/blob/main/{src.relPath}#L{src.line}"
+  | some repoUrl, some src => some s!"{repoUrl}/blob/{ref}/{src.relPath}#L{src.line}"
   | _, _ => none
 
 /-- Computes repository FileUrlOf. -/
-def repoFileUrlOf (repoUrl? : Option String) (relPath : String) : Option String :=
-  repoUrl?.map fun repoUrl => s!"{repoUrl}/blob/main/{relPath}"
+def repoFileUrlOf (repoUrl? : Option String) (relPath : String) (ref : String := "main")
+    : Option String :=
+  repoUrl?.map fun repoUrl => s!"{repoUrl}/blob/{ref}/{relPath}"
 
 /-- Computes group HrefOf. -/
 def groupHrefOf (groupKey : String) : String :=

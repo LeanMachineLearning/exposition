@@ -8,9 +8,16 @@ The framing observation. Everything the site does today describes **one snapshot
 three biggest gaps are that it cannot say what *changed*, cannot say what *falls* if something is
 wrong, and cannot record what the referee has *done*. Those are the first three below.
 
-Status: (1) and (3) are built — see [Revisions](#revisions-the-user-experience) and
-[Audit state](#audit-state-what-was-built) for their designs, and the `--baseline` flag and Audit
-State sections in [README.md](README.md). The rest are proposals.
+Status: (1), (3) and (10) are built — see [Revisions](#revisions-the-user-experience),
+[Audit state](#audit-state-what-was-built) and [Provenance](#provenance-what-was-built) for their
+designs, and the `--baseline`, `--hashes` and `--provenance` flags in [README.md](README.md). The
+rest are proposals.
+
+Two of them changed shape after the fact, and the note is worth keeping: (1) was rewritten around
+[`semantic_hash`](https://github.com/mathlib-initiative/semantic_hash) once that existed, which
+removed the toolchain-churn risk its own design section had flagged as unavoidable; and (10) turned
+out to have a large half — telling a reader which of their acceptances are stale — that needed the
+hashes and no git at all.
 
 ## Tier A — pure functions of `data.json` (no new Lean phase, no re-import)
 
@@ -281,6 +288,59 @@ yields which blueprint nodes have no Lean counterpart, and — the lie detector 
 When each *statement* last changed, and in which commit. That is what tells a referee "this was
 edited after I read it", and it upgrades (1) from "diff two saved JSON files" to "diff against any
 ref".
+
+#### Provenance: what was built
+
+**The design turns on refusing to merge two facts.** `git blame` says somebody touched these lines.
+It cannot say whether the meaning moved — that is the same gap §1 records, where only the
+elaborated type catches both a reformatting that is not a change and a `variable` line that is. So
+a declaration carries both, separately: **edited**, from blame, and **meaning last changed**, from
+a ledger keyed on semantic hashes. The sentence worth building the feature for is the one that
+needs both:
+
+```
+Meaning unchanged since v0.1, the oldest revision on record (2026-07-28).
+Its file was edited 2026-07-29 (e2aaa83, "reformat DiffReport.byName")
+without changing what it means.
+```
+
+A referee shown only the first half re-reads something that did not change. That is the temporal
+form of the proof-only collapse: something moved, and it was not the meaning.
+
+**Not a walk of history.** Getting the second fact exactly would mean re-elaborating the library at
+every commit. Instead each build folds the current hashes into an append-only ledger and stamps
+where they differ — `O(decls)` string comparisons, no history walk, and a file whose size does not
+grow with the length of the history. The cost is that resolution equals build cadence, so the
+ledger records what was actually folded and the page states its own resolution.
+
+**Semantic hashes are a hard requirement, and the ledger is why.** `provenance` refuses to run on
+data collected without `--hashes`. A text-keyed ledger would record the mass false change of a
+toolchain upgrade, and being append-only it would record it *permanently* — no later build could
+correct it. A ledger's only value is being trustworthy about years of history.
+
+**And its inverse: the revision selector.** The Changes page stops being "compared against the one
+file passed at build time" and gains a dropdown of every recorded revision. Pick the one you last
+worked through; the queue is what no longer means what it meant then, heaviest first. It runs
+client-side because the ledger is one integer per declaration. What it cannot do is show the
+statements side by side — the ledger holds hashes, not the text at every revision — so it gives the
+queue and says on the page that the diff still needs `--baseline`.
+
+**One bug fixed on the way.** Source links were pinned to `blob/main` and quietly rotted: a
+published site kept pointing at line 88 of a file that had moved on. They now pin to the commit the
+ledger was folded at.
+
+#### The audit interlock, which needed none of this
+
+The half of §10 that turned out not to need git at all. Each verdict now records the declaration's
+semantic hash at the moment it was set, which makes an exported audit file **self-baselining**: any
+later build can say which acceptances are of something that has since changed, without the build
+they were made against and without `--baseline`. That produces *accepted, then changed*, a third
+state alongside *accepted but not covered* — and, for the same reason as that one, excluded from
+every count rather than left to inflate one.
+
+**Deliberately not built:** authors, contribution counts, commit-message mining. Who wrote something
+is not a referee question, and it invites inference about people from data that does not support it
+— the same test that rejected Mathlib-overlap detection.
 
 ## Rejected
 

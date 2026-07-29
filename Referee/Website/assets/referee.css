@@ -1076,10 +1076,50 @@ body.hide-theorems [data-decl-group="theorem"] {
   width: 100%;
 }
 
+/* A graph with a single node and no edges. Drawn so that a declaration page keeps its shape
+   whether or not anything sits under it, but given none of the room a real graph needs: there is
+   no side panel to reserve width for, and 720px of empty canvas under one box reads as a broken
+   picture rather than as an answer. */
+.graph-layout--lone { display: block; }
+
+/* ------------------------------------------------------------ provenance --- */
+
+/* When a declaration last meant something else, under its card. Quiet by design: it is context for
+   a reader who has already decided to look, not a warning. The change banner above the card is
+   what shouts. */
+.provenance-line {
+  color: var(--site-ink-2);
+  font-size: .85rem;
+  margin: .5rem 0 0;
+}
+
+.browse-moved { white-space: nowrap; }
+.browse-moved-ref { font-family: var(--site-mono); }
+.browse-moved-date { color: var(--site-ink-3); font-size: .8rem; margin-left: .35rem; }
+
+/* The revision selector on the Changes page. */
+.rev-picker { align-items: baseline; display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
+.rev-picker select { font: inherit; }
+.rev-result { margin: .75rem 0; }
+.rev-caveat { color: var(--site-ink-3); font-size: .85rem; }
+
 .audit-coverage,
+.audit-stale,
 .audit-queue {
   font-size: .85rem;
   margin: .5rem 0 0;
+}
+
+/* An acceptance of something this build no longer says. Given a border rather than colour alone:
+   it is the one line in the control that reports the reader's own record as out of date, and it
+   has to survive being skimmed. Collapsed when empty so the control keeps its shape. */
+.audit-stale:empty { display: none; }
+
+.audit-stale {
+  background: var(--site-warn-soft);
+  border-left: 3px solid var(--site-warn-border);
+  border-radius: var(--site-radius-sm);
+  padding: .5rem .7rem;
 }
 
 .audit-queue { color: var(--site-ink-2); }
