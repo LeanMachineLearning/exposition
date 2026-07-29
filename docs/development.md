@@ -29,6 +29,13 @@
   `Lean.collectAxioms`, i.e. the same answer `#print axioms` gives. `@[specifies]` annotations are
   read here too and reversed by `attachSpecifiedBy`, the one field on `DeclInfo` that is not
   derived from the environment but taken from the author.
+
+  It also builds `externalDecls`, the upstream constants the project's statements name — with each
+  one's signature, its value or fields, and its docstring, so a graph node can be read without
+  leaving the site — and walks each upstream package's own internal edges under the
+  `maxExpandedPackage` budget, which is what lets an unaudited dependency be drawn with structure
+  rather than as a flat list. `collect` cannot consult `--trust` (a render-time flag), so it walks
+  every package and abandons the ones that do not fit. See [upstream trust](trust.md).
 - `Referee/Provenance.lean` — the provenance ledger (`--provenance`). The fold is pure — ledger,
   revision, declarations in; ledger out — and unit-tested in `Test/Provenance.lean`, which matters
   more here than elsewhere because the file is append-only: a fold that records a change where none
@@ -97,7 +104,7 @@ and reload the browser, bypassing its cache. That takes milliseconds, against ro
 `lake build` plus `build-site`. A full rebuild is only needed once the Lean-side page structure
 changes.
 
-Two things worth knowing:
+Three things worth knowing:
 
 - The assets are declared as a Lake `input_dir` in `lakefile.lean`, with `needs := #[websiteAssets]`
   on the library. Without that, `include_str` is invisible to Lake's change detection and
@@ -105,3 +112,6 @@ Two things worth knowing:
   the *previous* version of the file.
 - `sync-assets.sh` patches an already-built site only. The binary still embeds whatever was there at
   build time, so re-run `lake build` before generating a site you intend to publish.
+- **`upstream.js` is not an asset.** It is generated per project from `CollectedData.externalDecls`,
+  so it does not live in `assets/` and `sync-assets.sh` neither copies nor clobbers it. Changing what
+  goes into it means a `build-site`, not a sync.

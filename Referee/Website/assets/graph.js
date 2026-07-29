@@ -35,7 +35,9 @@ document.addEventListener('DOMContentLoaded', () => {
      picture could say — the same reason the audit page excludes those from its counts. */
   const audit = (UNIT === 'package') ? null : (window.RefereeAudit || null);
   const verdictMark = n => {
-    if (!audit || n.status === 'untrusted') return null;
+    // No verdict on anything in the upstream band, audited package or not: a verdict is a judgement
+    // about a declaration of *this* project, and there is no page here on which to have made one.
+    if (!audit || n.upstream || n.status === 'untrusted') return null;
     const v = audit.verdictOf(n.id);
     if (v === 'query') return { glyph: '?', fill: theme.sorry, title: 'you left a query on this' };
     if (v !== 'accepted') return null;
@@ -45,6 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Package graphs carry trust verdicts rather than chapters and `sorry` flags, so the
   // legend has to describe a different picture.
   const hasUntrusted = allNodes.some(n => n.status === 'untrusted');
+  const hasTrusted = allNodes.some(n => n.status === 'trusted');
 
   // ---------------------------------------------------------------- constants
 
@@ -83,6 +86,10 @@ document.addEventListener('DOMContentLoaded', () => {
        site amber-dashed means "depends on sorry", and an unaudited package is a different
        claim — the code may be perfectly correct, nobody has vouched for it. */
     theme.untrusted = css('--site-ink-3', '#7c838e');
+    /* Audited upstream: present, and visibly not the project, but not flagged. Solid rather than
+       dashed, because on this site a dashed outline means "nobody has vouched for this" and the
+       reader has explicitly vouched for these. */
+    theme.trusted = css('--site-ink-3', '#7c838e');
     theme.band = isDark() ? 'rgba(255,255,255,.035)' : 'rgba(20,22,26,.028)';
   };
   readTheme();
@@ -101,8 +108,8 @@ document.addEventListener('DOMContentLoaded', () => {
      in it says nothing about grey dashes. What is left is short enough to read. */
   const KEY_ITEMS = [
     { term: 'Rows',
-      text: `Dependency depth. The top row depends on nothing, and each ${UNIT} sits one row below
-             its bottom-most dependency.` },
+      text: `Dependency depth among this project's own ${UNITS}. The first depends on nothing, and
+             each ${UNIT} sits one row below its bottom-most dependency.` },
     { term: 'Arrows',
       text: 'Point from a dependency down to what uses it.' },
     { term: 'Missing edges',
@@ -121,6 +128,15 @@ document.addEventListener('DOMContentLoaded', () => {
       ? { term: 'Grey dashed outline',
           text: `A declaration from an unaudited upstream package. It has no page here, and
                  trusting this result means trusting it.` } : null,
+    (UNIT !== 'package' && hasTrusted)
+      ? { term: 'Grey solid outline',
+          text: `A declaration from a package you marked audited, named by this statement. Shown so
+                 you can see what the statement is <em>about</em>; click one for its signature.` }
+      : null,
+    (UNIT !== 'package' && (hasTrusted || hasUntrusted))
+      ? { term: 'Top band',
+          text: `Upstream declarations, grouped by package and labelled in the margin. They sit
+                 above the dependency rows because nothing in the picture precedes them.` } : null,
     { term: 'Violet dashed edge, curving up',
       text: `A dependency <em>cycle</em>: those ${UNITS} refer to each other, so no ordering of rows
              can place both below everything they depend on.` },
@@ -246,18 +262,111 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* Builds the layered structure: real nodes plus the waypoints that long edges pass through.
      Returns rows of cells and the routed edges. */
+  /* Lays the upstream nodes out as one block per package, stacked above the project's own rows.
+
+     A package whose internal edges were collected (`collect` walks any upstream package small enough
+     to fit its budget) gets a block layered by depth exactly as the project's is, so an unaudited
+     dependency is drawn with the structure it has rather than as a flat list of the names this
+     project happens to mention.
+
+     A package that was too large to walk has no internal edges, so `assignDepths` puts all of it at
+     depth 0 and its block is a single wrapped level — the flat band this used to draw, retained as
+     the degenerate case rather than as a second code path. That is the shape Mathlib always takes,
+     and it is why `--show-trusted-upstream` still produces something readable: an audited package is
+     never expanded, so it stays a band however many constants it contributes.
+
+     Wrapping matters because these nodes are sinks as far as the rows below are concerned: without
+     it a level would grow sideways with the fan-out, and on `AlphaRAR` the widest page put 244 boxes
+     in one row, several thousand pixels against a viewport around twelve hundred. Wrapping spends
+     vertical space, which the picture has, rather than horizontal, which it does not.
+
+     Blocks stack in dependency order — `upstreamRank`, from the workspace's Lake graph — so Mathlib
+     sits above a package built on Mathlib, above the project. The whole picture then reads one way:
+     everything below what it depends on. Ordering by trust instead would sort by a property of the
+     *reader* rather than of the code, and would put a package above its own dependency whenever the
+     reader had audited one and not the other. */
+  function layOutBand(bandNodes, edges) {
+    const byPkg = new Map();
+    for (const n of bandNodes) {
+      if (!byPkg.has(n.upstream)) byPkg.set(n.upstream, []);
+      byPkg.get(n.upstream).push(n);
+    }
+    const rankOf = p => byPkg.get(p)[0].upstreamRank || 0;
+    const pkgs = [...byPkg.keys()].sort((a, b) =>
+      d3.ascending(rankOf(a), rankOf(b)) || d3.ascending(a, b));
+
+    const target = Math.max(480, width - MARGIN.left - MARGIN.right);
+    const rows = [];
+    for (const pkg of pkgs) {
+      const group = byPkg.get(pkg);
+      const ids = new Set(group.map(n => n.id));
+      // Depth within this package only. Edges into it from elsewhere say nothing about where a
+      // constant sits inside it.
+      const parentsOf = new Map(group.map(n => [n.id, []]));
+      for (const e of edges) {
+        if (ids.has(e.source) && ids.has(e.target)) parentsOf.get(e.target).push(e.source);
+      }
+      const depth = assignDepths(group.map(n => n.id), parentsOf);
+      const levels = [];
+      for (const n of group) {
+        const d = depth.get(n.id) || 0;
+        (levels[d] ||= []).push(n);
+      }
+      levels.forEach((level, d) => {
+        level.sort((a, b) => d3.ascending(a.label, b.label));
+        /* Each level wraps on its own, and a level always starts a fresh row, so a row never mixes
+           two levels or two packages — which is what lets the margin label name exactly one thing. */
+        let row = { pkg, level: d, nodes: [], w: 0 };
+        for (const n of level) {
+          const w = widthOf(n.label) + NODE_GAP;
+          if (row.nodes.length && row.w + w > target) {
+            rows.push(row);
+            row = { pkg, level: d, nodes: [], w: 0 };
+          }
+          row.nodes.push(n);
+          row.w += w;
+        }
+        if (row.nodes.length) rows.push(row);
+      });
+    }
+    return rows;
+  }
+
   function buildLayers(nodes, edges) {
-    const parentsOf = new Map(nodes.map(n => [n.id, []]));
     const byId = new Map(nodes.map(n => [n.id, n]));
-    for (const e of edges) parentsOf.get(e.target)?.push(e.source);
+    /* The upstream band is laid out separately from the dependency rows and sits above them. Its
+       members are also kept out of the depth computation: a project declaration whose only
+       dependency is a Mathlib constant belongs in the top dependency row, not pushed one row down by
+       something that is not part of the project's own structure. */
+    const bandNodes = nodes.filter(n => n.upstream);
+    const bandIds = new Set(bandNodes.map(n => n.id));
+    const mainNodes = nodes.filter(n => !n.upstream);
 
-    const depth = assignDepths(nodes.map(n => n.id), parentsOf);
-    const rowCount = nodes.length ? Math.max(...nodes.map(n => depth.get(n.id))) + 1 : 0;
+    const parentsOf = new Map(mainNodes.map(n => [n.id, []]));
+    for (const e of edges) {
+      if (!bandIds.has(e.source)) parentsOf.get(e.target)?.push(e.source);
+    }
+
+    const depth = assignDepths(mainNodes.map(n => n.id), parentsOf);
+    const bandRows = layOutBand(bandNodes, edges);
+    const bandCount = bandRows.length;
+    const mainCount = mainNodes.length ? Math.max(...mainNodes.map(n => depth.get(n.id))) + 1 : 0;
+    const rowCount = bandCount + mainCount;
     const rows = Array.from({ length: rowCount }, () => []);
+    // Row index ↦ the package it holds, for the row labels; absent on a dependency row.
+    const rowPackage = new Map();
 
-    for (const n of nodes) {
+    bandRows.forEach((br, i) => {
+      rowPackage.set(i, br);
+      for (const n of br.nodes) {
+        const cell = { key: n.id, node: n, row: i, w: widthOf(n.label), up: [], down: [], x: 0 };
+        n.cell = cell;
+        rows[i].push(cell);
+      }
+    });
+    for (const n of mainNodes) {
       const cell = {
-        key: n.id, node: n, row: depth.get(n.id),
+        key: n.id, node: n, row: bandCount + depth.get(n.id),
         w: widthOf(n.label), up: [], down: [], x: 0,
       };
       n.cell = cell;
@@ -269,6 +378,16 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const e of edges) {
       const a = byId.get(e.source)?.cell, b = byId.get(e.target)?.cell;
       if (!a || !b) continue;
+      /* An edge out of the band gets no waypoints. Threading one through every row between a band
+         row and its target would drag the band's fan-out down through the dependency rows and undo
+         the ordering the sweeps below compute for them. Drawn as a direct line instead: the band is
+         a separate region, and an edge leaving it reads as leaving it. */
+      if (bandIds.has(e.source)) {
+        a.down.push(b);
+        b.up.push(a);
+        routed.push({ edge: e, chain: [a, b], source: a, target: b, back: false });
+        continue;
+      }
       const chain = [a];
       /* A back edge: the dependency ended up at or below what uses it. This is not a layout bug —
          the declaration graph genuinely contains cycles (mutually referential declarations), and
@@ -304,9 +423,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const m = xs.length >> 1;
       return xs.length % 2 ? xs[m] : (xs[m - 1] + xs[m]) / 2;
     };
+    /* The sweeps and the x-refinement below run on the dependency rows only. A band row holds one
+       package in alphabetical order, which is predictable and is what a reader scanning for a
+       particular constant wants; reordering it to minimise crossings would trade that for an order
+       nobody can anticipate, and would let the straightening pass widen it past the wrap it was
+       computed to fit. Band rows are packed and centred at the end instead. */
+    const firstMain = bandCount;
     for (let s = 0; s < SWEEPS; s++) {
       const down = s % 2 === 0;
-      const seq = down ? d3.range(1, rows.length) : d3.range(rows.length - 1).reverse();
+      const seq = down ? d3.range(firstMain + 1, rows.length)
+                       : d3.range(firstMain, rows.length - 1).reverse();
       for (const r of seq) {
         const side = down ? 'up' : 'down';
         const keyed = rows[r].map(c => ({ c, m: median(c, side) }));
@@ -338,9 +464,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const m = xs.length >> 1;
       return xs.length % 2 ? xs[m] : (xs[m - 1] + xs[m]) / 2;
     };
+    const mainRows = rows.slice(firstMain);
     for (let pass = 0; pass < STRAIGHTEN; pass++) {
       // Alternate direction so neither the top nor the bottom of the graph wins every time.
-      const order = pass % 2 === 0 ? rows : [...rows].reverse();
+      const order = pass % 2 === 0 ? mainRows : [...mainRows].reverse();
       for (const row of order) {
         for (const c of row) c.want = desired(c);
         // left to right, honouring separation
@@ -365,7 +492,7 @@ document.addEventListener('DOMContentLoaded', () => {
        drawing became unreadable. Closing any gap wider than this keeps the layout straight where
        it can be and stops it growing where it cannot. */
     const MAX_GAP = NODE_GAP * 4;
-    for (const row of rows) {
+    for (const row of mainRows) {
       for (let i = 1; i < row.length; i++) {
         const gap = (row[i].x - row[i].w / 2) - (row[i - 1].x + row[i - 1].w / 2);
         if (gap > MAX_GAP) {
@@ -387,7 +514,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const shift = (span - (hi - lo)) / 2 - (lo - minX);
       for (const c of row) { c.x += shift - minX; c.y = MARGIN.top + c.row * ROW_GAP + NODE_H / 2; }
     }
-    return { rows, routed, extent: { w: span, h: rowCount * ROW_GAP } };
+    return { rows, routed, rowPackage, bandCount, extent: { w: span, h: rowCount * ROW_GAP } };
   }
 
   // ---------------------------------------------------------------- rendering
@@ -418,7 +545,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let state = { rows: [], routed: [], sel: null, byId: new Map(), up: new Map(), down: new Map() };
 
   function render(nodes, edges) {
-    const { rows, routed, extent } = buildLayers(nodes, edges);
+    const { rows, routed, rowPackage, bandCount, extent } = buildLayers(nodes, edges);
     /* Height the drawing area to whatever the graph actually needs at the scale the width allows,
        between a floor that keeps tiny graphs from looking cramped and the full viewport.
 
@@ -456,10 +583,24 @@ document.addEventListener('DOMContentLoaded', () => {
       .attr('x', -MARGIN.left).attr('y', i => MARGIN.top + i * ROW_GAP - NODE_H / 2 - 12)
       .attr('width', extent.w + MARGIN.left + MARGIN.right).attr('height', NODE_H + 24)
       .attr('fill', i => (i % 2 ? theme.band : 'transparent'));
+    /* The margin reads as one column of blocks: each block is named on its first row and its
+       remaining levels are numbered from there, so a page with an expanded upstream package gives
+       e.g. `LeanMachineLearning · 1 · 2 · AlphaRAR · 1 · 2 · 3`. Depth is therefore counted within
+       a block rather than across the whole picture, which is the only reading under which the
+       numbers mean the same thing in every block. A level that wrapped onto extra rows leaves them
+       unlabelled, so the label marks the level rather than repeating down the margin. */
     allBands.select('text')
       .attr('x', -MARGIN.left + 12).attr('y', i => MARGIN.top + i * ROW_GAP + 4)
-      .attr('class', 'graph-row-label')
-      .text(i => (i === 0 ? 'no deps' : String(i)));
+      .attr('class', i => 'graph-row-label' + (i < bandCount ? ' graph-row-label--upstream' : ''))
+      .text(i => {
+        if (i >= bandCount) {
+          const d = i - bandCount;
+          return d === 0 ? (graph.projectName || 'this project') : String(d);
+        }
+        const br = rowPackage.get(i), prev = rowPackage.get(i - 1);
+        if (prev && prev.pkg === br.pkg && prev.level === br.level) return '';   // wrapped
+        return br.level === 0 ? br.pkg : String(br.level);
+      });
 
     const edgeSel = edgeLayer.selectAll('path').data(routed, r => r.edge.source + '\0' + r.edge.target);
     edgeSel.exit().remove();
@@ -494,11 +635,17 @@ document.addEventListener('DOMContentLoaded', () => {
       // its chapter colour, so the eye lands on the subject of the page first.
       .attr('fill', n => {
         if (n.focus) return theme.focusFill;
+        // Upstream nodes take no chapter colour: they belong to no chapter, and tinting them like
+        // one would say they are part of the project's own structure.
+        if (n.upstream) {
+          const c = d3.color(theme.untrusted); c.opacity = 0.08; return c.formatRgb();
+        }
         const c = d3.color(colorOf(n.groupKey)); c.opacity = 0.13; return c.formatRgb();
       })
       .attr('stroke', n => (n.focus ? theme.focusFill
         : n.status === 'sorry' ? theme.sorry
-        : n.status === 'untrusted' ? theme.untrusted : colorOf(n.groupKey)))
+        : n.status === 'untrusted' ? theme.untrusted
+        : n.status === 'trusted' ? theme.trusted : colorOf(n.groupKey)))
       .attr('stroke-width', n => (n.focus ? 2 : 1.3))
       .attr('stroke-dasharray', n =>
         ((n.status === 'sorry' || n.status === 'untrusted') && !n.focus ? '4 3' : null));
@@ -612,17 +759,34 @@ document.addEventListener('DOMContentLoaded', () => {
        uses it are all already drawn, and clicking the node highlights exactly those edges. The
        panel is for what the picture cannot show. */
     const n = state.byId.get(state.sel);
+    /* Upstream nodes carry no signature or docstring of their own: those live in the shared
+       `upstream.js` table, keyed by full name, so that one Mathlib signature is not written into
+       every page that happens to mention it. Project nodes carry theirs inline, since a declaration
+       appears on few pages. Absent table (older build, or a project with no upstream nodes) simply
+       leaves both empty, which is what these nodes showed before the table existed. */
+    const up = (window.RefereeUpstream || {})[n.id] || {};
+    const signature = n.signature || up.signature || '';
+    const docText = n.doc || up.doc || '';
+    const where = n.moduleName || up.module || '';
     const warn = n.status === 'sorry'
       ? '<p class="graph-panel-warn">⚠ depends on <code>sorry</code></p>'
       : n.status === 'untrusted'
-      ? '<p class="graph-panel-warn">⚠ not audited</p>' : '';
-    const sig = n.signature ? `<pre class="graph-panel-code">${esc(n.signature)}</pre>` : '';
-    const doc = n.doc
-      ? `<p class="graph-panel-doc">${esc(n.doc)}</p>`
+      ? `<p class="graph-panel-warn">⚠ not audited${
+          up.package ? ` — from <code>${esc(up.package)}</code>` : ''}</p>` : '';
+    /* An upstream *definition* needs its body as well as its type. The type of `Filter.Tendsto` is
+       `(α → β) → Filter α → Filter β → Prop`, whose arguments all read as hypotheses and which never
+       says that it means `map f l₁ ≤ l₂` — and "is this the definition I think it is" is the whole
+       reason these nodes are clickable. Absent for a theorem, whose type already is its statement. */
+    const sig = signature
+      ? `<pre class="graph-panel-code">${esc(signature)}${
+          up.value ? `\n  :=\n${esc(up.value)}` : ''}</pre>`
+      : '';
+    const doc = docText
+      ? `<p class="graph-panel-doc">${esc(docText)}</p>`
       : '<p class="graph-panel-doc graph-panel-nodoc">No docstring.</p>';
     panel.innerHTML = `
       <h2>${esc(n.label)}</h2>
-      <p class="graph-panel-meta">${esc(n.kind)} · <code>${esc(n.moduleName)}</code></p>
+      <p class="graph-panel-meta">${esc(n.kind)}${where ? ` · <code>${esc(where)}</code>` : ''}</p>
       ${warn}
       ${sig}
       ${doc}

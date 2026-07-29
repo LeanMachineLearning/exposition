@@ -33,6 +33,7 @@ Which phase reads a flag is worth knowing, because it decides what a change cost
 | `--site-url URL` | `build-site` | Where the site will be published. Adds web-editor links, and must be the real published URL — see [extracted files](extraction.md) |
 | `--title TITLE` | `build-site` | Override the site title |
 | `--trust PKG` | `build-site` | Treat a package and everything it depends on as audited. Repeatable. See [upstream trust](trust.md) |
+| `--show-trusted-upstream` | `build-site` | Also draw audited packages in each graph's upstream band. Off by default; unaudited packages are always drawn. See [upstream trust](trust.md#audited-packages---show-trusted-upstream) |
 | `--baseline PATH` | `build-site` | An earlier `collect` output to compare against. See [comparing revisions](revisions.md) |
 | `--baseline-label S` | `build-site` | What to call that baseline on the page (default: its file name) |
 | `--provenance PATH` | `provenance`, `build-site` | The ledger: written and extended by the subcommand, read by the site. See [provenance](provenance.md) |

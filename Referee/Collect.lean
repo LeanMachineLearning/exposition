@@ -68,6 +68,19 @@ structure Cli where
   sets, which is the point — "what if I have not audited LML" should not need re-importing the
   project. -/
   trustedPackages : Array Name := #[]
+  /-- Draw declarations from *audited* packages in the graph's upstream band as well as unaudited
+  ones (`--show-trusted-upstream`).
+
+  Off by default, and the default is the interesting judgement. Drawing them answers "what is this
+  statement about", but on a Mathlib-backed project it is a median of 21 nodes and a p90 of 53 per
+  page — a band several times the size of the project structure underneath it, restating something
+  the declaration's own code block at the top of the page already shows, with types on hover. What
+  the band is *for* is the part no other view has: the packages nobody has vouched for. Those are
+  always drawn.
+
+  Kept as a flag rather than removed because the capability is cheap to carry — the data is collected
+  either way — and because on a project whose upstream is small the answer could go the other way. -/
+  showTrustedUpstream : Bool := false
   /-- An earlier `collect` output to diff the current one against (`--baseline`).
 
   A render-time flag for the same reason `--trust` is one: the comparison is a pure function of the
@@ -275,6 +288,17 @@ structure GraphNode where
   against travels with the node. Empty on a build without semantic hashes, which switches the
   staleness half of the check off exactly as it is switched off everywhere else. -/
   meaning : String := ""
+  /-- The upstream package this node comes from, or `""` for a project declaration.
+
+  Set on exactly the nodes that belong in the upstream *band* rather than in the dependency rows.
+  They are all sinks — nothing in the graph precedes them — so they would otherwise pile into the top
+  row and make it several thousand pixels wide; `graph.js` lays them out as a wrapped band grouped by
+  this field instead. `status` says whether the package is audited (`"trusted"`/`"untrusted"`). -/
+  upstream : String := ""
+  /-- The package's depth in the workspace dependency graph (`packageRanks`), which is the order the
+  band stacks in: a package sits above one that depends on it, so the band reads the same way the
+  dependency rows below it do. -/
+  upstreamRank : Nat := 0
 deriving Repr, ToJson, FromJson
 
 /-- Data container for GraphEdge. -/
@@ -290,6 +314,9 @@ structure GraphData where
   /-- What a node stands for, singular. Used in the graph's own explanatory text, so that a graph
   of modules does not describe itself as a graph of declarations. -/
   unit : String := "declaration"
+  /-- The project's own name, which labels the first of its dependency rows the way each upstream
+  package labels the first row of its block. -/
+  projectName : String := ""
 deriving Repr, ToJson, FromJson
 
 /-- One end of a specification link, as written with the `@[specifies]` attribute of the `LeanSpec`
@@ -514,6 +541,45 @@ structure MarkdownSection where
   body : String
 deriving Repr, ToJson, FromJson
 
+/-- An upstream constant a project statement names, with enough of it to be read in place.
+
+These are the nodes a declaration's graph bottoms out in, and until now they were drawn with nothing
+but their name: the panel showed the name again where a signature belongs and a canned sentence
+where the docstring belongs. A reader asking "is this statement about the definition I think it is"
+— the question the whole site exists to serve — could not answer it without leaving for another
+site. The signature and docstring come straight out of the imported environment, which already has
+both.
+
+Not attached to `DeclInfo`: one upstream constant is named by many declarations, so this is a table
+keyed by name, emitted once. -/
+structure ExternalDeclInfo where
+  name : Name
+  /-- The package it comes from, as `PackageInfo.name`. -/
+  package : Name
+  /-- The module declaring it, for the panel's provenance line. -/
+  moduleName : Name
+  /-- Its pretty-printed type. -/
+  signature : String
+  /-- What it *says*, beyond the shape of its arguments: a definition's value, or a structure's
+  fields. Empty for a theorem, whose type already is its statement, and for anything with no body to
+  show.
+
+  Without this the panel answers the wrong question for a definition. `Filter.Tendsto`'s type is
+  `(α → β) → Filter α → Filter β → Prop`, which says it takes a function and two filters and yields a
+  proposition — every argument reading as a hypothesis, and no hint that it *means* `map f l₁ ≤ l₂`.
+  Since the whole point of these nodes is "is this the definition I think it is", the type alone
+  cannot answer it. -/
+  value : String := ""
+  /-- Its docstring, or `""` when it has none — the panel distinguishes the two. -/
+  doc : String := ""
+  /-- Its own meaning edges, restricted to *its own package*, so the graph can draw an unaudited
+  package's internal structure rather than a flat row of names. Empty unless the package was expanded
+  (`CollectedData.expandedPackages`). Edges leaving the package are deliberately absent: they would
+  reach either the project — which depends on the package, not the reverse — or a further package,
+  whose own expansion is a separate question. -/
+  deps : Array Name := #[]
+deriving Repr, ToJson, FromJson, Inhabited
+
 /-- Format version of `CollectedData`. Bump whenever `DeclInfo` or `CollectedData` gains or
 changes a field, so that `build-site` fails with an actionable message rather than a field-level
 decode error when handed a JSON file written by an older `collect`.
@@ -524,8 +590,12 @@ decode error when handed a JSON file written by an older `collect`.
 - 4: adds `DeclInfo.specifies` and `DeclInfo.specifiedBy`
 - 5: adds `CollectedData.packages` and `DeclInfo.upstreamPackages`
 - 6: adds `DeclInfo.semanticHash?` and `DeclInfo.proofIrrelHash?`
-- 7: adds `DeclInfo.dataDeps` and `DeclInfo.dataTransDeps` -/
-def collectedDataVersion : Nat := 7
+- 7: adds `DeclInfo.dataDeps` and `DeclInfo.dataTransDeps`
+- 8: replaces `CollectedData.externalPackages` with `externalDecls`, which carries the signature and
+  docstring of each upstream constant as well as its package
+- 9: adds `ExternalDeclInfo.value`/`deps` and `CollectedData.expandedPackages`, the internal
+  structure of the upstream packages small enough to walk -/
+def collectedDataVersion : Nat := 9
 
 /-- The full result of the `collect` subcommand's analysis, persisted as JSON so `extract`
 and `build-site` can run without re-importing the target project. `moduleOrder` and
@@ -543,9 +613,13 @@ structure CollectedData where
   /-- The packages with code actually loaded in the imported environment. See `loadedPackagesOf`:
   this is what stops a declared-but-unused dependency from being reported as trusted-or-not. -/
   loadedPackages : Array Name := #[]
-  /-- Upstream constant ↦ its package, for the constants project statements name. Lets a dependency
-  graph draw the upstream declarations a statement rests on. See `externalPackageMap`. -/
-  externalPackages : Array (Name × Name) := #[]
+  /-- The upstream constants project statements name, with what a reader needs in order to read one:
+  its package, its module, its signature and its docstring. See `externalDeclsOf`. -/
+  externalDecls : Array ExternalDeclInfo := #[]
+  /-- The upstream packages whose internal structure was collected, i.e. those whose closure fitted
+  inside `maxExpandedPackage`. Their declarations carry `ExternalDeclInfo.deps` and are drawn as a
+  layered block; everything else is drawn as the flat surface it always was. -/
+  expandedPackages : Array Name := #[]
 deriving ToJson, FromJson
 
 /-- Command-line usage text shown for invalid arguments. -/
@@ -595,6 +669,10 @@ def usage : String :=
     "  --trust PKG          Treat this upstream package, and everything it depends on, as",
     "                       audited. Repeatable. Anything left untrusted is reported on the",
     "                       trust page and on the pages of the declarations that rest on it",
+    "  --show-trusted-upstream",
+    "                       Also draw declarations from audited packages in each graph's upstream",
+    "                       band. Off by default: unaudited packages are always drawn, and they",
+    "                       are what the band exists to show",
     "  --baseline PATH      An earlier `collect` output to compare against. Adds a Changes page,",
     "                       a badge on every declaration, and a Browse column saying what a",
     "                       reader of that revision has to read again. Omit it and the site says",
@@ -654,6 +732,9 @@ def parseArgs : List String → Except String Cli
   | "--trust" :: name :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with trustedPackages := cfg.trustedPackages.push name.toName }
+  | "--show-trusted-upstream" :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with showTrustedUpstream := true }
   | "--baseline" :: path :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with baselinePath := some path }
@@ -1492,6 +1573,30 @@ def axiomsOfDecls (env : Environment) (names : Array Name) : IO (Std.HashMap Nam
       acc := acc.insert name (axs.qsort Name.lt)
     return acc
 
+/-- Each package's depth in the workspace dependency graph: one more than the deepest package it
+depends on, and `0` for one that depends on nothing.
+
+This is the order the graph's upstream band stacks in. Mathlib depends on nothing else the reader
+sees, so it goes on top; a package built on Mathlib goes below it; the project's own declarations go
+below that, in the dependency rows. The band then reads the way the rest of the picture does —
+everything sits below what it depends on — instead of being ordered by a property of the *reader*
+(which packages they happened to audit), which says nothing about where a constant comes from.
+
+Relaxed to a fixpoint rather than walked, bounded by the number of packages: a longest path in a DAG
+cannot exceed that, and the bound is also what makes a dependency cycle terminate rather than
+recurse forever. Workspaces have tens of packages, so the cost is irrelevant. -/
+def packageRanks (packages : Array PackageInfo) : Std.HashMap Name Nat := Id.run do
+  let mut rank : Std.HashMap Name Nat := packages.foldl (fun acc p => acc.insert p.name 0) {}
+  for _ in [0:packages.size] do
+    let mut changed := false
+    for p in packages do
+      let d := p.deps.foldl (fun m dep => max m (rank.getD dep 0 + 1)) 0
+      if d > rank.getD p.name 0 then
+        rank := rank.insert p.name d
+        changed := true
+    if !changed then break
+  return rank
+
 /-- The packages a reader is being told to trust, given the ones named with `--trust`: those, plus
 everything they depend on, plus the toolchain.
 
@@ -1617,16 +1722,155 @@ def meaningDepsOf (kind : DeclKind) (isAlias : Bool) (deps typeDeps dataDeps : A
   else if dataDeps.isEmpty then deps
   else dataDeps
 
-/-- Every constant outside the project that some declaration's *statement* names, paired with the
-package it comes from.
+/-- Truncates `s` to `n` characters, marking that it was truncated. A panel-sized preview: the
+declaration's own page carries the whole thing. -/
+def clipTo (n : Nat) (s : String) : String :=
+  let s := (String.trimAscii s).toString
+  if s.length ≤ n then s else (s.take n).trimAscii.toString ++ "…"
+
+/-- What an upstream constant says beyond its type: a definition's value, or a structure's fields
+one per line. Empty for a theorem (its type is its statement, and its proof is not something a
+reader of this site is being asked to read) and for anything else.
+
+Clipped at `maxExternalValue`. `Expr` is a DAG and printed syntax is a tree, so a value can expand
+by orders of magnitude — the failure recorded in `KNOWN-ISSUES.md`, where one target printed to
+34 MB. `Meta.ppExpr` hides implicit arguments and so is far tamer than the fully-explicit printing
+that produced that, but the cap is cheap and the panel is a preview either way. -/
+def maxExternalValue : Nat := 1200
+
+/-- See `maxExternalValue`. -/
+def externalValueString (env : Environment) (info : ConstantInfo) : IO String := do
+  match info with
+  | .defnInfo val => return clipTo maxExternalValue (← ppExprString env val.value)
+  | .inductInfo val =>
+    -- A structure or class: what it says is its fields, which live in its single constructor's
+    -- telescope after the structure's own parameters.
+    match val.ctors with
+    | [ctor] =>
+      let lines ← runCoreIO env <| Lean.Meta.MetaM.run' do
+        let some ci := (← getEnv).find? ctor | return (#[] : Array String)
+        Lean.Meta.forallTelescopeReducing ci.type fun xs _ =>
+          (xs.extract val.numParams xs.size).mapM fun x => do
+            return s!"{← x.fvarId!.getUserName} : {← Lean.Meta.ppExpr (← Lean.Meta.inferType x)}"
+      return clipTo maxExternalValue (String.intercalate "\n" lines.toList)
+    | _ => return ""
+  | _ => return ""
+
+/-- The most constants one upstream package may contribute before it is left unexpanded.
+
+The budget is what lets this run without knowing which packages the reader will trust. `--trust` is a
+render-time flag by design, so `collect` cannot be told which packages matter; instead every upstream
+package is walked and the ones that do not fit are abandoned. Mathlib exceeds this within a few steps
+and is recorded as the flat surface it always was; a small sibling like `LeanMachineLearning` — 15
+declarations of surface out of `AlphaRAR` — finishes immediately and gets its internal structure
+drawn. The cutoff is a legibility bound as much as a cost one: a block of 500 nodes is not a picture
+anyone reads. -/
+def maxExpandedPackage : Nat := 500
+
+/-- The meaning edges of an *upstream* constant: the same rule `meaningDepsOf` applies to the
+project's own declarations, restated for a constant that has no `DeclInfo`.
+
+A theorem contributes its statement, a definition its type and the data in its value, everything else
+its type and whatever its constructors and field defaults mention. -/
+def upstreamMeaningDeps (env : Environment) (name : Name) (info : ConstantInfo) :
+    Lean.Meta.MetaM (Array Name) := do
+  match info with
+  | .thmInfo _ => return LeanDeps.exprUsedConstants info.type
+  | .defnInfo _ =>
+    return LeanDeps.usedConstantsOf env name info (includeValue := false)
+      ++ (← LeanDeps.dataValueConstants info)
+  | _ => return LeanDeps.usedConstantsOf env name info (includeValue := true)
+
+/-- What a dependency of an upstream constant should appear as: itself, or — when it is a
+compiler-generated helper — whatever it in turn references.
+
+The same treatment `LeanDeps.expandThroughInternals` gives the project's own declarations, restated
+here because that one is scoped to the project. Without it an `_autoParam` (the tactic behind a
+structure field's default) or a `match_1` becomes a node in the picture, and nobody wrote it.
+Recursion is guarded by `seen`, so a helper referring to itself terminates. -/
+partial def upstreamVisibleDeps (env : Environment) (packages : Array PackageInfo) (pkg : Name)
+    (seen : Std.HashSet Name) (d : Name) : Lean.Meta.MetaM (Array Name) := do
+  if !LeanDeps.isInternalName d then return #[d]
+  if seen.contains d then return #[]
+  let some info := env.find? d | return #[]
+  let ds ← try upstreamMeaningDeps env d info catch _ => pure #[]
+  let mut out : Array Name := #[]
+  for e in ds do
+    if e == d then continue
+    match moduleNameOf env e with
+    | some m =>
+      if modulePackageOf packages m == some pkg then
+        out := out ++ (← upstreamVisibleDeps env packages pkg (seen.insert d) e)
+    | none => pure ()
+  return out
+
+/-- Closes each upstream package's surface over the package's own internal edges, up to
+`maxExpandedPackage`.
+
+Returns the intra-package edges of every constant reached, and the packages that finished inside the
+budget. A package that overruns contributes nothing: its constants keep the records `externalDeclsOf`
+builds for them and are drawn flat, so overrunning degrades the picture rather than breaking it. -/
+def expandUpstream (env : Environment) (packages : Array PackageInfo)
+    (surface : Array (Name × Name)) : IO (Std.HashMap Name (Array Name) × Array Name) := do
+  runCoreIO env <| Lean.Meta.MetaM.run' do
+    let mut seeds : Std.HashMap Name (Array Name) := {}
+    for (c, pkg) in surface do
+      seeds := seeds.insert pkg ((seeds.getD pkg #[]).push c)
+    let mut edges : Std.HashMap Name (Array Name) := {}
+    let mut expanded : Array Name := #[]
+    for (pkg, start) in seeds.toArray.qsort (fun a b => Name.lt a.1 b.1) do
+      let mut pkgEdges : Std.HashMap Name (Array Name) := {}
+      let mut seen : Std.HashSet Name := {}
+      let mut frontier := start
+      let mut withinBudget := true
+      while withinBudget && !frontier.isEmpty do
+        let mut next : Array Name := #[]
+        for n in frontier do
+          if seen.contains n then continue
+          if seen.size ≥ maxExpandedPackage then
+            withinBudget := false
+            break
+          seen := seen.insert n
+          let some info := env.find? n | continue
+          let ds ← try upstreamMeaningDeps env n info catch _ => pure #[]
+          -- Only edges that stay inside the package. One leaving it either points at the project,
+          -- which depends on the package rather than the other way round, or at another package,
+          -- whose expansion is decided on its own terms.
+          let mut acc : Std.HashSet Name := {}
+          for d in ds do
+            if d == n then continue
+            match moduleNameOf env d with
+            | some m =>
+              if modulePackageOf packages m == some pkg then
+                for v in ← upstreamVisibleDeps env packages pkg {} d do
+                  if v != n then acc := acc.insert v
+            | none => pure ()
+          let inPkg := acc.toArray.qsort Name.lt
+          pkgEdges := pkgEdges.insert n inPkg
+          for d in inPkg do
+            if !seen.contains d then next := next.push d
+        frontier := next
+      if withinBudget then
+        expanded := expanded.push pkg
+        for (k, v) in pkgEdges.toArray do
+          edges := edges.insert k v
+    return (edges, expanded)
+
+/-- Every constant outside the project that some declaration's *statement* names, with its package,
+module, signature and docstring.
 
 Collected so that a declaration's dependency graph can show the upstream declarations it rests on,
-not merely count them. Restricted to the meaning edges (`meaningDepsOf`) and to constants that
-resolve to a package: this is the set that can appear as a node, and collecting all of `deps` instead
-would multiply it by every proof-only reference, none of which the graph shows. -/
-def externalPackageMap (env : Environment) (packages : Array PackageInfo) (rootPrefix : Name)
-    (decls : Array DeclInfo) : Array (Name × Name) :=
-  let acc := decls.foldl (init := ({} : Std.HashMap Name Name)) fun acc decl =>
+not merely count them — and, since these are exactly the nodes where a reader's trust has to start,
+so that clicking one answers "is this the definition I think it is" without leaving the site.
+Restricted to the meaning edges (`meaningDepsOf`) and to constants that resolve to a package: this is
+the set that can appear as a node, and collecting all of `deps` instead would multiply it by every
+proof-only reference, none of which the graph shows.
+
+The signature is pretty-printed here rather than at render time because `build-site` has no
+environment: the whole point of the phase split is that it runs on the JSON alone. -/
+def externalDeclsOf (env : Environment) (packages : Array PackageInfo) (rootPrefix : Name)
+    (decls : Array DeclInfo) : IO (Array ExternalDeclInfo × Array Name) := do
+  let byName := decls.foldl (init := ({} : Std.HashMap Name Name)) fun acc decl =>
     (meaningDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps decl.dataDeps).foldl
       (init := acc) fun acc dep =>
       if acc.contains dep then acc
@@ -1637,7 +1881,38 @@ def externalPackageMap (env : Environment) (packages : Array PackageInfo) (rootP
           else match modulePackageOf packages moduleName with
             | some pkg => acc.insert dep pkg
             | none => acc
-  acc.toArray.qsort fun a b => Name.lt a.1 b.1
+  -- Close each package over its own internal edges before building the records, because the closure
+  -- reaches constants no project statement names and those need a record too — a node with no
+  -- signature and no docstring is the thing this table exists to stop.
+  let (edges, expanded) ← expandUpstream env packages
+    (byName.toArray.qsort fun a b => Name.lt a.1 b.1)
+  let mut all := byName
+  for (name, _) in edges.toArray do
+    if !all.contains name then
+      match moduleNameOf env name with
+      | none => pure ()
+      | some m =>
+        match modulePackageOf packages m with
+        | some pkg => all := all.insert name pkg
+        | none => pure ()
+  let mut out : Array ExternalDeclInfo := #[]
+  for (name, pkg) in all.toArray.qsort (fun a b => Name.lt a.1 b.1) do
+    let some info := env.find? name | continue
+    -- A failure to pretty-print one upstream type must not lose the whole table, so it degrades to
+    -- the name, which is exactly what every node showed before this existed.
+    let signature ← try ppExprString env info.type catch _ => pure name.toString
+    let doc ← try pure ((← findDocString? env name).getD "") catch _ => pure ""
+    let value ← try externalValueString env info catch _ => pure ""
+    out := out.push {
+      name := name
+      package := pkg
+      moduleName := (moduleNameOf env name).getD pkg
+      signature := signature
+      value := value
+      doc := doc
+      deps := edges.getD name #[]
+    }
+  return (out, expanded)
 
 /-- The upstream packages a single declaration's own type and body reference, with the project's own
 package dropped: the one-level part of `DeclInfo.upstreamPackages`, before propagation. -/

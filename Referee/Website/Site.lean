@@ -647,8 +647,40 @@ private def browseJsFile : JsFile where
   -- it has to run second.
   after := #["audit.js"]
 
-/-- Rendering configuration for the site output. -/
-private def renderConfig : RenderConfig :=
+/-- The upstream constants table, as a script setting one global.
+
+Emitted once as a file rather than inlined into each page's graph JSON, for the reason recorded on
+`withUpstreamNodes`: these constants are shared across pages, so inlining a signature and docstring
+per occurrence writes the same Mathlib text into hundreds of pages. As a file it is fetched once and
+cached, and `sync-assets.sh` cannot help here since the contents depend on the project.
+
+A `<script>` assigning a global, not a `fetch` of a `.json`: the site has to work from `file://`, and
+a fetch there is blocked by the same-origin policy while a script tag is not.
+
+Carries only the constants that can actually appear as a node under the current flags, so a build
+without `--show-trusted-upstream` does not ship every Mathlib signature the project names for the
+sake of nodes it never draws. `collect` records them all, since it cannot know how the site will be
+rendered; the filtering belongs here. -/
+private def upstreamJsFile (externals : Array ExternalDeclInfo) (trusted : Std.HashSet Name)
+    (showTrusted : Bool) : JsFile :=
+  let shown := externals.filter fun e => showTrusted || !trusted.contains e.package
+  let entries := shown.map fun e =>
+    (e.name.toString, Json.mkObj [
+      ("signature", Json.str e.signature),
+      ("value", Json.str e.value),
+      ("doc", Json.str e.doc),
+      ("module", Json.str e.moduleName.toString),
+      ("package", Json.str e.package.toString)])
+  { filename := "upstream.js"
+    contents := JS.mk s!"window.RefereeUpstream = {(Json.mkObj entries.toList).compress};"
+    sourceMap? := none }
+
+/-- Rendering configuration for the site output.
+
+Takes the upstream table because `upstreamJsFile` depends on the project, unlike every other asset
+here, which is `include_str`-embedded at build time. -/
+private def renderConfig (externals : Array ExternalDeclInfo) (trusted : Std.HashSet Name)
+    (showTrusted : Bool) : RenderConfig :=
   {
     emitTeX := false
     emitHtmlSingle := .no
@@ -666,7 +698,9 @@ private def renderConfig : RenderConfig :=
     rootTocDepth := some 0
     sectionTocDepth := some 0
     extraCssFiles := {refereeCssFile}
-    extraJsFiles := {d3JsFile, graphJsFile, tocJsFile, auditJsFile, revisionsJsFile, browseJsFile}
+    extraJsFiles := {d3JsFile, upstreamJsFile externals trusted showTrusted, graphJsFile,
+      tocJsFile, auditJsFile,
+      revisionsJsFile, browseJsFile}
     -- Inline and in `<head>`, so the stored theme is applied before the first paint. Loading this
     -- as a file would let the light theme flash before the script ran.
     extraHead := #[Html.tag "script" #[] (.text false themeBootJs)]
@@ -818,12 +852,24 @@ private structure SiteContext where
   packages : Array PackageInfo := #[]
   /-- The packages with code loaded in the environment, which bounds every closure exactly. -/
   loadedPackages : Std.HashSet Name := {}
-  /-- Upstream constant ↦ its package, for the constants project statements name. Lets a dependency
-  graph show the upstream declarations a statement rests on, not merely count their packages. -/
-  externalPackages : Std.HashMap Name Name := {}
+  /-- Upstream constant ↦ what a reader needs to read it: package, module, signature, docstring.
+  Lets a dependency graph show the upstream declarations a statement rests on, not merely count their
+  packages, and lets clicking one answer what it says. -/
+  externalDecls : Std.HashMap Name ExternalDeclInfo := {}
   /-- The packages the reader is told to take on trust: `--trust`, closed over dependencies, plus
   the toolchain. Everything else the project reaches is unaudited upstream code. -/
   trusted : Std.HashSet Name := {}
+  /-- Package ↦ its depth in the workspace dependency graph (`packageRanks`), which is the order the
+  graph's upstream band stacks in. -/
+  packageRanks : Std.HashMap Name Nat := {}
+  /-- Whether audited packages appear in the upstream band (`--show-trusted-upstream`). Unaudited
+  ones always do. -/
+  showTrustedUpstream : Bool := false
+  /-- The upstream packages whose internal structure `collect` was able to walk, and which are
+  therefore drawn as layered blocks rather than as a flat surface. -/
+  expandedPackages : Std.HashSet Name := {}
+  /-- The toolchain pseudo-packages, which the upstream band leaves out entirely. -/
+  toolchainPackages : Std.HashSet Name := {}
   /-- `anchorIdOf` stems with a standalone `.lean` file on disk, empty without `extract`.
 
   Kept separate from `minimalFiles` because the two phases are independent: `extract` writes the
@@ -938,7 +984,8 @@ declarations must be established. `depsOf` picks which dependency set each edge 
 `meaningDeps` on declaration detail pages, to match their `dataTransDeps` closure, or `(·.deps)`
 (always type + body) for the full-repository graph. -/
 private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String)
-    (depsOf : DeclInfo → Array Name) (focus? : Option Name := none) : GraphData :=
+    (depsOf : DeclInfo → Array Name) (focus? : Option Name := none)
+    (projectName : String := "") : GraphData :=
   let names : Std.HashSet Name := decls.foldl (fun acc d => acc.insert d.name) {}
   let nodes := decls.map fun decl => {
     id := decl.name.toString
@@ -952,10 +999,13 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
     -- through JSON rather than through Verso's link handling — resolves from the root already.
     href := declHrefs.getD decl.name (pathForPart decl.groupKey decl.modulePath decl.name)
     focus := focus? == some decl.name
-    -- Clipped: this rides along in every node of every graph, and a handful of declarations carry
-    -- very long statements or docstrings. The panel is a preview; the page has the whole thing.
-    signature := clipText 600 decl.displaySignature
-    doc := clipText 600 (decl.docText?.getD "")
+    -- Clipped, because this rides along in every node of every graph and a handful of declarations
+    -- carry very long statements. Not at 600, though: that cut 88 of `AlphaRAR`'s 2503 project nodes
+    -- mid-statement, and a statement truncated before its conclusion is worse than no preview at all
+    -- — it shows a theorem's hypotheses and hides what they imply. A limit has to fall somewhere, but
+    -- it should fall past the point where the panel still answers the question it exists for.
+    signature := clipText 2400 decl.displaySignature
+    doc := clipText 1200 (decl.docText?.getD "")
     meaning := meaningKeyOf decl
   }
   let edges := decls.foldl (fun acc decl =>
@@ -964,56 +1014,118 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
         some { source := dep.toString, target := decl.name.toString }
       else
         none)) #[]
-  { nodes, edges }
+  { nodes, edges, projectName }
 
-/-- Adds the declarations from unaudited upstream packages that `decls` name in their statements.
+/-- Adds the upstream declarations that `decls` name in their statements, audited or not.
 
 The picture is otherwise project-internal, which for an audit is the wrong boundary: a graph whose
-bottom row is "external constants, not shown" hides the very thing a referee has not checked. These
-nodes are where the reader's trust actually has to start, so they belong in the drawing — visibly
-distinct, unclickable (this site exposes no page for them), and sitting in the top row because
-nothing in the graph precedes them.
+bottom row is "external constants, not shown" hides both the thing a referee has not checked and the
+thing the statement is actually about. These nodes are unclickable (this site exposes no page for
+them) and carry no dependencies of their own, so `graph.js` lays them out as a wrapped band above the
+dependency rows rather than as a row — see `GraphNode.upstream`.
 
-Only *unaudited* packages, and only what a statement names. Including trusted upstream would put
-several hundred Mathlib nodes on every page; including proof-only references would add constants the
-kernel has already checked. On `AlphaRAR` this comes to at most 9 extra nodes on any page, and 0 on
-most — the whole trust surface into `LeanMachineLearning` is 15 declarations. -/
+The two kinds are drawn together but gathered by different rules, because they answer different
+questions:
+
+* **unaudited** packages, over the whole page closure. "What unaudited code does this rest on" is a
+  question about the closure, and this is the trust surface — the same set the Trust page counts. On
+  `AlphaRAR` it comes to at most 9 nodes on any page and 0 on most, the whole surface into
+  `LeanMachineLearning` being 15 declarations.
+* **audited** packages, for the focus declaration only. Here the question is not trust — the reader
+  has already said they accept the package — but *what this statement is about*, which is a property
+  of this statement and not of everything below it. Over the whole closure it would be several
+  hundred Mathlib nodes; for one statement it is a median of 21.
+
+Proof-only references are excluded from both by `depsOf` being `meaningDeps`. -/
 private def withUpstreamNodes (data : GraphData) (decls : Array DeclInfo) (ctx : SiteContext)
-    (depsOf : DeclInfo → Array Name) : GraphData :=
+    (depsOf : DeclInfo → Array Name) (focus? : Option Name := none) : GraphData :=
   let shown : Std.HashSet String := data.nodes.foldl (fun acc n => acc.insert n.id) {}
-  let untrustedOf (dep : Name) : Option Name := do
-    let pkg ← ctx.externalPackages.get? dep
-    if ctx.trusted.contains pkg then none else some pkg
+  let packageOf (dep : Name) : Option (Name × Bool) := do
+    let ext ← ctx.externalDecls.get? dep
+    -- The toolchain is left out of the band entirely. It is trusted unconditionally — it is the
+    -- compiler and kernel that checked every other package — so it is never a trust finding, and as
+    -- context it is `Nat`, `OfNat.ofNat` and `instOfNatNat`, which say nothing about what a theorem
+    -- means. On `AlphaRAR` it was 7189 of 29135 band nodes, a quarter of the band spent on nothing.
+    if ctx.toolchainPackages.contains ext.package then none
+    else some (ext.package, ctx.trusted.contains ext.package)
   -- One entry per constant however many declarations name it, so a definition used throughout the
-  -- page is one node with several edges rather than several nodes.
-  let refs := decls.foldl (init := ({} : Std.HashMap Name Name)) fun acc decl =>
-    (depsOf decl).foldl (init := acc) fun acc dep =>
-      if ctx.declByName.contains dep then acc
-      else match untrustedOf dep with
-        | some pkg => acc.insert dep pkg
-        | none => acc
-  let nodes := refs.toArray.qsort (fun a b => Name.lt a.1 b.1) |>.filterMap fun (name, pkg) =>
+  -- page is one node with several edges rather than several nodes. A constant that is both named by
+  -- the focus statement and reached from elsewhere in the closure appears once, since the key is the
+  -- constant.
+  let gather (from_ : Array DeclInfo) (keepTrusted : Bool) :=
+    from_.foldl (init := ({} : Std.HashMap Name (Name × Bool))) fun acc decl =>
+      (depsOf decl).foldl (init := acc) fun acc dep =>
+        if ctx.declByName.contains dep then acc
+        else match packageOf dep with
+          | some (pkg, trusted) => if trusted == keepTrusted then acc.insert dep (pkg, trusted) else acc
+          | none => acc
+  -- Audited packages only on request: see `Cli.showTrustedUpstream` for why the default is off.
+  let focusDecls :=
+    if ctx.showTrustedUpstream then decls.filter (fun d => focus? == some d.name) else #[]
+  let surface := (gather focusDecls true).fold (init := gather decls false) fun acc k v =>
+    acc.insert k v
+  /- Close the surface over each expanded package's own edges, so an unaudited package is drawn with
+  the structure it actually has rather than as a flat row of the names this project happens to
+  mention. Only packages `collect` could walk inside its budget carry edges at all
+  (`CollectedData.expandedPackages`), so this terminates on the surface for everything else — Mathlib
+  included, which is the point of the budget. -/
+  let refs := Id.run do
+    let mut acc := surface
+    let mut frontier := surface.toArray.map (·.1)
+    while !frontier.isEmpty do
+      let mut next : Array Name := #[]
+      for n in frontier do
+        let some ext := ctx.externalDecls.get? n | continue
+        if !ctx.expandedPackages.contains ext.package then continue
+        for d in ext.deps do
+          if acc.contains d || ctx.declByName.contains d then continue
+          match packageOf d with
+          | some (pkg, trusted) =>
+            -- A closure member is drawn on the same terms as the surface it came from: an audited
+            -- package expands only when it is being shown at all.
+            if trusted && !ctx.showTrustedUpstream then continue
+            acc := acc.insert d (pkg, trusted)
+            next := next.push d
+          | none => pure ()
+      frontier := next
+    return acc
+  let nodes := refs.toArray.qsort (fun a b => Name.lt a.1 b.1)
+      |>.filterMap fun (name, pkg, trusted) =>
     if shown.contains name.toString then none
     else some {
       id := name.toString
       label := name.getString!
-      kind := "Upstream declaration"
-      status := "untrusted"
+      kind := if trusted then "Audited upstream" else "Upstream declaration"
+      status := if trusted then "trusted" else "untrusted"
+      -- The package, which is what the band groups and labels by, and its depth, which is what the
+      -- band stacks by.
+      upstream := pkg.toString
+      upstreamRank := ctx.packageRanks.getD pkg 0
       -- Its own group, so the fill distinguishes it from any chapter of the project.
       groupKey := pkg.toString
-      moduleName := pkg.toString
+      moduleName := (ctx.externalDecls.get? name).map (·.moduleName.toString) |>.getD pkg.toString
       -- No page on this site; `graph.js` renders an hrefless node unclickable.
       href := ""
-      signature := name.toString
-      doc := s!"From {pkg}, which is not marked audited. This site exposes {pkg} only as far as the \
-        declarations here name it."
+      -- Deliberately left empty. The signature and docstring live in the shared upstream table
+      -- (`upstreamJsFile`) and are looked up by `graph.js` at click time: one upstream constant is
+      -- named by many declarations, so inlining them here would write the same Mathlib signature
+      -- into hundreds of pages — the duplication that moved the CSS and JS out of the pages in the
+      -- first place. On `BrownianMotion` that is ~1.6k constants against ~1.8k pages.
+      signature := ""
+      doc := ""
     }
   let edges := decls.foldl (init := #[]) fun acc decl =>
     acc ++ (depsOf decl).filterMap fun dep =>
       if refs.contains dep && !shown.contains dep.toString then
         some { source := dep.toString, target := decl.name.toString }
       else none
-  { data with nodes := data.nodes ++ nodes, edges := data.edges ++ edges }
+  -- Edges *within* an expanded package, which are what give its block more than one level.
+  let innerEdges := refs.toArray.foldl (init := #[]) fun acc (name, _, _) =>
+    match ctx.externalDecls.get? name with
+    | none => acc
+    | some ext => acc ++ ext.deps.filterMap fun dep =>
+        if refs.contains dep then some { source := dep.toString, target := name.toString } else none
+  { data with nodes := data.nodes ++ nodes, edges := data.edges ++ edges ++ innerEdges }
 
 /-- All nodes reachable from `start` via one or more edges of `adj`, tolerant of cycles (a node
 already on the current path contributes nothing further rather than looping forever). Threads a
@@ -1654,8 +1766,10 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   -- structure — every removed edge is still a real dependency, reachable along the path that
   -- remains.
   let graphData := transitiveReduce
-    (withUpstreamNodes (mkGraphData graphDecls ctx.declPageHrefs meaningDeps (focus? := decl.name))
-      graphDecls ctx meaningDeps)
+    (withUpstreamNodes
+      (mkGraphData graphDecls ctx.declPageHrefs meaningDeps (focus? := decl.name)
+        (projectName := ctx.rootPrefix.toString))
+      graphDecls ctx meaningDeps (focus? := decl.name))
   blocks := blocks.push (.para #[.bold #[.text "Dependency graph"]])
   -- Drawn even when there is nothing to draw. Gating it on having dependencies made the shape of a
   -- declaration page vary with its content, so a reader could not tell "this rests on nothing" from
@@ -2724,7 +2838,7 @@ private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Wo
   let touched := decls.foldl (init := ({} : Std.HashSet Name)) fun acc decl =>
     decl.upstreamPackages.foldl (init := acc) (·.insert ·)
   let loadedPackages := loadedPackagesOf env packages
-  let externalPackages := externalPackageMap env packages rootPrefix decls
+  let (externalDecls, expandedPackages) ← externalDeclsOf env packages rootPrefix decls
   IO.println s!"Upstream packages: {touched.size} referenced by name, \
     {loadedPackages.size} with code loaded, {packages.size} in the workspace"
   let unattributed := (moduleIndexMap decls).toArray.filterMap fun (moduleName, _) =>
@@ -2744,7 +2858,8 @@ private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Wo
     readmeText
     packages
     loadedPackages
-    externalPackages
+    externalDecls
+    expandedPackages
   }
 
 /-- Reads and decodes a `CollectedData` JSON file written by `collect`. -/
@@ -2878,8 +2993,13 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     extractedStems := extractedStems
     packages := data.packages
     loadedPackages := data.loadedPackages.foldl (·.insert ·) {}
-    externalPackages := data.externalPackages.foldl (fun acc (c, pkg) => acc.insert c pkg) {}
+    externalDecls := data.externalDecls.foldl (fun acc e => acc.insert e.name e) {}
     trusted := trustClosure data.packages cfg.trustedPackages
+    packageRanks := packageRanks data.packages
+    showTrustedUpstream := cfg.showTrustedUpstream
+    expandedPackages := data.expandedPackages.foldl (·.insert ·) {}
+    toolchainPackages := data.packages.foldl
+      (fun acc p => if p.isToolchain then acc.insert p.name else acc) {}
     usesSpecs := data.decls.any (!·.specifies.isEmpty)
     -- `all`, not `any`: a partially hashed build would check some verdicts and silently skip
     -- others, and a staleness list that is quietly incomplete is worse than one that is absent.
@@ -2906,7 +3026,8 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     match cfg.outputDir with
     | some out => ["--output", out]
     | none => []
-  manualMain root (options := versoArgs) (config := renderConfig)
+  manualMain root (options := versoArgs)
+    (config := renderConfig data.externalDecls ctx.trusted cfg.showTrustedUpstream)
 
 /-- `collect`: imports the target project, runs the analysis, and writes the result as JSON
 to `cfg.dataPath`. -/

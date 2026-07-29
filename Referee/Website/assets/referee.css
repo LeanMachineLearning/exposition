@@ -1445,3 +1445,12 @@ body.hide-theorems [data-decl-group="theorem"] {
     transition-duration: .001ms !important;
   }
 }
+
+/* The upstream band's row labels name a package rather than a depth, so they are set apart from
+   the numbered dependency rows below them. */
+.graph-row-label--upstream {
+  fill: var(--site-ink-2);
+  text-transform: none;
+  letter-spacing: .02em;
+  font-style: italic;
+}

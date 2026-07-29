@@ -23,14 +23,114 @@ It is repeatable, and a render-time flag: the same `data.json` can be rendered u
 assumptions without re-importing the project, so "what would this look like if I had not audited
 LML?" costs one flag and a rebuild of the HTML.
 
-The per-declaration dependency graphs carry the same information one level down: the upstream
-declarations an unaudited package contributes are drawn as nodes — dashed, greyed, and not links,
-since this site exposes no page for them — in the top row, where nothing precedes them. Only
-unaudited packages, and only what a statement names: drawing trusted upstream would put several
-hundred Mathlib nodes on every page, and drawing proof-only references would add constants the kernel
-has already checked. On `AlphaRAR` that comes to at most 9 extra nodes on any page and none on most,
-because the entire trust surface into `LeanMachineLearning` turns out to be 15 declarations — the
-sort of thing worth knowing before deciding whether to audit a dependency.
+## In the dependency graphs
+
+The per-declaration dependency graphs carry the same information one level down. Declarations from
+**unaudited** packages are drawn as nodes — dashed, greyed, and never links, since this site exposes
+no page for them — gathered over the whole page closure, because "what unaudited code does this rest
+on" is a question about the closure. This is the trust surface, the same set this page counts. On
+`AlphaRAR` the whole surface into `LeanMachineLearning` is 15 declarations, which close to 22 once
+the package's own edges are followed: 223 of 796 pages draw any of it at all, a median page draws
+none, and the widest draws 16.
+
+### One block per package
+
+The picture is a stack of **blocks**, one per upstream package and one for the project, each layered
+by depth internally. The margin names each block on its first row and numbers the levels from there,
+so a page reads:
+
+```
+LeanMachineLearning · 1 · 2 · 3 · AlphaRAR · 1 · 2 · 3 · 4 · 5
+```
+
+Depth is therefore counted *within* a block. That is the only reading under which the numbers mean
+the same thing in every block — "how far below the things this block depends on nothing for".
+
+Blocks stack in **dependency order**, taken from the workspace's Lake graph: Mathlib above a package
+built on Mathlib, above the project. The whole picture then reads one way, everything below what it
+depends on. Ordering by trust instead would sort by a property of the *reader* rather than of the
+code, and would put a package above its own dependency whenever the reader had audited one and not
+the other.
+
+An unaudited package is drawn with the structure it actually has, not as a flat list of the names
+this project happens to mention: `collect` walks each upstream package's own internal edges, so
+`Learning.stationaryEnv → Learning.obliviousEnv → Learning.Environment` appears as three levels
+inside the `LeanMachineLearning` block. See [what gets expanded](#what-gets-expanded).
+
+A package with no collected internal edges has everything at depth 0, so its block is a **single
+level that wraps** to the viewport — the flat band this drew before blocks existed, kept as the
+degenerate case rather than as a second code path. That is the shape Mathlib always takes. Wrapping
+is what keeps a level from growing sideways with its fan-out: on `AlphaRAR` the widest page put 244
+boxes in one row, several thousand pixels against a viewport around twelve hundred. It spends
+vertical space, which the picture has, rather than horizontal space, which it does not.
+
+The toolchain is left out entirely. It is trusted unconditionally, so it is never a finding, and as
+context it is `Nat`, `OfNat.ofNat` and `instOfNatNat` — on `AlphaRAR` a quarter of the upstream nodes
+spent on constants that say nothing about what a theorem means.
+
+Proof-only references are excluded too, since the graph follows `meaningDeps`: they would add
+constants the kernel has already checked.
+
+Clicking a node shows what it says, read out of the compiled environment at `collect` time — for a
+theorem its statement, for a definition its value, for a structure or class its fields — with its
+docstring. These are the nodes where a reader's trust has to start, and "is this the definition I
+think it is" is a question they should not have to leave the site to answer. The type alone does not
+answer it: `Filter.Tendsto`'s type is `(α → β) → Filter α → Filter β → Prop`, whose arguments all
+read as hypotheses and which never says that it means `map f l₁ ≤ l₂`. These live in a single
+`upstream.js` table rather than in each page, because one upstream constant is named by many
+declarations.
+
+### What gets expanded
+
+Drawing a package's internal levels needs its own dependency edges, which `collect` has to gather —
+and `collect` cannot know which packages will matter, because `--trust` is a render-time flag by
+design. So it walks **every** upstream package, starting from the constants this project's statements
+name and following meaning edges that stay inside that package, and abandons any package whose
+closure exceeds 500 constants.
+
+That budget is what makes the automatic version work. Mathlib overruns within a few steps and is
+recorded as the flat surface it always was; `LeanMachineLearning` finishes at 22 constants and is
+recorded with its edges. `CollectedData.expandedPackages` says which. A package that overruns loses
+nothing it had before — it is drawn as a single wrapped level, exactly as it was — so the failure
+mode is a less structured picture rather than a missing one.
+
+The cutoff is a legibility bound as much as a cost one. A block of 500 nodes is not a picture anyone
+reads, so a package that large is better summarised by the counts on this page than drawn.
+
+Two details worth knowing:
+
+- **Only edges that stay inside the package are followed.** One leaving it points either at the
+  project, which depends on the package rather than the reverse, or at a further package, whose
+  expansion is decided on its own terms.
+- **Compiler-generated helpers are expanded through, not shown**, the same treatment
+  `LeanDeps.expandThroughInternals` gives the project's own declarations. Without it an `_autoParam`
+  — the tactic behind a structure field's default — becomes a node in the picture, and nobody wrote
+  it.
+
+### Audited packages: `--show-trusted-upstream`
+
+Declarations from packages you *have* audited are not drawn by default. `--show-trusted-upstream`
+adds them, solid rather than dashed, and gathered for the focus declaration only — the reader has
+already vouched for the package, so the question is no longer trust but what this statement is
+*about*, which is a property of that statement and not of everything beneath it.
+
+An audited package is never expanded — the budget rules Mathlib out long before trust is consulted —
+so it always arrives as a single wrapped level, however many constants it contributes.
+
+The default is off, and the reason is worth stating because the flag looks like it should be on. On a
+Mathlib-backed project it adds a median of 22 nodes per page against a project structure that is
+typically three: the upstream part stops being an annotation on the graph and becomes the graph. What it shows
+is also not new — the declaration's own code block at the top of the page already gives the same
+constants, in the statement's own syntax, with types on hover. On `AlphaRAR`:
+
+| | default | `--show-trusted-upstream` |
+|---|---|---|
+| upstream nodes per page | median 0, p90 13, max 16 | median 22, p90 57, max 223 |
+| total nodes per page | median 3, p90 18, max 29 | median 25, p90 61, max 237 |
+
+It stays available because the judgement could go the other way on a project whose upstream is small,
+or one where the audited packages are the interesting part. Like `--trust`, it is render-time: the
+data is collected either way, so turning it on costs a rebuild of the HTML and no re-import.
 
 Three things are worth knowing about how the analysis is computed, because they bound what it
 claims:
