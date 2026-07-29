@@ -14,7 +14,7 @@ numbered slots so that what remains in prose is exactly what is not built.
 ### 1. `referee diff old.json new.json` — what changed since I last read it
 
 **Built**, as a render-time `--baseline` flag rather than a subcommand. See
-[Comparing revisions](docs/revisions.md) and [Semantic hashes](docs/semantic-hashes.md).
+[Comparing revisions](../revisions.md) and [Semantic hashes](../semantic-hashes.md).
 
 ### 2. Blast radius — "what if I don't believe X?"
 
@@ -31,7 +31,7 @@ currently answers it with nothing.
 
 ### 3. Audit state as a first-class artifact
 
-**Built.** See [Audit state](docs/audit.md).
+**Built.** See [Audit state](../audit.md).
 
 ## Tier B — needs the environment (a `collect`-time addition)
 
@@ -57,7 +57,7 @@ distinctions that matter, and the things `sorry` + axioms genuinely do not catch
   kernel. Categorically larger than `Classical.choice`, and should never appear in the same list
   with it.
 - `@[implemented_by]`, `@[extern]`, `unsafe`, `partial` — none are handled anywhere in
-  [Referee/Collect.lean](Referee/Collect.lean) today. Each is a place where what runs is not what
+  [Referee/Collect.lean](../../Referee/Collect.lean) today. Each is a place where what runs is not what
   the kernel checked.
 - `opaque` — asserts inhabitation without exhibiting it; the kind is already recorded, it is just
   not called out as a trust event.
@@ -101,7 +101,7 @@ yields which blueprint nodes have no Lean counterpart, and — the lie detector 
 ### 10. Git provenance per declaration
 
 **Built**, as a `provenance` subcommand folding each revision into an append-only ledger, plus a
-`--provenance` flag on `build-site`. See [Provenance](docs/provenance.md).
+`--provenance` flag on `build-site`. See [Provenance](../provenance.md).
 
 ## Rejected
 

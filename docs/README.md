@@ -41,5 +41,17 @@ gating is deliberate and consistent.
   and JS without rebuilding.
 - **[Prebuilt binaries](releases.md)** — what CI publishes and how to consume it downstream.
 
-Design notes live at the repository root: [`KNOWN-ISSUES.md`](../KNOWN-ISSUES.md),
-[`PROPOSED-TOOLS.md`](../PROPOSED-TOOLS.md) and [`WEBSITE-DESIGN.md`](../WEBSITE-DESIGN.md).
+## Design notes
+
+In [design/](design/), and a different kind of document: they argue about what the tool should be
+rather than explain what it does.
+
+- **[PROPOSED-TOOLS.md](design/PROPOSED-TOOLS.md)** — candidate additions, ranked, with what each
+  would cost given the architecture. Also what was deliberately rejected, and why.
+- **[TRUST-GAPS.md](design/TRUST-GAPS.md)** — auditing this repository does not cover at all,
+  organised by how a thing builds trust rather than by feature.
+- **[WEBSITE-DESIGN.md](design/WEBSITE-DESIGN.md)** — the site's structure and the principles it is
+  built on.
+
+[`KNOWN-ISSUES.md`](../KNOWN-ISSUES.md) stays at the repository root: it is a record of what does
+not currently work, not an argument.

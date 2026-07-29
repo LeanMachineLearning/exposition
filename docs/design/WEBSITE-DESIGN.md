@@ -34,7 +34,7 @@ click it to jump to its definition.
 
 **Where highlighting stands today.** The site already gets this for one thing: `collect` calls
 Verso's `Signature.forName` and emits a `Block.docstring`
-([Collect.lean:491](Referee/Collect.lean#L491)), and that block descriptor is wrapped in
+([Collect.lean:491](../../Referee/Collect.lean#L491)), and that block descriptor is wrapped in
 `withHighlighting`, so the *pretty-printed signature* is real `Highlighted` with tippy tooltips.
 That works and stays.
 
@@ -43,7 +43,7 @@ What is **not** highlighted is everything else, and it is the part that matters 
 | shown on a declaration | today |
 |---|---|
 | pretty-printed signature (`Block.docstring`) | ✅ highlighted, hoverable |
-| source-form statement (`displaySignature`) | ❌ plain `<pre>` ([Site.lean:353](Referee/Website/Site.lean#L353)) |
+| source-form statement (`displaySignature`) | ❌ plain `<pre>` ([Site.lean:353](../../Referee/Website/Site.lean#L353)) |
 | proof body (`proofText?`) | ❌ plain `<pre>` |
 | **minimal dependency file** | ❌ not shown at all — an off-site link |
 
@@ -73,22 +73,22 @@ build-site   needs nothing     ─→  the Verso site
 It is verified to work in Verso:
 
 - `Highlighted` derives `ToJson, FromJson`
-  ([Highlighted.lean:382-390](.lake/packages/subverso/src/SubVerso/Highlighting/Highlighted.lean#L382-L390)),
+  ([Highlighted.lean:382-390](../../.lake/packages/subverso/src/SubVerso/Highlighting/Highlighted.lean#L382-L390)),
   plus a compact key-shared `Export` format
-  ([Export.lean](.lake/packages/subverso/src/SubVerso/Highlighting/Export.lean)) built for
+  ([Export.lean](../../.lake/packages/subverso/src/SubVerso/Highlighting/Export.lean)) built for
   exactly this — serializing highlighted code across a process boundary without quadratic blowup.
 - `instance : ExternalCode Manual`
-  ([ExternalLean.lean:212](.lake/packages/verso/src/verso-manual/VersoManual/ExternalLean.lean#L212))
+  ([ExternalLean.lean:212](../../.lake/packages/verso/src/verso-manual/VersoManual/ExternalLean.lean#L212))
   gives `leanBlock : Highlighted → CodeConfig → Block Manual`. So `build-site` turns
   deserialized highlighting into a page block **with no environment at all**.
 - `withHighlighting` auto-injects the tippy/popper assets and registers a quick-jump mapper
-  ([HighlightedCode.lean](.lake/packages/verso/src/verso-manual/VersoManual/HighlightedCode.lean)),
+  ([HighlightedCode.lean](../../.lake/packages/verso/src/verso-manual/VersoManual/HighlightedCode.lean)),
   so hover-types and cross-references come for free once the data is there.
 - SubVerso ships `subverso-extract-mod`, a whole executable whose job is "elaborate a module,
   emit highlighted JSON" — precedent that this split is the intended use.
 
 **The cost, stated plainly.** `highlight` needs info trees and messages, i.e. real elaboration
-([Code.lean:2130](.lake/packages/subverso/src/SubVerso/Highlighting/Code.lean#L2130)) — the
+([Code.lean:2130](../../.lake/packages/subverso/src/SubVerso/Highlighting/Code.lean#L2130)) — the
 environment alone is not enough. Two ways to pay it:
 
 1. **Elaborate each minimal file** (~1700 files for brownian-motion, each importing Mathlib).
@@ -116,10 +116,10 @@ Corollary: **no HTML, CSS, or JavaScript authored inside Lean string literals.**
 written, `Referee/Website/Theme.lean` was CSS in a string and `Referee/Website/GraphJs.lean` was 489
 lines of JavaScript in a string, so changing a margin meant rebuilding a Lean executable against
 Verso. (Both files are gone: this proposal was carried out — see
-[Working on Referee](docs/development.md).) The fix is Verso's own asset
+[Working on Referee](../development.md).) The fix is Verso's own asset
 system — `CssFile`/`JsFile` whose `contents` come from `include_str` of a real `.css`/`.js`
 file, which is precisely how Verso vendors popper and tippy
-([WebAssets.lean](.lake/packages/verso/src/verso/Verso/Code/Highlighted/WebAssets.lean)). Real
+([WebAssets.lean](../../.lake/packages/verso/src/verso/Verso/Code/Highlighted/WebAssets.lean)). Real
 files, editor tooling, no rebuild to restyle.
 
 ### P2. Audit-first, not book-first
@@ -131,7 +131,7 @@ declaration, in a reading order the library does not actually have.
 
 So the hierarchy stays; the **entry points change**. The spine becomes search, filter, and the
 claims view (P3). Verso ships search as a built-in feature (elasticlunr + fuzzysort,
-[Features.lean](.lake/packages/verso/src/verso-manual/VersoManual/Html/Features.lean)) and it is
+[Features.lean](../../.lake/packages/verso/src/verso-manual/VersoManual/Html/Features.lean)) and it is
 on by default — another capability already paid for and currently unexploited.
 
 ### P3. Foreground the library's *claims*, not its declaration count
@@ -232,14 +232,14 @@ measurement on brownian-motion before the layout is fixed.**
 
 One directory of files, hostable on GitHub Pages, working after load with no network. That
 includes **no CDN**: the site currently fetches D3 from `d3js.org` at runtime
-([Site.lean:259-261](Referee/Website/Site.lean#L259-L261)), which is both a failure mode
+([Site.lean:259-261](../../Referee/Website/Site.lean#L259-L261)), which is both a failure mode
 and a third-party dependency in an artifact whose entire pitch is verifiability. Vendor it the
 way Verso vendors tippy.
 
 ### P11. The site is honest about its own limits
 
 Extraction is known to fail for a small number of declarations
-([KNOWN-ISSUES.md](KNOWN-ISSUES.md)). Where the minimal file does not compile, the declaration
+([KNOWN-ISSUES.md](../../KNOWN-ISSUES.md)). Where the minimal file does not compile, the declaration
 page **says so, with the error**, and offers the `extract-flat` fallback file instead. A tool
 that asks readers to trust it must not present unverified output as verified.
 
@@ -309,7 +309,7 @@ The "after" numbers *include* interactive highlighting and 1677 minimal-file pag
 
 **Cross-validation.** `highlight-extracted` independently reported 4 non-compiling minimal files
 for brownian-motion — the same count `scripts/check-extracted-compile.sh` reports in
-[KNOWN-ISSUES.md](KNOWN-ISSUES.md). Two different mechanisms agreed.
+[KNOWN-ISSUES.md](../../KNOWN-ISSUES.md). Two different mechanisms agreed.
 
 ### Dependency-analysis corrections (found by reading the output)
 
@@ -334,7 +334,7 @@ dependency graph on the site were all inflated by the same artifacts.
 One consequence, recorded honestly: brownian-motion's extraction pass rate went **1673/1677 →
 1671/1677**. The two newly-failing files were never correctly extracted — they compiled because
 spurious edges happened to pull in a declaration `@[to_additive existing]` needs (see
-[KNOWN-ISSUES.md](KNOWN-ISSUES.md) issue 4). Correcting the analysis removed the accident.
+[KNOWN-ISSUES.md](../../KNOWN-ISSUES.md) issue 4). Correcting the analysis removed the accident.
 
 ### The one design change forced by measurement
 

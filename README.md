@@ -104,8 +104,9 @@ flag.
 | [Prebuilt binaries](docs/releases.md) | CI artifacts, releases, and consuming them downstream |
 | [Working on Referee](docs/development.md) | Code layout, theme, and iterating on style without a rebuild |
 
-Design notes, kept separate because they argue rather than instruct:
-[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md) (what does not compile and which fixes were tried and measured
-to be worse), [`PROPOSED-TOOLS.md`](PROPOSED-TOOLS.md) (what has not been built, and why it would be
-worth it), and
-[`WEBSITE-DESIGN.md`](WEBSITE-DESIGN.md).
+Design notes live in [docs/design/](docs/design/), kept separate because they argue rather than
+instruct: [`PROPOSED-TOOLS.md`](docs/design/PROPOSED-TOOLS.md) (what has not been built, and why it
+would be worth it), [`TRUST-GAPS.md`](docs/design/TRUST-GAPS.md) (what auditing this tool does not
+cover at all), and [`WEBSITE-DESIGN.md`](docs/design/WEBSITE-DESIGN.md). Alongside them,
+[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md) records what does not compile and which fixes were tried and
+measured to be worse.

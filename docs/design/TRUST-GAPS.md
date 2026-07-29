@@ -46,7 +46,7 @@ triviality (§7) are the two proposed toes in this water; the channel is much wi
 is the half an adversary would use.
 
 - **`set_option` in source.** `debug.skipKernelTC` turns the kernel off for a declaration and
-  nothing reads it, though [Referee/Extract.lean](Referee/Extract.lean) already parses `set_option`
+  nothing reads it, though [Referee/Extract.lean](../../Referee/Extract.lean) already parses `set_option`
   for extraction purposes, so the syntax is in hand. `autoImplicit` is the subtler one: a mistyped
   identifier in a statement silently becomes a universally quantified variable, which is exactly how
   a theorem becomes vacuous while reading correctly.
@@ -85,7 +85,7 @@ This channel undercuts a feature that is already built: nothing records **what w
 
 - **`--trust mathlib` does not say which mathlib.** An audit of `mathlib@abc123` is not an audit of
   `mathlib@def456`, and a forked dependency with a patched definition is invisible to the whole
-  trust analysis. [lake-manifest.json](lake-manifest.json) has the revisions; recording them in
+  trust analysis. [lake-manifest.json](../../lake-manifest.json) has the revisions; recording them in
   `data.json` and printing them on the trust page is nearly free, and makes the existing page mean
   what it currently only implies.
 - **Was the tree clean?** Provenance pins source links to the folded commit, but nothing states
@@ -101,7 +101,7 @@ This channel undercuts a feature that is already built: nothing records **what w
 
 ## 5. More than one reader
 
-[docs/audit.md](docs/audit.md) is explicit that nothing is authenticated, and PROPOSED-TOOLS rejects
+[docs/audit.md](../audit.md) is explicit that nothing is authenticated, and PROPOSED-TOOLS rejects
 server, accounts and signatures for a good reason — an operator makes the artifact stop being a file
 the reader owns. Two of those three need no operator.
 
@@ -115,7 +115,7 @@ the reader owns. Two of those three need no operator.
 ## 6. Trusting Referee
 
 Everything on the site is downstream of the dependency analysis being right, and
-[KNOWN-ISSUES.md](KNOWN-ISSUES.md) records that it carried 188 impossible edges until recently —
+[KNOWN-ISSUES.md](../../KNOWN-ISSUES.md) records that it carried 188 impossible edges until recently —
 edges that were silently making extractions compile. A reader has no way to check any of it.
 
 - **Differential checking, already sitting in the repository.** `extract` and `extract-flat` are two
@@ -123,7 +123,7 @@ edges that were silently making extractions compile. A reader has no way to chec
   environment. Where they disagree about what a declaration depends on, one of them is wrong. A free
   bug oracle, built without meaning to.
 - **Compile status as published evidence.** It currently lives in
-  [scripts/check-extracted-compile.sh](scripts/check-extracted-compile.sh) and is explicitly out of
+  [scripts/check-extracted-compile.sh](../../scripts/check-extracted-compile.sh) and is explicitly out of
   `data.json` (see §1's "what it deliberately does not cover"). A per-declaration *this minimal file
   compiles* is the one claim on the site a reader can verify without trusting the tool at all, which
   is an argument for making it first-class rather than a measurement in a markdown file.
@@ -133,7 +133,7 @@ edges that were silently making extractions compile. A reader has no way to chec
 
 ## 7. Trust over time, as policy rather than as a view
 
-[docs/ci.md](docs/ci.md) builds the site in CI; it gates on toolchain mismatch and on missing hashes,
+[docs/ci.md](../ci.md) builds the site in CI; it gates on toolchain mismatch and on missing hashes,
 not on trust regressions. The missing piece is `referee check --policy`: fail the build when a
 claim's closure gains a `sorry`, when a covered claim becomes uncovered, when a new axiom appears,
 when an extraction stops compiling. The revision machinery computes all of it already; what is
@@ -157,9 +157,9 @@ property that makes the comparison mean anything: challenge and solution have to
 names. So **challenge = the extracted minimal file, solution = the real project module.**
 
 **It closes §6 above.** Today the extraction check is
-[scripts/check-extracted-compile.sh](scripts/check-extracted-compile.sh), and compiling proves the
+[scripts/check-extracted-compile.sh](../../scripts/check-extracted-compile.sh), and compiling proves the
 file is *well-formed*, not that it says the same thing as the declaration it claims to represent.
-That gap is not hypothetical here: [KNOWN-ISSUES.md](KNOWN-ISSUES.md) records extractions that
+That gap is not hypothetical here: [KNOWN-ISSUES.md](../../KNOWN-ISSUES.md) records extractions that
 compiled *by accident*, because 188 spurious edges dragged in a declaration the file needed; and its
 signature-narrowing section records the sharper case, where sorrying a definition's value silently
 drops `variable` binders, so the extracted declaration has a **different type** while compiling
@@ -173,7 +173,7 @@ the same order of price is the strongest argument for doing it.
 
 **Its stated limitation is exactly this tool's job.** A definition hole is checked for name, type,
 universe level and safety, never for meaning, so Comparator's README says hole-based challenges "can
-be gamed without additional oversight" — the same gap [docs/trust.md](docs/trust.md) draws around
+be gamed without additional oversight" — the same gap [docs/trust.md](../trust.md) draws around
 upstream definitions. The two compose: Comparator certifies the type-level correspondence, the audit
 page records the human judgement about meaning. Neither can do the other's half, and saying so on
 the site would sharpen both claims.
@@ -183,7 +183,7 @@ the trust page's "the kernel rechecked it" currently means the same binary that 
 everything, and two implementations is a different sentence. `permitted_axioms` with a nonzero exit
 code is half of §7's `referee check --policy` already written — and better than gating on Referee's
 own analysis, since the verdict comes from a kernel replaying an export rather than from the tool
-grading its own homework. `landrun` also names a risk [docs/ci.md](docs/ci.md) does not: building
+grading its own homework. `landrun` also names a risk [docs/ci.md](../ci.md) does not: building
 the site means executing a `lakefile.lean` from the project under review.
 
 **What it does not do, and what it costs.**
