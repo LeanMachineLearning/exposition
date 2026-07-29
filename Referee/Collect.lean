@@ -250,6 +250,18 @@ structure CharRow where
   specification wearing a characterization's clothes, and uniqueness without existence is a claim
   about a property that may hold of nothing at all. -/
   hasUniqueness : Bool := false
+  /-- The relations' own definitions, deduplicated, in the order the uniqueness theorems introduce
+  them.
+
+  Without these the banner names the claim's conclusion and does not say what it *is*:
+  `Indistinguishable μ A ⟨M⟩` reads as reassurance whether it means "agree a.s. at every time" or
+  something far weaker, and the reader cannot tell which without leaving the page. Since the
+  relation is the one part of a characterization that is reported rather than checked, showing it
+  is not a convenience.
+
+  Empty for a relation from the toolchain — `=` and `↔` need no introduction, and printing
+  `{α : Sort u} → α → α → Prop` where the point is to explain something would be noise. -/
+  relationDefs : Array CharPartRow := #[]
   /-- The property, then the existence theorems, then the uniqueness theorems. -/
   parts : Array CharPartRow := #[]
 deriving Repr, ToJson, FromJson, Inhabited

@@ -822,6 +822,25 @@ body.hide-theorems [data-decl-group="theorem"] {
   overflow-wrap: anywhere;
 }
 
+/* What the relation in the banner actually says. Sits between the banner and the three parts,
+   because that is where the reader asks — and it takes the banner's colour rather than the parts'
+   so that it reads as the claim being spelled out, not as a fourth part of it. */
+.char-relation-defs {
+  list-style: none;
+  margin: .55rem 0 0;
+  padding: 0;
+}
+
+.char-relation-def {
+  background: var(--site-surface-2);
+  border-left-color: var(--site-ok);
+  margin-bottom: 0;
+}
+
+.char-banner-gap ~ .char-relation-defs .char-relation-def {
+  border-left-color: var(--site-warn);
+}
+
 .char-parts { margin: .55rem 0 0; }
 
 /* The three parts read as a sequence — property, then existence, then uniqueness — so they take

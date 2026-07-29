@@ -318,6 +318,31 @@ block_extension Block.charList (_payload : CharListData) where
                 supplied."
             </p>
           }}
+      -- Directly under the lede, before the parts: the banner has just named the relation, and
+      -- "what does that mean" is the question a reader has at that exact point.
+      let relationDefs :=
+        if entry.relationDefs.isEmpty then .empty
+        else
+          {{
+            <ul class="char-relation-defs">
+              {{entry.relationDefs.map fun (r : CharPartRow) =>
+                  let nameHtml :=
+                    if r.href.isEmpty then
+                      {{<span class="spec-item-name"><code>{{r.name}}</code></span>}}
+                    else
+                      {{<a class="spec-item-name" href={{r.href}}><code>{{r.name}}</code></a>}}
+                  {{
+                    <li class="spec-item char-relation-def">
+                      <div class="spec-item-head">
+                        <span class="char-part-role">{{r.role}}</span>
+                        {{nameHtml}}
+                        <span class="spec-item-kind">{{r.kind}}</span>
+                      </div>
+                      <pre class="spec-item-statement"><code>{{r.signature}}</code></pre>
+                    </li>
+                  }}}}
+            </ul>
+          }}
       let parts := entry.parts.map fun part =>
         let nameHtml :=
           if part.href.isEmpty then
@@ -357,6 +382,7 @@ block_extension Block.charList (_payload : CharListData) where
         <li class="char-bundle">
           {{banner}}
           {{lede}}
+          {{relationDefs}}
           <ul class="spec-list char-parts">{{parts}}</ul>
         </li>
       }}
@@ -1566,6 +1592,39 @@ private def charPartRow (ctx : SiteContext) (role : String) (name : Name)
     -- be elsewhere: a predicate written to characterize a project's own definition lives with it.
     signature := (decl?.map (·.displaySignature)).getD "" }
 
+/-- The definition of the relation a characterization stops at, when there is one worth showing.
+
+Three cases, and the order matters. A relation declared by the project gets its source form and a
+link to its page. One from an upstream package has no page here, so it gets the pretty-printed type
+and body the graph panels use — which for a relation is the informative half: `Filter.EventuallyEq`
+has type `Filter α → (α → β) → (α → β) → Prop`, every argument reading as a hypothesis and nothing
+saying it means `∀ᶠ x in l, f x = g x`. One from the toolchain gets nothing: `=` and `↔` are not
+what a reader is stuck on, and `{α : Sort u} → α → α → Prop` in a slot meant to explain something
+would be worse than an empty slot. -/
+private def charRelationRow? (ctx : SiteContext) (head : Name) : Option CharPartRow :=
+  if head.isAnonymous then none
+  else match ctx.declByName.get? head with
+    | some d =>
+      some { role := "Relation"
+             name := head.toString
+             href := ctx.declPageHrefs.getD head ""
+             kind := d.displayKind
+             signature := d.displaySignature }
+    | none =>
+      match ctx.externalDecls.get? head with
+      | none => none
+      | some ext =>
+        if ctx.toolchainPackages.contains ext.package then none
+        else
+          some { role := "Relation"
+                 name := head.toString
+                 kind := ext.package.toString
+                 -- The same `signature := value` shape the upstream graph panels use, so an
+                 -- upstream constant reads the same wherever the site shows one.
+                 signature :=
+                   if ext.value.isEmpty then ext.signature
+                   else s!"{ext.signature}\n  :=\n{ext.value}" }
+
 /-- The characterizations claimed for `decl`, as rendered rows.
 
 The author's comment rides on the property row rather than on the bundle, because that is where
@@ -1577,6 +1636,11 @@ private def charRows (decl : DeclInfo) (ctx : SiteContext) : Array CharRow :=
         if u.relation.isEmpty then none else some u.relation
       hasExistence := !bundle.existence.isEmpty
       hasUniqueness := !bundle.uniqueness.isEmpty
+      -- Deduplicated: several uniqueness theorems normally stop at the same relation, and
+      -- repeating its definition once per theorem would bury the parts it is there to explain.
+      relationDefs := (bundle.uniqueness.foldl (init := (#[] : Array Name)) fun acc u =>
+        if acc.contains u.relationHead then acc else acc.push u.relationHead).filterMap
+          (charRelationRow? ctx)
       parts :=
         #[charPartRow ctx "Property" bundle.property (comment := bundle.comment)]
           ++ bundle.existence.map (charPartRow ctx "Existence")

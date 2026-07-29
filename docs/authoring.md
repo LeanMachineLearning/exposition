@@ -83,9 +83,14 @@ Specification section and for the same reason the two are ordered that way: a ch
 answers the same question and settles it, where a specification only narrows it. Each claim is one
 card, and the card leads with the relation — `x = y` and `f =ᵐ[μ] g` are very different statements
 about how well a definition is pinned down, so the site prints which one it is rather than reporting
-"characterized" and leaving it there. Underneath are the three declarations with their statements in
-full, since reading the property is the only way to tell whether the claim is worth anything, and a
-note saying exactly that. An unfinished claim — a property with no uniqueness theorem — is drawn as
+"characterized" and leaving it there. Directly under it comes the relation's own definition, because
+naming the conclusion is not stating it: `Indistinguishable μ A ⟨M⟩` reads as reassurance whether it
+means "agree almost surely at every time" or something much weaker. A relation declared by the
+project gets its source form and a link; one from an upstream package gets the type and body the
+graph panels show; one from the toolchain gets nothing, since `=` and `↔` are not what a reader is
+stuck on. Underneath are the three declarations with their statements in full, since reading the
+property is the only way to tell whether the claim is worth anything, and a note saying exactly
+that. An unfinished claim — a property with no uniqueness theorem — is drawn as
 a gap rather than dropped, and says which half is missing. Each of the three declarations gets a
 *Part of a characterization* back-link on its own page, so a reader landing on `IsEntropy.unique`
 learns what it is for.
