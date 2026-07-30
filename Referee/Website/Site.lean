@@ -3214,8 +3214,8 @@ private def loadCollectedData (path : String) : IO CollectedData := do
   if fileVersion != collectedDataVersion then
     throw <| IO.userError s!"{path} is collected-data version {fileVersion}, but this build \
       expects version {collectedDataVersion}. Re-run the `collect` subcommand to regenerate it."
-  match FromJson.fromJson? json with
-  | .ok (data : CollectedData) => pure data
+  match decodeCollectedData json with
+  | .ok data => pure data
   | .error err => throw <| IO.userError s!"Failed to decode collected data from {path}: {err}"
 
 /-- Builds and renders the Verso site from already-collected data. Needs no Lean environment
@@ -3395,7 +3395,7 @@ private unsafe def runCollect (cfg : Cli) : IO UInt32 := do
       return 1
   let (projectDir, ws, rootPrefix, env) ← loadProject cfg
   let data ← collectData cfg projectDir ws rootPrefix env
-  IO.FS.writeFile dataPath (ToJson.toJson data).compress
+  IO.FS.writeFile dataPath (encodeCollectedData data).compress
   IO.println s!"Wrote collected data for {data.decls.size} declarations to {dataPath}"
   return 0
 

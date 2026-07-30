@@ -556,7 +556,8 @@ hence these. -/
 
 #guard roundTrips sampleDeclForJson
 #guard roundTrips ({ title := "Section", body := "Some *markdown* body." } : MarkdownSection)
-#guard roundTrips ({
+
+private def sampleCollected : CollectedData := {
   rootPrefix := `Foo
   decls := #[sampleDeclForJson]
   moduleOrder := #[(`Foo, 0), (`Foo.Bar, 1)]
@@ -564,6 +565,64 @@ hence these. -/
   readmeText := some "# Title\n\nBody"
   packages := pkgs
   loadedPackages := #[`Proj, `LML, `mathlib, `batteries, `Lean]
-} : CollectedData)
+}
+
+#guard roundTrips sampleCollected
+
+/-! ## Interning
+
+What `collect` actually writes is `encodeCollectedData`, not `toJson`: the document's repeated
+subtrees are hoisted into a table and replaced by `{"$i": n}` references. The property that matters
+is that this is invisible — `decodeCollectedData` must reproduce the original exactly, whatever
+sharing happened in between. -/
+
+private def internRoundTrips {α : Type} [ToJson α] [FromJson α] (a : α) : Bool :=
+  let j := ToJson.toJson a
+  let (table, root) := intern j
+  (resolve table root).compress == j.compress
+
+-- The end-to-end property: what `collect` writes, `build-site` reads back unchanged.
+#guard (decodeCollectedData (encodeCollectedData sampleCollected)).toOption.map
+  (fun d => (ToJson.toJson d).compress) == some (ToJson.toJson sampleCollected).compress
+
+-- And on the values whose repetition is the whole point: `Block Manual` docstring ASTs.
+#guard internRoundTrips sampleCollected
+#guard internRoundTrips sampleDeclForJson
+#guard internRoundTrips (ToJson.toJson (#[sampleDeclForJson, sampleDeclForJson] : Array DeclInfo))
+
+/-! ### Interning edge cases
+
+Shapes that could be mistaken for a reference, or that the encoder must leave alone. -/
+
+-- Repetition really is shared rather than copied: two identical declarations produce one table entry
+-- per distinct subtree, so the encoded form is far smaller than two copies.
+#guard
+  let two := ToJson.toJson (#[sampleDeclForJson, sampleDeclForJson] : Array DeclInfo)
+  let (table, root) := intern two
+  (ToJson.toJson { interned := table, data := root : InternedData }).compress.length <
+    two.compress.length
+
+-- Scalars and short structures are below `internMinSize`, so nothing is tabled and the document is
+-- returned as-is. A table that stays empty is the signal that interning did not apply.
+#guard (intern (Json.num 42)).1.isEmpty
+#guard (intern (Json.str "short")).1.isEmpty
+#guard (resolve #[] (Json.mkObj [("a", Json.num 1)])).compress == "{\"a\":1}"
+
+-- A payload that already uses the reserved key cannot be encoded unambiguously, so `intern` declines
+-- rather than producing something `resolve` would silently misread. Nothing Referee serializes
+-- produces the key; this pins the guard so a future field cannot quietly break decoding.
+#guard usesInternKey (Json.mkObj [(internKey, Json.num 0)])
+#guard usesInternKey (Json.arr #[Json.mkObj [("x", Json.mkObj [(internKey, Json.num 0)])]])
+#guard !usesInternKey (Json.mkObj [("x", Json.num 0)])
+#guard
+  let hostile := Json.mkObj [("padding", .str "..........................."),
+    ("ref", Json.mkObj [(internKey, Json.num 0)])]
+  let (table, root) := intern hostile
+  table.isEmpty && root.compress == hostile.compress
+
+-- An out-of-range reference is data, not an error: it survives resolution untouched, which is what
+-- makes the empty-table case above a faithful round-trip rather than a decode failure.
+#guard (resolve #[] (Json.mkObj [(internKey, Json.num 7)])).compress
+  == (Json.mkObj [(internKey, Json.num 7)]).compress
 
 end Referee.Test

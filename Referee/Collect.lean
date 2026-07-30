@@ -709,6 +709,160 @@ structure ExternalDeclInfo where
   deps : Array Name := #[]
 deriving Repr, ToJson, FromJson, Inhabited
 
+/-! ## Interning: sharing the collected data's repeated subtrees
+
+The serialized data is dominated by repetition, and overwhelmingly in one field. Measured on
+`brownian-motion` (1808 declarations, 67 MB): `DeclInfo.docstringBlock?` is 56.6 MB of the 73.5 MB
+`decls` array — 77% — and inside it 19.2 MB is repeated JSON field names while 11.0 MB is the
+docstrings of upstream constants, inlined once per *mention*: 54,778 occurrences of 1,014 distinct
+strings, with `MeasurableSpace`'s docstring stored 2,770 times.
+
+None of that is information. `intern` replaces every repeated subtree with an index into a table
+carried alongside the data. On that project: **67.2 MB → 21.5 MB** (3.1×).
+
+The reason this is worth a format change rather than just compressing the file — which would do
+better on bytes, 13× — is that it shrinks the data *in memory* too, and memory is the wall a large
+library hits first. `resolve` rebuilds each table entry exactly once, so every reference to it yields
+the same `Json` value rather than a copy, and the sharing survives decoding wherever a field is a
+`String` (`getStr?` hands back the existing object). Rendering the same site from the interned and
+un-interned forms of one file, measured:
+
+|  | file | peak RSS | wall |
+|---|---|---|---|
+| un-interned | 67.2 MB | 1022 MB | 13.9 s |
+| interned | 21.5 MB | **532 MB** | 12.8 s |
+
+Byte-identical output, half the memory, and slightly faster despite the extra pass — parsing a third
+as much JSON more than pays for resolving it. Gzip would give neither of the last two.
+-/
+
+/-- The reserved object key marking a reference into the subtree table: `{"$i": 12}`.
+
+A single character keeps the marker at nine bytes, which matters because references are the most
+numerous thing in the encoded form. No Lean structure field or `Name` component can produce it, but
+`intern` checks rather than assuming (see `usesInternKey`). -/
+def internKey : String := "$i"
+
+/-- True if any object in `j` already uses `internKey`.
+
+`intern` refuses to encode such a document, because a payload object of exactly that shape would be
+indistinguishable from a reference and would decode to something else entirely. Nothing Referee
+serializes can produce the key, so this is a guard against a future field, not a live case. -/
+partial def usesInternKey (j : Json) : Bool :=
+  match j with
+  | .obj fields => fields.foldl (init := false) fun acc k v =>
+      acc || k == internKey || usesInternKey v
+  | .arr elems => elems.any usesInternKey
+  | _ => false
+
+/-- Smallest compressed size, in bytes, a subtree must reach before it is worth interning.
+
+Chosen by measurement, not reasoning: the size/threshold curve is not monotonic, because interning
+small nodes shrinks their parents, which makes *those* collide with each other in turn. On
+`brownian-motion` the whole 10–20 range sits on one plateau at 3.17× and the cliff is at 22, where
+the token objects that make up the bulk of a signature stop qualifying:
+
+| threshold | 14 | 20 | 22 | 32 | 64 |
+|---|---|---|---|---|---|
+| factor | 3.17× | 3.18× | 2.95× | 2.40× | 2.14× |
+
+20 is the top of the plateau, which is where the same file size comes with the fewest table entries
+(76k rather than 80k) and so the least work in both `internAux` and `resolve`. Below about 10 nothing
+can pay for itself anyway: a reference is nine bytes. -/
+def internMinSize : Nat := 20
+
+/-- Encoder state: the table in construction, and the reverse index that makes a repeat an O(1)
+lookup rather than a scan.
+
+The index is keyed on the *already-interned* node, so `Json`'s recursive `BEq`/`Hashable` only ever
+walk a node's own fields plus its children's nine-byte references — never a whole subtree. That is
+what keeps the pass linear in the document rather than quadratic in its depth. -/
+structure InternState where
+  table : Array Json := #[]
+  index : Std.HashMap Json Nat := {}
+
+/-- Interns one node, bottom-up: children first, then the node itself if it is large enough to pay
+for a reference.
+
+Because children are interned before their parent, every reference inside table entry `i` points to
+an index below `i`. `resolve` relies on that ordering to rebuild the table in one forward pass. -/
+partial def internAux (j : Json) (st0 : InternState) : Json × InternState := Id.run do
+  let mut st := st0
+  let node : Json ←
+    match j with
+    | .arr elems => do
+      let mut out : Array Json := #[]
+      for e in elems do
+        let (e, st') := internAux e st
+        st := st'
+        out := out.push e
+      pure (.arr out)
+    | .obj fields => do
+      let pairs := fields.foldl (init := (#[] : Array (String × Json))) fun acc k v => acc.push (k, v)
+      let mut out : List (String × Json) := []
+      for (k, v) in pairs do
+        let (v, st') := internAux v st
+        st := st'
+        out := (k, v) :: out
+      pure (Json.mkObj out)
+    | leaf => pure leaf
+  -- A leaf is never tabled. `internMinSize` excludes every number and boolean, and a string long
+  -- enough to qualify is already shared by the parse rather than copied per occurrence.
+  let isComposite := match node with | .arr _ | .obj _ => true | _ => false
+  if !isComposite || node.compress.length < internMinSize then
+    return (node, st)
+  match st.index[node]? with
+  | some i => return (Json.mkObj [(internKey, toJson i)], st)
+  | none =>
+    let i := st.table.size
+    return (Json.mkObj [(internKey, toJson i)],
+      { table := st.table.push node, index := st.index.insert node i })
+
+/-- Replaces every repeated subtree of `j` with a reference into a table, returning the table and the
+rewritten document. Returns an empty table and `j` unchanged when `usesInternKey` says the document
+could not be decoded unambiguously. -/
+def intern (j : Json) : Array Json × Json :=
+  if usesInternKey j then
+    (#[], j)
+  else
+    let (root, st) := internAux j {}
+    (st.table, root)
+
+/-- Substitutes references in `j` against an already-resolved table.
+
+A reference is an object whose only field is `internKey` carrying a whole number in range; anything
+else is real data and is rebuilt field by field. An out-of-range index is left alone rather than
+raising, which is what lets a document with an empty table round-trip unchanged. -/
+partial def resolveAgainst (resolved : Array Json) (j : Json) : Json :=
+  match j with
+  | .arr elems => .arr (elems.map (resolveAgainst resolved))
+  | .obj fields =>
+    let ref? : Option Nat := do
+      let .num n ← fields.get? internKey | none
+      guard (n.exponent == 0)
+      guard (n.mantissa ≥ 0)
+      let i := n.mantissa.toNat
+      guard (i < resolved.size)
+      pure i
+    match ref? with
+    | some i => resolved[i]!
+    | none =>
+      Json.mkObj <| (fields.foldl (init := (#[] : Array (String × Json))) fun acc k v =>
+        acc.push (k, resolveAgainst resolved v)).toList
+  | leaf => leaf
+
+/-- Rebuilds a document `intern` encoded, resolving each table entry exactly once so that every
+reference to it yields the *same* `Json` value.
+
+That single-allocation property is the point, not merely the smaller file: the decoded tree shares
+its repeated subtrees by pointer instead of holding a copy per occurrence. The forward pass is sound
+because `internAux` tables children before parents, so entry `i` only ever references entries below
+`i`, which are already resolved when it is reached. -/
+def resolve (table : Array Json) (j : Json) : Json :=
+  let resolved := table.foldl (init := (#[] : Array Json)) fun acc entry =>
+    acc.push (resolveAgainst acc entry)
+  resolveAgainst resolved j
+
 /-- Format version of `CollectedData`. Bump whenever `DeclInfo` or `CollectedData` gains or
 changes a field, so that `build-site` fails with an actionable message rather than a field-level
 decode error when handed a JSON file written by an older `collect`.
@@ -724,8 +878,10 @@ decode error when handed a JSON file written by an older `collect`.
   docstring of each upstream constant as well as its package
 - 9: adds `ExternalDeclInfo.value`/`deps` and `CollectedData.expandedPackages`, the internal
   structure of the upstream packages small enough to walk
-- 10: adds `DeclInfo.characterizedBy` and `DeclInfo.characterizes` -/
-def collectedDataVersion : Nat := 10
+- 10: adds `DeclInfo.characterizedBy` and `DeclInfo.characterizes`
+- 11: wraps the document in an `InternedData` envelope, sharing its repeated subtrees (see `intern`).
+  No field of `CollectedData` changed; what changed is how it is written and read -/
+def collectedDataVersion : Nat := 11
 
 /-- The full result of the `collect` subcommand's analysis, persisted as JSON so `extract`
 and `build-site` can run without re-importing the target project. `moduleOrder` and
@@ -751,6 +907,30 @@ structure CollectedData where
   layered block; everything else is drawn as the flat surface it always was. -/
   expandedPackages : Array Name := #[]
 deriving ToJson, FromJson
+
+/-- What `collect` actually writes: a `CollectedData` with its repeated subtrees hoisted into
+`interned` and replaced by references. See `intern` for why.
+
+`version` is duplicated here rather than only inside `data` so that `loadCollectedData` can reject a
+stale file by reading one top-level field, without decoding — or even resolving — the rest. -/
+structure InternedData where
+  version : Nat := collectedDataVersion
+  /-- The shared subtree table. Entry `i` may reference only entries below `i`. Empty when interning
+  was skipped, in which case `data` is an ordinary `CollectedData` document. -/
+  interned : Array Json := #[]
+  data : Json
+deriving ToJson, FromJson
+
+/-- Serializes `data`, interned. -/
+def encodeCollectedData (data : CollectedData) : Json :=
+  let (interned, root) := intern (toJson data)
+  toJson { interned, data := root : InternedData }
+
+/-- Inverse of `encodeCollectedData`. Separated from the file reading so it can be round-trip tested
+without touching the disk. -/
+def decodeCollectedData (json : Json) : Except String CollectedData := do
+  let envelope : InternedData ← fromJson? json
+  fromJson? (resolve envelope.interned envelope.data)
 
 /-- Command-line usage text shown for invalid arguments. -/
 def usage : String :=
