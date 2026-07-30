@@ -1379,10 +1379,12 @@ private def sorryChain (start : Name) (ctx : SiteContext) : Option (Array Name) 
         if d.hasOwnSorry then
           culprit? := some name
           break
-        -- `closureDeps`, not `meaningDeps`: a `sorry` reached only through a proof is still a real
-        -- gap, and `dependsOnSorry` — which this chain exists to explain — reports it. Narrowing to
-        -- meaning here would flag a declaration and then fail to find the chain that flagged it.
-        for dep in closureDeps d do
+        -- `deps`, the raw type-and-body edges: a `sorry` reached only through a proof is still a
+        -- real gap, and `dependsOnSorry` — which this chain exists to explain — is `collectAxioms`,
+        -- which walks proofs. Neither `meaningDeps` nor `closureDeps` will do: both are `typeDeps`
+        -- for a non-alias theorem, so the proof that reaches the `sorry` is exactly what they drop,
+        -- and the chain would come back empty for the declarations that most need it.
+        for dep in d.deps do
           if !visited.contains dep && ctx.declByName.contains dep then
             visited := visited.insert dep
             parents := parents.insert dep name

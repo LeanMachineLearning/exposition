@@ -2150,7 +2150,12 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       proofText? := proofText?
       source? := source?
       dependsOnSorry := axs.contains ``sorryAx
-      hasOwnSorry := info.type.hasSorry || (info.value?.map Expr.hasSorry).getD false
+      -- `allowOpaque := true` is required, not cosmetic: `ConstantInfo.value?` returns `none` for
+      -- a `.thmInfo` without it, so every theorem — the declarations that actually carry a `sorry`
+      -- in their proof — reported `hasOwnSorry := false`, and `sorryChain` then found no culprit
+      -- and the page blamed the gap on an upstream package.
+      hasOwnSorry := info.type.hasSorry ||
+        ((info.value? (allowOpaque := true)).map Expr.hasSorry).getD false
       axioms := axs
       isLemma := isLemma
       isInstanceDecl := isInstanceDecl
@@ -2186,10 +2191,14 @@ def attachReverseDeps (decls : Array DeclInfo) : Array DeclInfo :=
   let rev := LeanDeps.reverseDeps (decls.map fun decl => (decl.name, decl.deps))
   decls.map fun decl => { decl with usedBy := (rev.getD decl.name #[]).qsort Name.lt }
 
-/-- `closureDepsOf` for a `DeclInfo`. Drives `transDeps`, and through it extraction; also the two
-places that legitimately need to see through proofs — the `sorry` chain (a `sorry` reached only by a
-proof is still a real gap) and the module-level graph (which is about what a module needs in order to
-build, not about what it means). -/
+/-- `closureDepsOf` for a `DeclInfo`. Drives `transDeps`, and through it extraction; also the
+module-level graph, which is about what a module needs in order to build rather than about what it
+means.
+
+Not a way to "see through proofs", despite being the wider of the two rules: it widens over
+`meaningDeps` for *definitions* only, and for a non-alias theorem both are `typeDeps`. Anything that
+has to follow a theorem's proof — the `sorry` chain is the one such caller — must take `decl.deps`
+directly. -/
 def closureDeps (decl : DeclInfo) : Array Name :=
   closureDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps
 
