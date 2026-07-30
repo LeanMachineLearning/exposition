@@ -1165,7 +1165,9 @@ private def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name S
   let nodes := decls.map fun decl => {
     id := decl.name.toString
     label := decl.name.getString!
-    kind := decl.kind.label
+    -- `displayKind`, as every other node-like listing on the site uses: `kind.label` is the raw
+    -- `theorem` Lean records, so a lemma's own graph node contradicted the card above it.
+    kind := decl.displayKind
     status := if decl.dependsOnSorry then "sorry" else "proved"
     groupKey := decl.groupKey
     moduleName := decl.modulePath
@@ -1302,41 +1304,92 @@ private def withUpstreamNodes (data : GraphData) (decls : Array DeclInfo) (ctx :
         if refs.contains dep then some { source := dep.toString, target := name.toString } else none
   { data with nodes := data.nodes ++ nodes, edges := data.edges ++ edges ++ innerEdges }
 
-/-- All nodes reachable from `start` via one or more edges of `adj`, tolerant of cycles (a node
-already on the current path contributes nothing further rather than looping forever). Threads a
-`cache` of already-computed results so repeated queries for the same node (common when many edges
-share a source) are O(1) after the first. -/
-private partial def reachableFrom (adj : Std.HashMap String (Array String))
-    (cache : Std.HashMap String (Std.HashSet String)) (onPath : Std.HashSet String) (n : String) :
-    Std.HashSet String × Std.HashMap String (Std.HashSet String) :=
-  match cache.get? n with
+/-- Post-order over `adj`, i.e. each node pushed after everything reachable from it. Kosaraju's
+first pass. -/
+private partial def postOrder (adj : Std.HashMap String (Array String)) (n : String)
+    (seen : Std.HashSet String) (out : Array String) : Std.HashSet String × Array String :=
+  if seen.contains n then (seen, out)
+  else
+    let seen := seen.insert n
+    let (seen, out) := (adj.getD n #[]).foldl (init := (seen, out)) fun (seen, out) m =>
+      postOrder adj m seen out
+    (seen, out.push n)
+
+/-- Floods a component id backwards along `rev`. Kosaraju's second pass. -/
+private partial def assignComponent (rev : Std.HashMap String (Array String)) (c : Nat)
+    (n : String) (comp : Std.HashMap String Nat) : Std.HashMap String Nat :=
+  if comp.contains n then comp
+  else (rev.getD n #[]).foldl (init := comp.insert n c) fun comp m => assignComponent rev c m comp
+
+/-- Assigns each node the id of its strongly connected component (Kosaraju): two nodes share an id
+exactly when each is reachable from the other. Nodes not on any cycle get an id to themselves. -/
+private def componentsOf (nodes : Array String) (adj : Std.HashMap String (Array String)) :
+    Std.HashMap String Nat :=
+  let rev : Std.HashMap String (Array String) :=
+    adj.fold (init := {}) fun acc s ts =>
+      ts.foldl (fun acc t => acc.insert t ((acc.getD t #[]).push s)) acc
+  let (_, order) := nodes.foldl (init := (({} : Std.HashSet String), (#[] : Array String)))
+    fun (seen, out) n => postOrder adj n seen out
+  (order.reverse.foldl (init := (({} : Std.HashMap String Nat), 0)) fun (comp, c) n =>
+    if comp.contains n then (comp, c) else (assignComponent rev c n comp, c + 1)).1
+
+/-- Components reachable from `c`, memoized.
+
+Sound to memoize, unlike the same walk over the raw node graph, because the condensation is acyclic
+by construction: a cycle among components would mean their members were one component. -/
+private partial def reachableComponents (cadj : Std.HashMap Nat (Array Nat))
+    (cache : Std.HashMap Nat (Std.HashSet Nat)) (c : Nat) :
+    Std.HashSet Nat × Std.HashMap Nat (Std.HashSet Nat) :=
+  match cache.get? c with
   | some reached => (reached, cache)
   | none =>
-    if onPath.contains n then
-      ({}, cache)
-    else
-      let onPath := onPath.insert n
-      let (reached, cache) := (adj.getD n #[]).foldl
-        (init := (({} : Std.HashSet String), cache))
-        (fun (reached, cache) m =>
-          let reached := reached.insert m
-          let (sub, cache) := reachableFrom adj cache onPath m
-          (sub.fold (init := reached) (·.insert ·), cache))
-      (reached, cache.insert n reached)
+    let (reached, cache) := (cadj.getD c #[]).foldl
+      (init := (({} : Std.HashSet Nat), cache))
+      (fun (reached, cache) m =>
+        let (sub, cache) := reachableComponents cadj cache m
+        (sub.fold (init := reached.insert m) (·.insert ·), cache))
+    (reached, cache.insert c reached)
 
-/-- Drops every edge that is implied by a longer path through other edges, the standard
-transitive reduction of a DAG (tolerant of the rare dependency cycle). Meant for the full
-dependency-graph page only: per-declaration graphs are already small, and keeping every direct
-edge there makes each one exact (`A → B` always means `A` is a *direct* dependency of `B`). -/
+/-- Drops every edge implied by a longer path through other edges: the transitive reduction, taken
+over the graph's *condensation* rather than over the graph itself.
+
+Reducing the raw graph is only correct when it is acyclic, and these are not always acyclic —
+`AEEqProcess.cast`, `instCoeFun` and `mk` in `brownian-motion` are mutually recursive. Inside a cycle
+every node reaches every other, so every edge leaving it appears implied by a path around the cycle,
+and the naive rule deleted *all* of them: `AEEqProcess.adapted` was left with no edge to any of its
+three project dependencies, drawn as an island in its own dependency graph.
+
+Contracting each cycle to a single node first is what makes the question well posed. Edges inside a
+component are always kept — they are the cycle, and it is real — and an edge between components
+survives exactly when the condensation edge does. Several parallel edges into one component all
+survive, which is why `cast → adapted` and `instCoeFun → adapted` are both drawn while the
+genuinely implied `AEEqProcess → adapted` is not. On an acyclic graph every component is a single
+node and this is the ordinary reduction. -/
 private def transitiveReduce (data : GraphData) : GraphData :=
   let adj : Std.HashMap String (Array String) :=
     data.edges.foldl (fun acc e => acc.insert e.source ((acc.getD e.source #[]).push e.target)) {}
-  let cache := data.nodes.foldl
-    (fun cache n => (reachableFrom adj cache {} n.id).2)
-    ({} : Std.HashMap String (Std.HashSet String))
+  -- Edge endpoints as well as declared nodes: an edge to a node the graph never listed would
+  -- otherwise be silently placed in whichever component the lookup default named.
+  let ids := data.edges.foldl (init := data.nodes.map (·.id)) fun acc e =>
+    (acc.push e.source).push e.target
+  let comp := componentsOf ids adj
+  let cadj : Std.HashMap Nat (Array Nat) := data.edges.foldl (init := {}) fun acc e =>
+    match comp[e.source]?, comp[e.target]? with
+    | some cs, some ct =>
+      if cs == ct || (acc.getD cs #[]).contains ct then acc
+      else acc.insert cs ((acc.getD cs #[]).push ct)
+    | _, _ => acc
+  let cache := cadj.fold (init := ({} : Std.HashMap Nat (Std.HashSet Nat)))
+    fun cache c _ => (reachableComponents cadj cache c).2
   let edges := data.edges.filter fun e =>
-    let siblings := adj.getD e.source #[]
-    !siblings.any fun w => w != e.target && (cache.getD w {}).contains e.target
+    match comp[e.source]?, comp[e.target]? with
+    | some cs, some ct =>
+      -- Inside one component the edge is part of the cycle itself, so nothing can imply it away.
+      if cs == ct then true
+      else
+        let siblings := (adj.getD e.source #[]).filterMap (comp[·]?)
+        !siblings.any fun w => w != ct && w != cs && (cache.getD w {}).contains ct
+    | _, _ => true
   { data with edges := edges }
 
 /-! ## Audit surface and trust
@@ -2104,7 +2157,9 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   -- longer path, and drawing all of them buries the structure in crossings and forces the layout
   -- so wide that it no longer fits the viewport. What survives is the *essential* dependency
   -- structure — every removed edge is still a real dependency, reachable along the path that
-  -- remains.
+  -- remains. That invariant is why the reduction has to go through the condensation: on a graph
+  -- with a cycle the naive rule breaks it outright, disconnecting the focus declaration from
+  -- everything it rests on.
   let graphData := transitiveReduce
     (withUpstreamNodes
       (mkGraphData graphDecls ctx.declPageHrefs meaningDeps (focus? := decl.name)

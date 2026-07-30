@@ -1531,14 +1531,48 @@ def displaySignatureFromSource (kind : DeclKind) (src? : Option SourceInfo) (lin
         | _ => headBeforeAssignment snippet
       if rendered.isEmpty then none else some rendered
 
+/-- The modifiers Lean allows between a declaration's attributes and its keyword.
+
+Stripped only when reading the *keyword*, never from the displayed signature: `protected lemma foo`
+is what the author wrote and is what the page should show. It is the classification that must look
+past them, because `protected lemma` is still a lemma. -/
+def declModifiers : Array String :=
+  #["private", "protected", "public", "noncomputable", "unsafe", "partial", "nonrec", "scoped",
+    "local", "meta"]
+
+/-- Drops any leading `declModifiers` from a cleaned snippet, so the next word is the keyword.
+
+Repeated because they combine: `protected noncomputable def`, `public meta def`.
+
+Splits on *any* whitespace rather than on a space, because a modifier is routinely left on a line of
+its own — `brownian-motion` writes
+
+```lean
+protected
+lemma _root_.SupClosed.mem_countableSupClosure_iff …
+```
+
+and matching `"protected "` reads straight past that. -/
+partial def dropDeclModifiers (s : String) : String :=
+  let s := (String.trimAscii s).toString
+  let word := (s.takeWhile (!·.isWhitespace)).toString
+  if declModifiers.contains word then
+    dropDeclModifiers (s.drop word.length).toString
+  else
+    s
+
 /-- True if the cleaned source snippet for a `theorem`-kind declaration starts with the `lemma`
-keyword rather than `theorem`. -/
+keyword rather than `theorem`.
+
+Reads past any visibility or binder modifier. Getting this wrong is not cosmetic: `isLemma` feeds
+`DeclInfo.isClaim`, so a `protected lemma` read as a theorem is promoted onto the Claims page, among
+the results the library asserts for their own sake. -/
 def isLemmaFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : Array String) : Bool :=
   if kind != .theorem then
     false
   else match src? with
     | none => false
-    | some src => (keywordSnippet src lines).startsWith "lemma "
+    | some src => (dropDeclModifiers (keywordSnippet src lines)).startsWith "lemma "
 
 /-- True if the cleaned source snippet for a `theorem`-kind declaration starts with the
 `instance` keyword (e.g. a `Prop`-valued instance whose `@[instance]` attribute was not picked
@@ -1548,14 +1582,15 @@ def isInstanceFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : A
     false
   else match src? with
     | none => false
-    | some src => (keywordSnippet src lines).startsWith "instance "
+    | some src => (dropDeclModifiers (keywordSnippet src lines)).startsWith "instance "
 
 /-- True if the declaration's source snippet starts with the `alias` keyword. Such declarations are
 emitted verbatim (`alias … := target`), so their dependency closure must follow value dependencies. -/
 def isAliasFromSource (src? : Option SourceInfo) (lines : Array String) : Bool :=
   match src? with
   | none => false
-  | some src => (cleanDeclSnippet (sliceSourceSnippet lines src)).startsWith "alias "
+  | some src =>
+    (dropDeclModifiers (cleanDeclSnippet (sliceSourceSnippet lines src))).startsWith "alias "
 
 /-- True if `name`'s last component follows the standard naming convention for
 compiler-generated instances (e.g. `instDecidableEqFoo` from a `deriving` clause), namely

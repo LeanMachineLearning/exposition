@@ -197,6 +197,66 @@ private def loneAttribute : Array String :=
   #["attribute [to_dual existing] MeasurableInf₂"]
 #guard !isLemmaFromSource .theorem (some ⟨"f.lean", "f.lean", 1, 1⟩) loneAttribute
 
+/-! #### Modifiers between the attributes and the keyword
+
+A visibility or binder modifier sits where the keyword was being looked for, so `protected lemma`
+read as `theorem` and was promoted onto the Claims page. `brownian-motion` has these throughout
+(`MeasureTheory.AEEqProcess.adapted`), and the page showed a card headed "Theorem" above a signature
+that visibly said `protected lemma`. -/
+
+#guard dropDeclModifiers "protected lemma adapted : P" == "lemma adapted : P"
+#guard dropDeclModifiers "private theorem foo : P" == "theorem foo : P"
+-- They combine, in either order, and the stripper is not fooled by a name that starts like one.
+#guard dropDeclModifiers "protected noncomputable def f : ℕ" == "def f : ℕ"
+#guard dropDeclModifiers "public meta def f : ℕ" == "def f : ℕ"
+#guard dropDeclModifiers "lemma privateKeyOf : P" == "lemma privateKeyOf : P"
+#guard dropDeclModifiers "theorem foo : P" == "theorem foo : P"
+-- A modifier on a line of its own, which is how `brownian-motion` writes them. Matching
+-- `"protected "` reads straight past this and was the first version of this fix.
+#guard dropDeclModifiers "protected\nlemma foo : P" == "lemma foo : P"
+#guard dropDeclModifiers "protected\n  noncomputable\n  def f : ℕ" == "def f : ℕ"
+
+private def protectedOwnLine : Array String :=
+  #["protected", "lemma _root_.SupClosed.mem_countableSupClosure_iff (hp : SupClosed p) :"]
+#guard isLemmaFromSource .theorem (some ⟨"f.lean", "f.lean", 1, 2⟩) protectedOwnLine
+
+private def protectedLemma : Array String := #["protected lemma adapted (f : α) : Adapted f := hf"]
+#guard isLemmaFromSource .theorem (some ⟨"f.lean", "f.lean", 1, 1⟩) protectedLemma
+
+-- Which is what keeps it off the Claims page: `isClaim` is `theorem`-kind and not a lemma.
+private def adaptedDecl : DeclInfo := {
+  name := `MeasureTheory.AEEqProcess.adapted
+  moduleName := `M
+  modulePath := "M.lean"
+  groupKey := "M"
+  kind := .theorem
+  displaySignature := "protected lemma adapted (f : α) : Adapted f"
+  expandedSignature := ""
+  docBlocks := #[]
+  proofText? := none
+  source? := some ⟨"f.lean", "f.lean", 1, 1⟩
+  isLemma := isLemmaFromSource .theorem (some ⟨"f.lean", "f.lean", 1, 1⟩) protectedLemma
+  deps := #[]
+}
+#guard !adaptedDecl.isClaim
+#guard adaptedDecl.displayKind == "Lemma"
+
+private def protectedTheorem : Array String := #["protected theorem foo : P := by simp"]
+#guard !isLemmaFromSource .theorem (some ⟨"f.lean", "f.lean", 1, 1⟩) protectedTheorem
+
+-- The other two keyword readers look past modifiers the same way.
+private def protectedInstance : Array String := #["protected instance foo : P := ⟨bar⟩"]
+#guard isInstanceFromSource .theorem (some ⟨"f.lean", "f.lean", 1, 1⟩) protectedInstance
+private def protectedAlias : Array String := #["protected alias foo := bar"]
+#guard isAliasFromSource (some ⟨"f.lean", "f.lean", 1, 1⟩) protectedAlias
+
+-- A modifier after the attribute line, which is the shape a generated declaration produces.
+private def dualProtected : Array String := #[
+  "@[to_dual min_le]",
+  "protected lemma le_max (x : ι) : f x ≤ max f := le_sup' _ (by simp)"
+]
+#guard isLemmaFromSource .theorem (some ⟨"f.lean", "f.lean", 1, 1⟩) dualProtected
+
 -- The fallback signature is introduced by the keyword the author wrote, so the code block cannot
 -- say `theorem` under a card labelled "Lemma".
 #guard displaySignatureFallback .theorem `min_le "P" (isLemma := true) == "lemma min_le : P"
