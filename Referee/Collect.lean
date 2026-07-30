@@ -11,6 +11,7 @@ public import VersoManual
 public import VersoManual.Markdown
 public import LeanDeps
 public import LeanSpec
+public import Referee.SourceSyntax
 
 @[expose] public section
 
@@ -1531,6 +1532,79 @@ def displaySignatureFromSource (kind : DeclKind) (src? : Option SourceInfo) (lin
         | _ => headBeforeAssignment snippet
       if rendered.isEmpty then none else some rendered
 
+/-! ## Reading a declaration's keyword from parsed syntax
+
+Which keyword a declaration was written with is not recoverable from the compiled environment.
+Mathlib's `lemma` is a macro that erases itself before elaboration —
+
+```lean
+@[macro «lemma»] def expandLemma : Macro := fun stx =>
+  let stx := stx.modifyArg 1 fun stx =>
+    let stx := stx.modifyArg 0 (mkAtomFrom · "theorem" (canonical := true))
+    stx.setKind ``Parser.Command.theorem
+  pure <| stx.setKind ``Parser.Command.declaration
+```
+
+— so the elaborator only ever sees a theorem, `ConstantInfo` has nowhere to record the word, and no
+environment extension carries it. The source text is the only witness, which is why this is read
+back rather than looked up.
+
+Reading it by parsing rather than by matching the text is what makes it robust. `IO.processCommands`
+re-elaborates the file against the already-loaded environment and hands back each command's `Syntax`,
+so the answer comes from the same parser that accepted the file: modifiers on their own line, doc
+comments, multi-line attribute blocks and `set_option … in` wrappers are all just structure. It also
+settles the case the text can never settle — an *attribute-generated* declaration (`to_dual`,
+`to_additive`) whose recorded range covers only the attribute line falls inside the generating
+command, and so inherits its keyword by construction rather than by a lookahead heuristic.
+
+The string-based readers below remain as the fallback for a declaration whose range no parsed
+command covers.
+-/
+
+/-- What one parsed command says about the keyword its declarations were written with, and the line
+range it covers.
+
+Reduced to these flags at parse time rather than kept as `Syntax`: the whole point is one pass per
+file, and holding every command's tree for every project module at once is a great deal of memory
+for three bits. -/
+structure CommandKeyword where
+  startLine : Nat
+  endLine : Nat
+  isLemma : Bool
+  isInstance : Bool
+  isAlias : Bool
+deriving Repr, Inhabited
+
+/-- Parses `source` against `env` (`parseCommands`) and reports, per command, its line range and the
+keyword its declarations were written with. -/
+def commandKeywordsOf (env : Environment) (source : String) (filePath : String) :
+    IO (Array CommandKeyword) := do
+  let fileMap := source.toFileMap
+  let commands ← parseCommands env source filePath
+  return commands.filterMap fun stx =>
+    match stx.getPos?, stx.getTailPos? with
+    | some p, some e =>
+      some {
+        startLine := (fileMap.toPosition p).line
+        endLine := (fileMap.toPosition e).line
+        isLemma := containsSyntaxKind stx lemmaSyntaxKinds
+        isInstance := containsSyntaxKind stx instanceSyntaxKinds
+        isAlias := containsSyntaxKind stx aliasSyntaxKinds
+      }
+    | _, _ => none
+
+/-- The command covering `line`, or `none` if no parsed command does.
+
+Takes the last such command, so that a declaration inside a wrapper is attributed to the innermost
+enclosing one when ranges overlap. -/
+def commandKeywordAt? (cmds : Array CommandKeyword) (line : Nat) : Option CommandKeyword :=
+  cmds.foldl (init := none) fun best c =>
+    if c.startLine ≤ line && line ≤ c.endLine then
+      match best with
+      | some b => if c.startLine ≥ b.startLine then some c else best
+      | none => some c
+    else best
+
 /-- The modifiers Lean allows between a declaration's attributes and its keyword.
 
 Stripped only when reading the *keyword*, never from the displayed signature: `protected lemma foo`
@@ -1564,9 +1638,10 @@ partial def dropDeclModifiers (s : String) : String :=
 /-- True if the cleaned source snippet for a `theorem`-kind declaration starts with the `lemma`
 keyword rather than `theorem`.
 
-Reads past any visibility or binder modifier. Getting this wrong is not cosmetic: `isLemma` feeds
-`DeclInfo.isClaim`, so a `protected lemma` read as a theorem is promoted onto the Claims page, among
-the results the library asserts for their own sake. -/
+The **fallback** for `commandKeywordsOf`, used only where no parsed command covers a declaration's
+range. Reads past any visibility or binder modifier. Getting this wrong is not cosmetic: `isLemma`
+feeds `DeclInfo.isClaim`, so a `protected lemma` read as a theorem is promoted onto the Claims page,
+among the results the library asserts for their own sake. -/
 def isLemmaFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : Array String) : Bool :=
   if kind != .theorem then
     false
@@ -2309,12 +2384,16 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       acc.insert c.target ((acc.getD c.target #[]).push bundle)
   let mut cache : LeanDeps.Cache := {}
   let mut fileLines : Std.HashMap System.FilePath (Array String) := {}
+  -- Parsed once per file alongside its lines, and for the same reason: every declaration in a module
+  -- asks the same question of the same source.
+  let mut fileCommands : Std.HashMap System.FilePath (Array CommandKeyword) := {}
   let mut decls := #[]
   for (name, moduleName, info) in depsCtx.constants do
     if !depsCtx.exposed.contains name then
       continue
     let ranges? ← findRanges? env name
     let source? ← toSourceInfo? projectDir pkg moduleName ranges?
+    let mut text? : Option String := none
     let lines ← match source? with
       | none => pure #[]
       | some src =>
@@ -2324,10 +2403,29 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
             let text ← IO.FS.readFile src.absPath
             let ls := (text.splitOn "\n").toArray
             fileLines := fileLines.insert src.absPath ls
+            text? := some text
             pure ls
+    -- The command this declaration's range falls inside, which is where its keyword is read from.
+    let cmd? ← match source? with
+      | none => pure none
+      | some src => do
+        let cmds ← match fileCommands.get? src.absPath with
+          | some cs => pure cs
+          | none => do
+              let text ← match text? with
+                | some t => pure t
+                | none => IO.FS.readFile src.absPath
+              let cs ← commandKeywordsOf env text src.absPath.toString
+              fileCommands := fileCommands.insert src.absPath cs
+              pure cs
+        pure (commandKeywordAt? cmds src.line)
     let kind := declKindOf env info name
     let expandedSignature ← ppExprString env info.type
-    let isLemma := isLemmaFromSource kind source? lines
+    -- Parsed syntax when the range lands in a command, the source text otherwise.
+    let isLemma := (kind == .theorem &&
+        match cmd? with
+        | some c => c.isLemma
+        | none => isLemmaFromSource kind source? lines)
       || isSimpsGeneratedLemma env simpLemmaNames name info
     -- Before the signature, not after: an attribute-generated declaration has no source of its own
     -- to display and falls back to the pretty-printed type, which has to be introduced by the
@@ -2337,7 +2435,10 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       (displaySignatureFromSource kind source? lines).getD <|
         displaySignatureFallback kind name expandedSignature (isLemma := isLemma)
     let proofText? := proofTextFromSource kind source? lines
-    let isInstanceDecl := isInstanceFromSource kind source? lines
+    let isInstanceDecl := kind == .theorem &&
+      match cmd? with
+      | some c => c.isInstance
+      | none => isInstanceFromSource kind source? lines
     let isInstanceDecl := isInstanceDecl || (kind == .theorem && isInstanceName name)
     let doc? ← findDocString? env name
     let docBlocks :=
@@ -2374,7 +2475,9 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       axioms := axs
       isLemma := isLemma
       isInstanceDecl := isInstanceDecl
-      isAlias := isAliasFromSource source? lines
+      isAlias := match cmd? with
+        | some c => c.isAlias
+        | none => isAliasFromSource source? lines
       specifies := specsByTheorem.getD name #[]
       -- Only the forward direction here; `attachCharacterizes` fills in `characterizes` on the
       -- three declarations each bundle is made of, exactly as `attachSpecifiedBy` does.

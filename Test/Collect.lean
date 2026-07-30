@@ -197,6 +197,51 @@ private def loneAttribute : Array String :=
   #["attribute [to_dual existing] MeasurableInf₂"]
 #guard !isLemmaFromSource .theorem (some ⟨"f.lean", "f.lean", 1, 1⟩) loneAttribute
 
+/-! #### Reading the keyword from parsed syntax
+
+The primary reader. `commandKeywordsOf` needs an `Environment` and a real file, so what is checked
+here is the two pure pieces it is built from: finding a node of a given kind anywhere in a command,
+and attributing a declaration's line to the command that encloses it. -/
+
+private def stx (k : SyntaxNodeKind) (args : Array Syntax := #[]) : Syntax :=
+  Syntax.node Lean.SourceInfo.none k args
+
+#guard containsSyntaxKind (stx `lemma) lemmaSyntaxKinds
+#guard containsSyntaxKind (stx `Batteries.Tactic.Lemma.lemmaCmd) lemmaSyntaxKinds
+#guard !containsSyntaxKind (stx ``Lean.Parser.Command.theorem) lemmaSyntaxKinds
+#guard containsSyntaxKind (stx ``Lean.Parser.Command.instance) instanceSyntaxKinds
+#guard containsSyntaxKind (stx `Batteries.Tactic.Alias.aliasLR) aliasSyntaxKinds
+
+-- Wrapper commands (`set_option … in`, `open … in`, `omit … in`) must be seen through, which is why
+-- the whole tree is searched rather than just the head.
+#guard containsSyntaxKind (stx ``Lean.Parser.Command.in #[stx `null, stx `lemma]) lemmaSyntaxKinds
+#guard !containsSyntaxKind (stx ``Lean.Parser.Command.in #[stx `null, stx `null]) lemmaSyntaxKinds
+
+private def cmds : Array CommandKeyword := #[
+  { startLine := 1, endLine := 5, isLemma := true, isInstance := false, isAlias := false },
+  { startLine := 7, endLine := 9, isLemma := false, isInstance := false, isAlias := false }
+]
+
+#guard (commandKeywordAt? cmds 1).map (·.isLemma) == some true
+-- A declaration whose recorded range starts *inside* the command — an attribute-generated sibling,
+-- whose range covers only the attribute line — inherits that command's keyword. This is the case no
+-- amount of text matching can get right, because such a declaration has no source of its own.
+#guard (commandKeywordAt? cmds 3).map (·.isLemma) == some true
+#guard (commandKeywordAt? cmds 5).map (·.isLemma) == some true
+#guard (commandKeywordAt? cmds 8).map (·.isLemma) == some false
+-- Between and beyond commands there is nothing to attribute to, and the caller falls back to text.
+#guard (commandKeywordAt? cmds 6).isNone
+#guard (commandKeywordAt? cmds 99).isNone
+#guard (commandKeywordAt? #[] 1).isNone
+
+-- When ranges overlap, the innermost (latest-starting) command wins.
+private def nested : Array CommandKeyword := #[
+  { startLine := 1, endLine := 20, isLemma := false, isInstance := false, isAlias := false },
+  { startLine := 5, endLine := 8, isLemma := true, isInstance := false, isAlias := false }
+]
+#guard (commandKeywordAt? nested 6).map (·.isLemma) == some true
+#guard (commandKeywordAt? nested 15).map (·.isLemma) == some false
+
 /-! #### Modifiers between the attributes and the keyword
 
 A visibility or binder modifier sits where the keyword was being looked for, so `protected lemma`
