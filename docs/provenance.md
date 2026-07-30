@@ -11,8 +11,13 @@ lake env "$REFEREE" collect --root MyLibrary --hashes hashes.jsonl --data data.j
 ```
 
 `provenance` needs a git working tree but no Lean environment, so it is a phase of its own between
-`collect` and `build-site`. Commit `provenance.json` and run the subcommand once per release (or
-per commit, in CI); each run folds that revision into the ledger and the file accumulates.
+`collect` and `build-site`. Run it once per release, or per commit in CI; each run folds that
+revision into the ledger and the file accumulates.
+
+Keep the ledger somewhere it survives the run and is *not* in the working tree: in CI that means a
+branch of its own, checked out under `/tmp` — see [running in CI](ci.md#the-provenance-ledger) for
+why both halves of that matter. An untracked `provenance.json` beside the source makes every fold
+look like it came from a dirty tree.
 
 **Two facts, never merged.** Every declaration carries when its *file* was last edited (`git blame`
 over its source range — textual, and no evidence at all about meaning) and when its *meaning* last
