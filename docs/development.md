@@ -2,20 +2,26 @@
 
 ## Code Layout
 
-- `LeanDeps.lean` — the dependency analysis, as a **standalone library** (`lean_lib LeanDeps`)
-  that depends on Lean core only: no Lake, no Verso, no notion of a site or of an output format.
-  It answers, for every declaration of a project, which constants its type uses and which its type
-  and body use, looking through compiler-generated helpers (`_proof_N`, `match_N`, field defaults)
-  and recovering the dependencies an elaborated term drops (`Expr.proj` structures, notation
-  expansions, coercion instances). It also holds the graph passes that run on the result: reverse
-  edges and transitive closure in topological order. Entry points: `LeanDeps.Context.of` /
-  `Context.declDeps` / `declDepsOf`.
-- `LeanSpec/` — the `@[specifies]` attribute, as a **separate Lake package** rather than a library
-  of this one. It is the only part of this repository a target project depends on, so it must not
-  pull Verso along with it: Lean core only, one file, no dependencies. This package depends on it
-  too, for the other end of the same wire — reading the annotations back out of a compiled project
-  requires the environment extension to be registered in the reading process. See
-  [`LeanSpec/README.md`](../LeanSpec/README.md).
+Two of the three libraries here are **separate Lake packages**, not libraries of this one, and for
+the same reason: each is useful to a project that has no interest in building a site, and requiring
+one must not drag Verso and the rest of this tool's build along with it. Lake's dependency unit is
+the package, so a `lean_lib` of this package could not be required in isolation. Referee requires
+both by path (`require … from "LeanSpec"`), which is the same package an outside project requires
+from git with `/ "LeanSpec"`.
+
+- `LeanDeps/` — the dependency analysis. Lean core only: no Lake, no Verso, no notion of a site or
+  of an output format. It answers, for every declaration of a project, which constants its type uses
+  and which its type and body use, looking through compiler-generated helpers (`_proof_N`,
+  `match_N`, field defaults) and recovering the dependencies an elaborated term drops (`Expr.proj`
+  structures, notation expansions, coercion instances). It also holds the graph passes that run on
+  the result: reverse edges and transitive closure in topological order. Entry points:
+  `LeanDeps.Context.of` / `Context.declDeps` / `declDepsOf`. See
+  [`LeanDeps/README.md`](../LeanDeps/README.md).
+- `LeanSpec/` — the `@[specifies]` attribute. It is the part of this repository a *target* project
+  depends on, so it must not pull Verso along with it: Lean core only, one file, no dependencies.
+  This package depends on it too, for the other end of the same wire — reading the annotations back
+  out of a compiled project requires the environment extension to be registered in the reading
+  process. See [`LeanSpec/README.md`](../LeanSpec/README.md).
 - `Referee/Collect.lean` — walks the environment and builds one `DeclInfo` per exposed
   declaration (signature, docstring, source snippet, kind), delegating all dependency computation to
   `LeanDeps` and deciding only which edges Referee follows. There are two such choices:

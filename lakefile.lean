@@ -16,6 +16,15 @@ target project needs the environment extension registered in *this* process, sin
 extension entries are matched to registered extensions by name and silently dropped otherwise. -/
 require LeanSpec from "LeanSpec"
 
+/-- Declaration-dependency analysis, as a *separate, dependency-free package* rather than a library
+of this one, for the same reason as `LeanSpec`: it is useful on its own to any project that wants to
+know what its declarations rest on, and requiring it must not drag in Verso and the rest of this
+tool's build.
+
+This tool is one such consumer — `Referee/Collect.lean` delegates every dependency computation to
+it — but it is not a privileged one. -/
+require LeanDeps from "LeanDeps"
+
 /--
 The site's CSS and JavaScript, authored as real files and embedded with `include_str`.
 
@@ -27,10 +36,6 @@ Verso declares its own web assets the same way.
 input_dir websiteAssets where
   text := true
   path := "Referee/Website/assets"
-
-/-- Standalone declaration-dependency analysis: depends on Lean core only, and on nothing else in
-this repo. Kept a separate library so that dependency direction stays enforced by the build. -/
-lean_lib LeanDeps
 
 lean_lib Referee where
   needs := #[websiteAssets]

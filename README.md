@@ -53,6 +53,22 @@ self-contained with its transitive dependencies inlined and proofs replaced by `
 smallest thing a reader can check a statement against, optionally linked into the
 [web editor](https://live.lean-lang.org).
 
+## Usable without the rest
+
+Two pieces are separate, dependency-free Lake packages — Lean core only — so a project can take
+either one without taking Referee's build (Verso, SubVerso, MD4Lean, …) along with it. Referee is a
+consumer of both, not their owner.
+
+| | |
+|---|---|
+| [`LeanDeps/`](LeanDeps/) | What every declaration rests on: the constants its statement uses, and the ones its statement and proof use — recovering the four things an elaborated term drops (compiler helpers, `Expr.proj` structures, notation expansions, coercion instances) — plus reverse edges and transitive closure in topological order. |
+| [`LeanSpec/`](LeanSpec/) | `@[specifies]` and `@[characterization]`: which theorems their author offers as the specification of a definition, and which properties pin one down uniquely. |
+
+```lean
+require LeanDeps from git
+  "https://github.com/LeanMachineLearning/exposition" @ "main" / "LeanDeps"
+```
+
 ## Status
 
 Alpha. The validated execution path is: build this repo's executable, then run it inside the target
