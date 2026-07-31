@@ -343,6 +343,51 @@ say something about the shape: the sort is presentational, the fold is the seman
 the first inside the second puts the whole result out of reach. Splitting them would make "every
 entry the ledger had is still there" a statement about `foldRevision` itself.
 
+## Carrying the proofs across the serialization gap
+
+`transitiveDeps_closed` is a theorem about the **function** `LeanDeps.transitiveDeps`. What the site
+renders is `DeclInfo.dataTransDeps`, loaded from `data.json`. Between them:
+
+```
+transitiveDeps  →  collect calls it  →  toJson + intern  →  parse + resolve + fromJson?  →  render
+    proved            Collect.lean          unproved         provably out of reach (item 1)
+```
+
+Until now `loadCollectedData` checked the format version and **nothing else**. So the closure
+properties were proved at one end of that chain and unchecked at the other, with the one link this
+document shows is unreachable sitting in the middle. A theorem about a producer establishes nothing
+about the value a consumer holds.
+
+`CollectedData.integrityViolations` closes it from the other end: the proved properties, restated as
+assertions on the *decoded* data, run on every `build-site`.
+
+- a declaration never appears in its own closure;
+- no closure has repeated entries (`topologicalClosure_nodup`);
+- every direct dependency is in the closure (`mem_topologicalClosure_of_mem_start`);
+- the closure is closed under taking dependencies (`transitiveDeps_closed`) — the one a reader could
+  never spot, and the one three separate features assume.
+
+Upstream constants are leaves: they carry no recorded edges, so a closure mentioning one is not
+required to contain anything beyond it.
+
+**Measured.** Zero violations on `LeanDeps` (48 declarations) and on `Referee` itself (777), about
+two seconds including the decode. Deleting one name from one closure is caught and reported by name:
+
+```
+data3.json: collected data failed its own consistency checks:
+  Referee.lemmaSyntaxKinds: dataTransDeps omits its direct dependency Lean.SyntaxNodeKind
+```
+
+with exit code 1, so CI stops rather than publishing a site whose closures are quietly wrong.
+`Test/Collect.lean` pins that the checker *fires*: one fixture per property, each violating exactly
+that property — a checker that can only pass is worth nothing.
+
+**Why this ranks above another theorem.** It is the only thing here that defends against the failure
+modes proofs cannot reach at all: a truncated write, a bad merge, a version skew, or a future change
+that stops routing a closure through `LeanDeps.transitiveDeps` and quietly detaches every theorem
+above from the data below.
+
+
 ## Pinning past bugs
 
 A different way to choose targets: not "what is provable" but "what has already gone wrong". Three

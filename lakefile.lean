@@ -42,7 +42,7 @@ lean_lib Referee where
 
 lean_lib Test where
   globs := #[`Test, `Test.Audit, `Test.Characterization, `Test.Collect, `Test.Deps, `Test.Diff,
-    `Test.Extract, `Test.Provenance, `Test.Spec]
+    `Test.Extract, `Test.Highlight, `Test.Provenance, `Test.Spec]
 
 /-- Theorems about the library, as opposed to the `#guard` examples in `Test`.
 

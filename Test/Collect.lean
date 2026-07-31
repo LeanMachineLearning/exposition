@@ -636,6 +636,71 @@ private def sampleDeclForJson : DeclInfo := {
   docstringBlock? := some (.para #[.code "bar"])
 }
 
+
+/-! ## Integrity of decoded collected data
+
+`Proofs/Deps.lean` proves the closure properties of the *functions* that build `transDeps` and
+`dataTransDeps`. `CollectedData.integrityViolations` restates them as checks on the decoded value,
+which is what carries them across the unproved `intern`/`resolve` round trip.
+
+A checker that never fires is worth nothing, so what is pinned here is that it fires: one fixture
+per property, each violating exactly that property, plus a well-formed one that passes. -/
+
+private def depDecl (name : Name) (deps : Array Name) (trans : Array Name) : DeclInfo := {
+  name := name
+  moduleName := `Foo
+  modulePath := "Foo.lean"
+  groupKey := "Foo"
+  kind := .definition
+  displaySignature := "def x := 0"
+  expandedSignature := "def x : Nat"
+  docBlocks := #[]
+  proofText? := none
+  source? := none
+  deps := deps
+  typeDeps := deps
+  dataDeps := deps
+  transDeps := trans
+  dataTransDeps := trans
+}
+
+/-- `a` depends on `b`, `b` on `c`; closures are topologically ordered and self-excluding. -/
+private def goodChain : CollectedData := {
+  rootPrefix := `Foo
+  decls := #[depDecl `Foo.c #[] #[], depDecl `Foo.b #[`Foo.c] #[`Foo.c],
+             depDecl `Foo.a #[`Foo.b] #[`Foo.c, `Foo.b]]
+  moduleOrder := #[(`Foo, 0)]
+  moduleDocs := #[]
+  readmeText := none
+}
+
+private def withDecls (ds : Array DeclInfo) : CollectedData := { goodChain with decls := ds }
+
+-- The well-formed chain passes every check.
+#guard goodChain.integrityViolations.isEmpty
+#guard goodChain.integrityReport.isNone
+
+-- A declaration must not appear in its own closure (`transitiveDeps` filters it out).
+#guard !(withDecls #[depDecl `Foo.c #[] #[], depDecl `Foo.b #[`Foo.c] #[`Foo.c],
+  depDecl `Foo.a #[`Foo.b] #[`Foo.c, `Foo.b, `Foo.a]]).integrityViolations.isEmpty
+
+-- No repeats (`topologicalClosure_nodup`).
+#guard !(withDecls #[depDecl `Foo.c #[] #[], depDecl `Foo.b #[`Foo.c] #[`Foo.c],
+  depDecl `Foo.a #[`Foo.b] #[`Foo.c, `Foo.b, `Foo.b]]).integrityViolations.isEmpty
+
+-- The closure contains what it was seeded with (`mem_topologicalClosure_of_mem_start`).
+#guard !(withDecls #[depDecl `Foo.c #[] #[], depDecl `Foo.b #[`Foo.c] #[`Foo.c],
+  depDecl `Foo.a #[`Foo.b] #[`Foo.c]]).integrityViolations.isEmpty
+
+-- The closure is closed under taking dependencies (`transitiveDeps_closed`): `a` reaches `b`, and
+-- `b` depends on `c`, so `c` must be there too. This is the one a textual eye-check would miss.
+#guard !(withDecls #[depDecl `Foo.c #[] #[], depDecl `Foo.b #[`Foo.c] #[`Foo.c],
+  depDecl `Foo.a #[`Foo.b] #[`Foo.b]]).integrityViolations.isEmpty
+
+-- Upstream constants are leaves: they carry no recorded edges, so a closure mentioning one is not
+-- required to contain anything further.
+#guard (withDecls #[depDecl `Foo.a #[`Nat.add] #[`Nat.add]]).integrityViolations.isEmpty
+
 /-! ## Semantic hash records
 
 The one place this tool depends on the *encoding* of another's output. Lean serializes `UInt64` as

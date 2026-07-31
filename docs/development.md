@@ -61,7 +61,11 @@ from git with `/ "LeanSpec"`.
 - `Referee/Extract.lean` — the standalone `.lean` file extraction (see `KNOWN-ISSUES.md`).
 - `Referee/Highlight.lean` — source-text highlighting. Runs the Lean frontend over a file and
   returns SubVerso `Highlighted` per command, tagged with the names each command defines, plus any
-  elaboration errors. Depends on Lean and SubVerso only — it knows nothing about the site.
+  elaboration errors. Depends on Lean and SubVerso only — it knows nothing about the site. `declCode`
+  is the exception to "one command in, one command out": it trims a command down to what a
+  declaration *card* shows — no docstring, since the card renders that above the code, and no leading
+  blank lines. Pure, and unit-tested in `Test/Highlight.lean`; a whole extracted file is rendered
+  from the untrimmed highlighting.
 - `Referee/Website/Site.lean` — Verso page construction and the CLI subcommands. The site's
   CSS and JavaScript live in `Referee/Website/assets/` as real files and are embedded with
   `include_str`. D3 is vendored there too rather than fetched from a CDN at page load. Everything
@@ -96,6 +100,13 @@ from git with `/ "LeanSpec"`.
 
 Both are built by CI (`.github/workflows/lean_action_ci.yml`) as an explicit step, because neither
 is a default Lake target and so neither is covered by a plain `lake build`.
+
+Between the two sits `CollectedData.integrityViolations`, which is neither: it restates what
+`Proofs/Deps.lean` proves about the closure-building *functions* as assertions on the *decoded*
+`data.json`, and `build-site` fails rather than render data that violates them. The proofs stop at
+`toJson`; the file, the interning and the parse are unproved, so the properties have to be re-checked
+where the renderer actually holds the value. See [What of this could be proved
+correct](design/VERIFICATION.md).
 
 
 ## Theme

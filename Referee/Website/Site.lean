@@ -1122,12 +1122,19 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
     -- no gain. The highlighted rendering covers the whole command, so it is only used where the
     -- whole command is wanted; a statement-only view falls back to the trimmed source text, which
     -- loses hover types but keeps the pretty-printed signature above, which has them.
+    --
+    -- `Highlight.declCode` is what keeps the whole command from including the docstring: it is part
+    -- of the command, and the card has just rendered it above. The text fallback never had the
+    -- problem — `displaySignature` is cleaned of docstring and attributes at collection time — which
+    -- is why the duplicate showed on definitions and structures and not on theorems.
     let showsBody :=
       match decl.kind with
       | .definition | .structure | .typeclass | .inductive => true
       | _ => false
     blocks := blocks.push <|
-      if showsBody then leanCodeBlock (ctx.declHighlights.get? decl.name) decl.displaySignature
+      if showsBody then
+        leanCodeBlock ((ctx.declHighlights.get? decl.name).map (Highlight.declCode decl.name))
+          decl.displaySignature
       else .code decl.displaySignature
     -- The proof, then the links. Nothing about the declaration's dependencies: "Type uses" is the
     -- expanded *Its statement mentions* list further down, "Body uses" is inside *Everything it rests
@@ -3270,7 +3277,14 @@ private def loadCollectedData (path : String) : IO CollectedData := do
     throw <| IO.userError s!"{path} is collected-data version {fileVersion}, but this build \
       expects version {collectedDataVersion}. Re-run the `collect` subcommand to regenerate it."
   match decodeCollectedData json with
-  | .ok data => pure data
+  | .ok data =>
+    -- The closures are built by functions `Proofs/Deps.lean` proves correct, but what arrives here
+    -- has been through `intern`, a file and `resolve`, and that round trip is *not* proved. Checking
+    -- the proved properties on the decoded value is what carries them across the gap: see
+    -- `CollectedData.integrityViolations`.
+    if let some report := data.integrityReport then
+      throw <| IO.userError s!"{path}: {report}"
+    pure data
   | .error err => throw <| IO.userError s!"Failed to decode collected data from {path}: {err}"
 
 /-- Builds and renders the Verso site from already-collected data. Needs no Lean environment

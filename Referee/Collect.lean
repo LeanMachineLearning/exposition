@@ -2581,6 +2581,72 @@ believe this", and the answer never includes a lemma some proof merely called. -
 def meaningDeps (decl : DeclInfo) : Array Name :=
   meaningDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps decl.dataDeps
 
+/-! ## Integrity of the collected data
+
+`Proofs/Deps.lean` proves these properties of the *functions* that build the closures —
+`transitiveDeps_closed`, `topologicalClosure_nodup`, `mem_topologicalClosure_of_mem_start`. What the
+site renders is not those functions' output but a `CollectedData` that has been through `toJson`,
+`intern`, a file, `Json.parse`, `resolve` and `fromJson?`. The round trip across that boundary is
+*not* proved — see `Proofs/Collect.lean` for why it is out of reach in this toolchain — so a theorem
+about the producer establishes nothing about the value the renderer holds.
+
+These checks close that gap from the other end. They restate the proved properties as assertions on
+the decoded data, so that a violation — from a corrupted file, a truncated write, a version skew, or
+a future change that stops routing a closure through `LeanDeps.transitiveDeps` — is reported rather
+than rendered.
+
+The site is a trust instrument; rendering a closure that is quietly wrong is worse than failing.
+-/
+
+/-- How many violations to list before summarizing. A corrupt file tends to fail every check at
+once, and a wall of near-identical lines buries the useful first one. -/
+def maxReportedViolations : Nat := 12
+
+/-- Internal consistency checks on decoded collected data, as reader-facing messages. Empty when
+the data satisfies everything `Proofs/Deps.lean` proves of the functions that produced it.
+
+Each check names the theorem it restates, so a failure points at whether the *property* is wrong or
+the *data* is. -/
+def CollectedData.integrityViolations (data : CollectedData) : Array String := Id.run do
+  let byName : Std.HashMap Name DeclInfo :=
+    data.decls.foldl (fun m d => m.insert d.name d) {}
+  let mut out : Array String := #[]
+  for decl in data.decls do
+    for (label, closure, direct) in
+        #[("transDeps", decl.transDeps, closureDeps decl),
+          ("dataTransDeps", decl.dataTransDeps, meaningDeps decl)] do
+      let inClosure : Std.HashSet Name := closure.foldl (fun s n => s.insert n) {}
+      -- `transitiveDeps` filters the declaration itself out of its own closure.
+      if closure.contains decl.name then
+        out := out.push s!"{decl.name}: {label} contains the declaration itself"
+      -- `topologicalClosure_nodup`.
+      if inClosure.size != closure.size then
+        out := out.push s!"{decl.name}: {label} has repeated entries           ({closure.size} entries, {inClosure.size} distinct)"
+      -- `mem_topologicalClosure_of_mem_start`: the closure contains what it was seeded with.
+      for d in direct do
+        unless d == decl.name || inClosure.contains d do
+          out := out.push s!"{decl.name}: {label} omits its direct dependency {d}"
+      -- `transitiveDeps_closed`: the closure is closed under taking dependencies. Only project
+      -- declarations have recorded edges; an upstream constant is a leaf here.
+      for y in closure do
+        if let some ydecl := byName[y]? then
+          let yDirect := if label == "transDeps" then closureDeps ydecl else meaningDeps ydecl
+          for z in yDirect do
+            unless z == decl.name || inClosure.contains z do
+              out := out.push s!"{decl.name}: {label} is not closed — contains {y},                 which depends on {z}, which is absent"
+  return out
+
+/-- Formats `integrityViolations` for a command-line error, truncated to `maxReportedViolations`. -/
+def CollectedData.integrityReport (data : CollectedData) : Option String :=
+  let vs := data.integrityViolations
+  if vs.isEmpty then none
+  else
+    let shown := vs.extract 0 maxReportedViolations
+    let more := if vs.size > maxReportedViolations then
+        s!"\n  … and {vs.size - maxReportedViolations} more" else ""
+    some <| "collected data failed its own consistency checks:\n  "
+      ++ String.intercalate "\n  " shown.toList ++ more
+
 /-- Adds the reverse of the `@[specifies]` links: each definition learns which of the exposed
 theorems its author declared to be part of its specification.
 
