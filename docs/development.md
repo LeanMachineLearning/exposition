@@ -80,6 +80,22 @@ from git with `/ "LeanSpec"`.
   page, so exhaustive testing is cheap — and for provenance it is close to required, because the
   ledger is append-only and a fold that records a change where none happened writes that into the
   record for good.
+- `Proofs/` — theorems about the library (`lake build Proofs`), where `Test/` has examples. Today it
+  covers the two pure comparison passes. `Proofs/Diff.lean`: the relations between `ChangeKind`'s
+  four predicates, the `fullyHashed` guard on the churn heuristic, and that `normalizeSpace` is a
+  genuine canonical form rather than merely a shorter string. `Proofs/Collect.lean`: the forward-pass
+  discipline of the `data.json` decoder — and the two `sizeOf` lemmas that let `intern`/`resolve`
+  stop being `partial` at all, which is what makes any of it provable. `Proofs/Provenance.lean`: that the
+  ledger's fold records no change where none happened, reports no more changes than declarations,
+  forgets nothing, and appends without rewriting — the invariants that matter because the ledger is
+  the one artifact here that a later build cannot correct. The two answer different questions and
+  fail differently — a
+  `#guard` regression says one input now behaves differently, a broken proof says a claim the
+  documentation makes has stopped being true. What is proved, what is not, and why, is in
+  [What of this could be proved correct](design/VERIFICATION.md).
+
+Both are built by CI (`.github/workflows/lean_action_ci.yml`) as an explicit step, because neither
+is a default Lake target and so neither is covered by a plain `lake build`.
 
 
 ## Theme

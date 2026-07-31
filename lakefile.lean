@@ -44,6 +44,14 @@ lean_lib Test where
   globs := #[`Test, `Test.Audit, `Test.Characterization, `Test.Collect, `Test.Deps, `Test.Diff,
     `Test.Extract, `Test.Provenance, `Test.Spec]
 
+/-- Theorems about the library, as opposed to the `#guard` examples in `Test`.
+
+Kept a separate target because the two answer different questions and fail differently: a `#guard`
+regression says one input now behaves differently, a broken proof says a claim the documentation
+makes is no longer true. Run with `lake build Proofs`. -/
+lean_lib Proofs where
+  globs := #[`Proofs, `Proofs.Collect, `Proofs.Deps, `Proofs.Diff, `Proofs.Provenance]
+
 @[default_target]
 lean_exe referee where
   root := `Main

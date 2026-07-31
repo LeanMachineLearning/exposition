@@ -217,6 +217,46 @@ def provenanceKind (prev : ProvenanceEntry) (decl : DeclInfo) : ChangeKind :=
   else if decl.bodyIsMeaning then .bodyChanged
   else .upstream
 
+/-- The fold's running state: how many declarations changed meaning at this revision, which names
+the revision exposed, and the entries built so far. -/
+structure FoldState where
+  changed : Nat := 0
+  seen : Std.HashSet Name := {}
+  entries : Array ProvenanceEntry := #[]
+
+/-- One declaration's contribution to the fold, against `previous` (the ledger as it stood) at
+revision index `idx`.
+
+Named rather than written inline in `foldRevision`'s loop so that the ledger's invariants can be
+stated about it and proved by induction — the append-only guarantee is only worth as much as the
+step that maintains it. See `Proofs/Provenance.lean`. -/
+def foldDecl (previous : Std.HashMap Name ProvenanceEntry) (idx : Nat)
+    (st : FoldState) (decl : DeclInfo) : FoldState :=
+  let meaning := decl.proofIrrelHash?.getD ""
+  let statement := statementKey decl
+  let seen := st.seen.insert decl.name
+  match previous.get? decl.name with
+  | none =>
+    -- First sighting. Not a change: there is nothing it changed *from*, and counting it as one
+    -- would report a fresh ledger as a revision in which the entire library moved.
+    { st with seen, entries := st.entries.push {
+        name := decl.name, meaning, statement,
+        changedAt := idx, firstSeenAt := idx, changeCount := 0, lastKind := "" } }
+  | some old =>
+    if old.meaning == meaning then
+      -- The statement is still refreshed: it is the baseline the *next* fold compares against,
+      -- and letting it go stale would make a later direct change look inherited.
+      { st with seen, entries := st.entries.push { old with statement } }
+    else
+      { changed := st.changed + 1
+        seen := seen
+        entries := st.entries.push {
+          old with
+          meaning, statement,
+          changedAt := idx,
+          changeCount := old.changeCount + 1,
+          lastKind := (provenanceKind old decl).slug } }
+
 /-- Folds one revision into the ledger.
 
 `decls` are the declarations as collected at `rev`; every one of them must carry a semantic hash,
@@ -224,45 +264,14 @@ which the caller checks. A declaration that has vanished keeps its entry untouch
 records what it saw, and forgetting a removed declaration would lose the provenance a reader needs
 if it comes back. -/
 def foldRevision (prev : Provenance) (rev : RevisionInfo) (decls : Array DeclInfo) : Provenance :=
-    Id.run do
   let idx := prev.revisions.size
-  let previous := prev.byName
-  let mut changed := 0
-  let mut seen : Std.HashSet Name := {}
-  let mut entries : Array ProvenanceEntry := #[]
-  for decl in decls do
-    seen := seen.insert decl.name
-    let meaning := decl.proofIrrelHash?.getD ""
-    let statement := statementKey decl
-    match previous.get? decl.name with
-    | none =>
-      -- First sighting. Not a change: there is nothing it changed *from*, and counting it as one
-      -- would report a fresh ledger as a revision in which the entire library moved.
-      entries := entries.push {
-        name := decl.name, meaning, statement,
-        changedAt := idx, firstSeenAt := idx, changeCount := 0, lastKind := ""
-      }
-    | some old =>
-      if old.meaning == meaning then
-        -- The statement is still refreshed: it is the baseline the *next* fold compares against,
-        -- and letting it go stale would make a later direct change look inherited.
-        entries := entries.push { old with statement }
-      else
-        changed := changed + 1
-        entries := entries.push {
-          old with
-          meaning, statement,
-          changedAt := idx,
-          changeCount := old.changeCount + 1,
-          lastKind := (provenanceKind old decl).slug
-        }
+  let st := decls.foldl (foldDecl prev.byName idx) {}
   -- Entries for declarations this revision does not expose, kept as they were.
-  for old in prev.entries do
-    unless seen.contains old.name do
-      entries := entries.push old
-  return { prev with
+  let entries := prev.entries.foldl
+    (fun acc old => if st.seen.contains old.name then acc else acc.push old) st.entries
+  { prev with
     version := provenanceVersion
-    revisions := prev.revisions.push { rev with declCount := decls.size, changedCount := changed }
+    revisions := prev.revisions.push { rev with declCount := decls.size, changedCount := st.changed }
     entries := entries.qsort fun a b => Name.lt a.name b.name }
 
 /-! ## Render payloads

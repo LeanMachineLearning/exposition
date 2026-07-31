@@ -12,5 +12,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: leanprover/lean-action@v1
+
+      # `lake build` builds the default target, which is the `referee` executable alone. `Test` and
+      # `Proofs` are separate Lake targets, so until this step existed neither the `#guard`s nor the
+      # theorems were checked here — the build could go green with both broken. Both are checked at
+      # elaboration time, so building them is running them.
+      #
+      # Placed before packaging so a failure stops the run rather than producing a binary from a
+      # tree that does not pass its own checks.
+      - name: Build tests and proofs
+        run: lake build Test Proofs
+
       - name: Package referee binary
         run: ./scripts/package-referee-binary.sh

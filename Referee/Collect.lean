@@ -744,17 +744,61 @@ numerous thing in the encoded form. No Lean structure field or `Name` component 
 `intern` checks rather than assuming (see `usesInternKey`). -/
 def internKey : String := "$i"
 
+/-! ### Recursing over `Json` without `partial`
+
+The three functions below walk a `Json` tree. Every recursive call is on a strict subterm, but Lean
+cannot see that on its own: `Json` is a *nested* inductive whose object case holds a
+`Std.TreeMap.Raw`, and folding over that tree hands the termination checker a value with no evidence
+tying it to the tree. `Array` and `List` ship `sizeOf_lt_of_mem`; the tree containers do not. That
+single gap is why every recursion over `Json` in Lean core — `beq'`, `hash'`, `render`, `compress` —
+is `partial`.
+
+The two lemmas here close it, and the walks below are therefore ordinary total definitions with
+equations a proof can use. That matters because this is the on-disk format: `Proofs/Collect.lean`
+proves that `resolve` inverts `intern`, which is not a statement one can even *make* about a
+`partial def`. -/
+
+/-- Values stored in a tree map are strict subterms of it, over the structural flattening
+`toListModel` that core defines for verification. No well-formedness hypothesis: this is about the
+tree's shape, not its ordering. -/
+theorem sizeOf_lt_of_mem_toListModel {m : Std.DTreeMap.Internal.Impl String (fun _ => Json)}
+    {p : (_ : String) × Json} (h : p ∈ m.toListModel) : sizeOf p.2 < sizeOf m := by
+  induction m with
+  | leaf => simp at h
+  | inner sz k v l r ihl ihr =>
+    rw [Std.DTreeMap.Internal.Impl.toListModel_inner] at h
+    rcases List.mem_append.mp h with h' | h'
+    · have := ihl h'; simp; omega
+    · rcases List.mem_cons.mp h' with rfl | h''
+      · simp; omega
+      · have := ihr h''; simp; omega
+
+/-- The same for the public `toList`, which is what the walks below iterate. This is the fact
+`decreasing_by` needs in every object case. -/
+theorem objPairs_sizeOf {fields : Std.TreeMap.Raw String Json} {p : String × Json}
+    (h : p ∈ fields.toList) : sizeOf p.2 < sizeOf fields := by
+  obtain ⟨⟨impl⟩⟩ := fields
+  rw [Std.TreeMap.Raw.toList, Std.DTreeMap.Raw.Const.toList,
+    Std.DTreeMap.Internal.Impl.Const.toList_eq_toListModel_map] at h
+  obtain ⟨q, hq, rfl⟩ := List.mem_map.mp h
+  have := sizeOf_lt_of_mem_toListModel hq
+  simp at this ⊢
+  omega
+
 /-- True if any object in `j` already uses `internKey`.
 
 `intern` refuses to encode such a document, because a payload object of exactly that shape would be
 indistinguishable from a reference and would decode to something else entirely. Nothing Referee
 serializes can produce the key, so this is a guard against a future field, not a live case. -/
-partial def usesInternKey (j : Json) : Bool :=
+def usesInternKey (j : Json) : Bool :=
   match j with
-  | .obj fields => fields.foldl (init := false) fun acc k v =>
-      acc || k == internKey || usesInternKey v
-  | .arr elems => elems.any usesInternKey
+  | .obj fields => fields.toList.attach.any fun p => p.1.1 == internKey || usesInternKey p.1.2
+  | .arr elems => elems.attach.any fun e => usesInternKey e.1
   | _ => false
+termination_by sizeOf j
+decreasing_by
+  · have := objPairs_sizeOf p.2; simp; omega
+  · have := Array.sizeOf_lt_of_mem e.2; simp; omega
 
 /-- Smallest compressed size, in bytes, a subtree must reach before it is worth interning.
 
@@ -787,37 +831,40 @@ for a reference.
 
 Because children are interned before their parent, every reference inside table entry `i` points to
 an index below `i`. `resolve` relies on that ordering to rebuild the table in one forward pass. -/
-partial def internAux (j : Json) (st0 : InternState) : Json × InternState := Id.run do
-  let mut st := st0
-  let node : Json ←
+def internAux (j : Json) (st0 : InternState) : Json × InternState :=
+  let (node, st) : Json × InternState :=
     match j with
-    | .arr elems => do
-      let mut out : Array Json := #[]
-      for e in elems do
-        let (e, st') := internAux e st
-        st := st'
-        out := out.push e
-      pure (.arr out)
-    | .obj fields => do
-      let pairs := fields.foldl (init := (#[] : Array (String × Json))) fun acc k v => acc.push (k, v)
-      let mut out : List (String × Json) := []
-      for (k, v) in pairs do
-        let (v, st') := internAux v st
-        st := st'
-        out := (k, v) :: out
-      pure (Json.mkObj out)
-    | leaf => pure leaf
+    | .arr elems =>
+      let (out, st) := elems.attach.foldl (init := ((#[] : Array Json), st0))
+        fun (acc : Array Json × InternState) e =>
+          let (e', st') := internAux e.1 acc.2
+          (acc.1.push e', st')
+      (Json.arr out, st)
+    | .obj fields =>
+      -- `toList` is ascending by key, the order the previous `fields.foldl` produced; `out` is built
+      -- reversed and handed to `mkObj`, which re-sorts, so the object is unchanged either way.
+      let (out, st) := fields.toList.attach.foldl (init := (([] : List (String × Json)), st0))
+        fun (acc : List (String × Json) × InternState) p =>
+          let (v', st') := internAux p.1.2 acc.2
+          ((p.1.1, v') :: acc.1, st')
+      (Json.mkObj out, st)
+    | leaf => (leaf, st0)
   -- A leaf is never tabled. `internMinSize` excludes every number and boolean, and a string long
   -- enough to qualify is already shared by the parse rather than copied per occurrence.
   let isComposite := match node with | .arr _ | .obj _ => true | _ => false
   if !isComposite || node.compress.length < internMinSize then
-    return (node, st)
-  match st.index[node]? with
-  | some i => return (Json.mkObj [(internKey, toJson i)], st)
-  | none =>
-    let i := st.table.size
-    return (Json.mkObj [(internKey, toJson i)],
-      { table := st.table.push node, index := st.index.insert node i })
+    (node, st)
+  else
+    match st.index[node]? with
+    | some i => (Json.mkObj [(internKey, toJson i)], st)
+    | none =>
+      let i := st.table.size
+      (Json.mkObj [(internKey, toJson i)],
+        { table := st.table.push node, index := st.index.insert node i })
+termination_by sizeOf j
+decreasing_by
+  · have := Array.sizeOf_lt_of_mem e.2; simp; omega
+  · have := objPairs_sizeOf p.2; simp; omega
 
 /-- Replaces every repeated subtree of `j` with a reference into a table, returning the table and the
 rewritten document. Returns an empty table and `j` unchanged when `usesInternKey` says the document
@@ -834,9 +881,9 @@ def intern (j : Json) : Array Json × Json :=
 A reference is an object whose only field is `internKey` carrying a whole number in range; anything
 else is real data and is rebuilt field by field. An out-of-range index is left alone rather than
 raising, which is what lets a document with an empty table round-trip unchanged. -/
-partial def resolveAgainst (resolved : Array Json) (j : Json) : Json :=
+def resolveAgainst (resolved : Array Json) (j : Json) : Json :=
   match j with
-  | .arr elems => .arr (elems.map (resolveAgainst resolved))
+  | .arr elems => .arr (elems.attach.map fun e => resolveAgainst resolved e.1)
   | .obj fields =>
     let ref? : Option Nat := do
       let .num n ← fields.get? internKey | none
@@ -848,9 +895,13 @@ partial def resolveAgainst (resolved : Array Json) (j : Json) : Json :=
     match ref? with
     | some i => resolved[i]!
     | none =>
-      Json.mkObj <| (fields.foldl (init := (#[] : Array (String × Json))) fun acc k v =>
-        acc.push (k, resolveAgainst resolved v)).toList
+      Json.mkObj <| (fields.toList.attach.foldl (init := (#[] : Array (String × Json)))
+        fun acc p => acc.push (p.1.1, resolveAgainst resolved p.1.2)).toList
   | leaf => leaf
+termination_by sizeOf j
+decreasing_by
+  · have := Array.sizeOf_lt_of_mem e.2; simp; omega
+  · have := objPairs_sizeOf p.2; simp; omega
 
 /-- Rebuilds a document `intern` encoded, resolving each table entry exactly once so that every
 reference to it yields the *same* `Json` value.
