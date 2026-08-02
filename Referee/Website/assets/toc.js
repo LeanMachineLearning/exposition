@@ -13,15 +13,15 @@ document.addEventListener('DOMContentLoaded', () => {
        question is what their earlier reading no longer covers. The derive-from-the-entry rule
        above is what makes listing it here safe for a site that has neither. */
     { slug: 'changes', label: 'Changes' },
+    /* Also the audit page: the library's claims and what the reader has made of them are one
+       list, and were two pages saying half of it each. */
     { slug: 'claims', label: 'Claims' },
     /* Only built for a project that uses `@[specifies]`; same rule again. */
     { slug: 'specifications', label: 'Specifications' },
     { slug: 'browse', label: 'Browse' },
-    { slug: 'modules', label: 'Modules' },
-    { slug: 'trust', label: 'Trust' },
-    /* Last, because it is the only one of these that is about the reader rather than the
-       library. */
-    { slug: 'audit', label: 'Audit' }
+    /* No 'modules': the module graph and the listing it pictures are both on the landing page now,
+       and this nav is for pages. */
+    { slug: 'sorries', label: 'Sorries' }
   ];
 
   const normalizeHref = href => {

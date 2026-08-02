@@ -220,7 +220,7 @@ document.addEventListener('DOMContentLoaded', function () {
             ? `<button type="button" id="audit-accept-closure">Accept this and everything its
                  statement rests on (${closure.length})</button>`
             : ''}
-          <a class="audit-link" href="audit/">Audit progress →</a>
+          <a class="audit-link" href="claims/">Claims and progress →</a>
         </div>
         <p class="audit-queue" id="audit-queue"></p>
       </div>`;
@@ -344,9 +344,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // ------------------------------------------------------------- audit page
 
+  // The listing is server-rendered, so it exists whether or not this page has an `audit-root` to
+  // build an apparatus in — the landing page has rows and no apparatus. Both need the state painted
+  // onto the rows, so that is driven by the payload rather than by the mount point.
   if (auditData) {
-    const host = document.getElementById('audit-root');
-    if (host) renderAudit(host);
+    renderAudit(document.getElementById('audit-root'));
   }
 
   function renderAudit(host) {
@@ -371,7 +373,55 @@ document.addEventListener('DOMContentLoaded', function () {
     };
     const isCovered = i => accepts(i) && coverage(i).accepted === decls[i].closure.length;
 
+    // The rows are on the page already, rendered in Lean with their docstrings; what is missing is
+    // everything that depends on the reader. `paintRows` writes it into the two slots each row
+    // carries, so a verdict change rewrites two spans per row rather than rebuilding the listing —
+    // which also means the docstrings, and anything inside them, are never re-created.
+    function paintRows() {
+      document.querySelectorAll('.audit-item[data-claim]').forEach(item => {
+        const i = index[item.dataset.claim];
+        const cov = item.querySelector('[data-slot="coverage"]');
+        const stat = item.querySelector('[data-slot="status"]');
+        // A row for a declaration the payload does not carry: possible on an excerpt only if the
+        // two were built from different data. Leave the server-rendered text rather than blank it.
+        if (i === undefined) return;
+        const c = coverage(i);
+        const v = verdictOf(names[i]);
+        if (cov) cov.textContent = `${c.accepted}/${c.total} beneath accepted`;
+        if (stat) {
+          stat.innerHTML = isCovered(i)
+            ? '<span class="audit-ok">covered</span>'
+            : v === 'accepted'
+              ? `<span class="audit-warn">accepted, ${c.total - c.accepted} unread beneath</span>`
+              : v === 'query' ? '<span class="audit-warn">query</span>'
+              : '<span class="audit-hint">unread</span>';
+        }
+      });
+    }
+
+    // Wired once. The rows outlive every repaint, so re-binding on each one would stack listeners.
+    document.querySelectorAll('.audit-start[data-claim]').forEach(b => {
+      b.addEventListener('click', () => {
+        const i = index[b.dataset.claim];
+        if (i !== undefined) startQueue(i);
+      });
+    });
+
+    // An excerpt — the landing page's ranked top results — is the listing and nothing else. The
+    // rows are identical, which is the point: it is the same list, and a reader who has recorded
+    // work on a claim should see it wherever the claim appears. What it drops is the apparatus,
+    // which belongs to the page that carries every claim rather than to a page carrying ten.
+    if (auditData.excerpt || !host) {
+      document.addEventListener('referee:auditchange', paintRows);
+      paintRows();
+      return;
+    }
+
+    // This block mounts below the listing, so it is the state of a list the reader has already
+    // scrolled past: the counts summarise what they will have done to it, and a summary above the
+    // thing summarised reads as a dashboard rather than as a place to work.
     host.innerHTML = `
+      <h2 class="site-heading">Your progress</h2>
       <div id="audit-summary" class="audit-summary"></div>
       <div class="audit-toolbar">
         <button type="button" id="audit-export">Export audit file</button>
@@ -381,10 +431,6 @@ document.addEventListener('DOMContentLoaded', function () {
         <input type="file" id="audit-file" accept="application/json,.json" hidden />
       </div>
       <div id="audit-import-note" class="audit-import-note"></div>
-      <h2 class="site-heading">Claims</h2>
-      <p>Each claim with the declarations its statement rests on. “Start reading” walks that closure
-         in dependency order, so nothing is read before the definitions it is stated in terms of.</p>
-      <div id="audit-claims"></div>
       <h2 class="site-heading">Open queries</h2>
       <div id="audit-queries"></div>
       <h2 class="site-heading">Accepted, but not covered</h2>
@@ -410,6 +456,7 @@ document.addEventListener('DOMContentLoaded', function () {
       const coveredClaims = claims.filter(isCovered);
       const openClaims = claims.filter(i => accepts(i) && !isCovered(i));
       const sorried = decls.filter(d => d.sorryDep).length;
+      const sorriedClaims = claims.filter(i => decls[i].sorryDep).length;
       // Sorted by what re-reading each one would cost: a stale acceptance under a hundred results
       // is a different size of problem from one under none.
       stale.sort((a, b) => decls[b].closure.length - decls[a].closure.length);
@@ -432,32 +479,14 @@ document.addEventListener('DOMContentLoaded', function () {
           : ''}
         ${sorried
           ? `<p class="audit-hint">Separately, ${sorried} declarations rest on a
-             <code>sorry</code>. Acceptance is about what a statement means; whether it is proved is
-             what <a href="trust/">Trust</a> reports.</p>`
+             <code>sorry</code>${sorriedClaims
+               ? `, ${sorriedClaims} of them claims, flagged in the list above`
+               : ', none of them claims'}. Acceptance is about what a statement means; whether it is
+             proved is what <a href="sorries/">Sorries and assumptions</a> reports.</p>`
           : ''}
         ${state.exportedAt
           ? `<p class="audit-hint">Last exported ${esc(state.exportedAt.slice(0, 16).replace('T', ' '))}.</p>`
           : '<p class="audit-hint">Not yet exported. This state lives in this browser only.</p>'}`;
-
-      document.getElementById('audit-claims').innerHTML = claims.length
-        ? `<ul class="audit-list">${claims.map(i => {
-            const c = coverage(i);
-            const v = verdictOf(names[i]);
-            const status = isCovered(i)
-              ? '<span class="audit-ok">covered</span>'
-              : v === 'accepted'
-                ? `<span class="audit-warn">accepted, ${c.total - c.accepted} unread beneath</span>`
-                : v === 'query' ? '<span class="audit-warn">query</span>'
-                : '<span class="audit-hint">unread</span>';
-            return `<li class="audit-item">
-              <a class="audit-name" href="${esc(decls[i].href)}"><code>${esc(names[i])}</code></a>
-              <span class="audit-meta">${c.accepted}/${c.total} beneath accepted</span>
-              ${status}
-              <button type="button" class="audit-start" data-i="${i}">Start reading</button>
-            </li>`;
-          }).join('')}</ul>`
-        : '<p>This library states nothing with the <code>theorem</code> keyword, so there is no ' +
-          'claim to start from. Browse is the way in.</p>';
 
       document.getElementById('audit-queries').innerHTML = queries.length
         ? `<ul class="audit-list">${queries.map(i => `<li class="audit-item">
@@ -497,9 +526,7 @@ document.addEventListener('DOMContentLoaded', function () {
             </li>`).join('')}</ul>`
         : '';
 
-      host.querySelectorAll('.audit-start').forEach(b => {
-        b.addEventListener('click', () => startQueue(Number(b.dataset.i)));
-      });
+      paintRows();
     }
 
     function startQueue(i) {

@@ -434,12 +434,56 @@ block_extension Block.details (_payload : DetailsData) where
     let .ok (payload : DetailsData) := FromJson.fromJson? data
       | Verso.reportError s!"Could not decode details block data from {data.compress}"
         pure .empty
-    pure {{
-      <details>
-        <summary>{{payload.summary}}</summary>
-        {{← contents.mapM goB}}
-      </details>
+    let attrs := #[("class", if payload.headingLevel.isSome then "site-fold site-fold-heading"
+                             else "site-fold")]
+      -- `open` is an HTML boolean attribute: present or absent, never `open="false"`.
+      ++ (if payload.startsOpen then #[("open", "")] else #[])
+    pure <| Html.tag "details" attrs {{
+      <summary>{{payload.summary}}</summary>
+      {{← contents.mapM goB}}
     }}
+
+/- The claims listing: one row per claim, with its docstring rendered as markdown.
+
+The only listing on the site that is built here rather than by its JavaScript, and the reason is the
+docstring — see `ClaimRow`. Coverage and verdict arrive as empty slots that `audit.js` fills, so a
+verdict change rewrites two spans instead of rebuilding several hundred rows.
+
+Rows and contents are walked in step: each row says how many of the flat contents array is its own
+docstring. A `docLength` that overruns simply yields a shorter slice, so a mismatch loses a
+docstring rather than mis-assigning one to the wrong claim.
+
+(A plain comment, not a docstring: `block_extension` does not take one.) -/
+block_extension Block.claimList (_payload : ClaimListData) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI goB _id data contents => do
+    let .ok (payload : ClaimListData) := FromJson.fromJson? data
+      | Verso.reportError s!"Could not decode claim list data from {data.compress}"
+        pure .empty
+    let mut items : Array Html := #[]
+    let mut start := 0
+    for row in payload.rows do
+      let doc ← (contents.extract start (start + row.docLength)).mapM goB
+      start := start + row.docLength
+      let flag :=
+        if row.dependsOnSorry then {{<span class="audit-flag">"depends on sorry"</span>}}
+        else .empty
+      -- Filled by `audit.js`. The server-side text is what a reader without JavaScript sees, so it
+      -- says the one thing that is true without any audit state: how much is underneath.
+      let depsText : String := s!"{row.deps} beneath"
+      items := items.push {{
+        <li class="audit-item" data-claim={{row.name}}>
+          <a class="audit-name" href={{row.href}}><code>{{row.name}}</code></a>
+          <span class="audit-meta" data-slot="coverage">{{depsText}}</span>
+          <span data-slot="status"></span>
+          {{flag}}
+          <button type="button" class="audit-start" data-claim={{row.name}}>"Start reading"</button>
+          {{if doc.isEmpty then .empty else {{<div class="audit-doc">{{doc}}</div>}}}}
+        </li>
+      }}
+    pure {{<ul class="audit-list">{{items}}</ul>}}
 
 block_extension Block.graph (_payload : GraphData) where
   data := ToJson.toJson _payload
@@ -576,11 +620,16 @@ block_extension Block.auditControl (_payload : AuditControlData) where
           (.text false (ToJson.toJson payload).compress)}}
     }}
 
-/- The audit page's data: every declaration, with the closure its coverage is computed over.
+/- The claims listing's data: every declaration a row can be about, with the closure its coverage is
+computed over.
 
-Emitted here and nowhere else. `audit.js` builds the page from it, for the same reason `browse.js`
-builds its table: sorting and recomputing coverage as verdicts change has to happen in the browser,
-since a static site has no server to ask.
+`audit.js` builds the listing from it, for the same reason `browse.js` builds its table: sorting and
+recomputing coverage as verdicts change has to happen in the browser, since a static site has no
+server to ask.
+
+On two pages, never both at once, so the fixed ids below are unambiguous: the claims page, which
+carries the whole library and the apparatus around it, and the landing page, which carries an
+excerpt — the same rows for its ranked top results and nothing else. See `AuditData.excerpt`.
 
 (A plain comment, not a docstring: `block_extension` does not take one.) -/
 block_extension Block.auditData (_payload : AuditData) where
@@ -591,10 +640,14 @@ block_extension Block.auditData (_payload : AuditData) where
     let .ok (payload : AuditData) := FromJson.fromJson? data
       | Verso.reportError s!"Could not decode audit data from {data.compress}"
         pure .empty
+    -- No mount point on an excerpt: the rows are already on the page, rendered in Lean, and there
+    -- is no apparatus to build around them. The payload is still emitted, because coverage on those
+    -- rows is computed in the browser.
+    --
+    -- No `noscript` fallback either, on either page, and none is needed any more: the listing is
+    -- real HTML now. What JavaScript adds is the state on it.
     pure {{
-      <div id="audit-root">
-        <noscript>"The audit checklist needs JavaScript."</noscript>
-      </div>
+      {{if payload.excerpt then .empty else {{<div id="audit-root"></div>}}}}
       {{Html.tag "script" #[("id", "audit-data"), ("type", "application/json")]
           (.text false (ToJson.toJson payload).compress)}}
     }}
@@ -1102,7 +1155,7 @@ private structure SiteContext where
 /-- Renders one declaration card with docs, statement, links, and dependencies.
 
 Rendered on the declaration's own page and nowhere else: module pages, the claims page and the
-trust page all list declarations compactly instead. The card therefore carries no "Details" link —
+sorries page all list declarations compactly instead. The card therefore carries no "Details" link —
 it used to, and once the module pages stopped showing cards it pointed at the page it was already
 on. -/
 private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
@@ -1212,7 +1265,7 @@ The two kinds are drawn together but gathered by different rules, because they a
 questions:
 
 * **unaudited** packages, over the whole page closure. "What unaudited code does this rest on" is a
-  question about the closure, and this is the trust surface — the same set the Trust page counts. On
+  question about the closure, and this is the trust surface — the same set the sorries page counts. On
   `AlphaRAR` it comes to at most 9 nodes on any page and 0 on most, the whole surface into
   `LeanMachineLearning` being 15 declarations.
 * **audited** packages, for the focus declaration only. Here the question is not trust — the reader
@@ -1590,7 +1643,7 @@ private def mkAuditBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block M
     blocks := blocks.push <| .para <|
       #[.bold #[.text "Statement rests on unaudited definitions from: "]] ++
         joinInlines (untrusted.toList.map fun p => #[.code p.toString]) #[.text " · "] ++
-        #[.text ". See ", .link #[.text "Trust"] "trust/", .text "."]
+        #[.text ". See ", .link #[.text "Sorries and assumptions"] "sorries/", .text "."]
   return blocks
 
 /-! ## Specifications
@@ -1940,16 +1993,55 @@ private def mkAuditControlBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (
         (ctx.declByName.get? dep).map meaningKeyOf
     }) #[]]
 
-/-- The whole library, as the audit page needs it.
+/-- The claims listing for `claims`, in the order given, with each row's docstring inlined.
+
+The docstring is the declaration's own `docBlocks` — the very blocks its card renders — so the
+listing says what each claim is about in the author's words, formatted as it is formatted
+everywhere else. That is the whole reason this listing is built in Lean; see `ClaimRow`. -/
+private def mkClaimListBlock (claims : Array DeclInfo) (ctx : SiteContext) : Option (Block Manual) :=
+  -- One pass, so that rows and docstrings cannot fall out of step: a claim with no page is dropped
+  -- from both or from neither.
+  let listed := claims.filter (ctx.declPageHrefs.contains ·.name)
+  let rows := listed.map fun decl => ({
+    name := decl.name.toString
+    href := ctx.declPageHrefs.getD decl.name ""
+    deps := closureSize decl ctx
+    dependsOnSorry := decl.dependsOnSorry
+    docLength := decl.docBlocks.size
+    : ClaimRow })
+  let docs := listed.flatMap (·.docBlocks)
+  if rows.isEmpty then none else some (.other (Block.claimList { rows }) docs)
+
+/-- The library, as a page listing claims with their audit state needs it.
 
 Closures are emitted as indices into a shared name table. The same few hundred strings appear tens
 of thousands of times across the closures of a library this size — brownian-motion has 116,519
-transitive edges — and writing them out would put megabytes of duplicated text on one page. -/
-private def mkAuditData (decls : Array DeclInfo) (ctx : SiteContext) : AuditData := Id.run do
-  let names := decls.map (·.name)
+transitive edges — and writing them out would put megabytes of duplicated text on one page.
+
+With `featured?`, the result is an **excerpt**: the same payload cut down to those declarations and
+everything in their closures. That subset is exactly what the rows need — a claim's coverage is a
+question about its own closure and about nothing else — and it is what lets the landing page carry
+the same live rows as the claims page without carrying the whole table twice. `names` and `decls`
+stay parallel and `closure` still indexes into them, so the client renders an excerpt with the code
+it renders the full table with.
+
+`dataId` identifies the build either way, so it is computed over the whole library and not over
+what survived the cut. -/
+private def mkAuditData (decls : Array DeclInfo) (ctx : SiteContext)
+    (featured? : Option (Array Name) := none) : AuditData := Id.run do
+  let kept : Array DeclInfo :=
+    match featured? with
+    | none => decls
+    | some featured =>
+      let wanted := featured.foldl (init := ({} : Std.HashSet Name)) fun acc name =>
+        match ctx.declByName.get? name with
+        | none => acc
+        | some decl => decl.dataTransDeps.foldl (·.insert ·) (acc.insert name)
+      decls.filter (wanted.contains ·.name)
+  let names := kept.map (·.name)
   let index : Std.HashMap Name Nat :=
     names.zipIdx.foldl (fun acc (n, i) => acc.insert n i) {}
-  let entries := decls.map fun decl => {
+  let entries := kept.map fun decl => {
     kind := decl.displayKind
     group := declGroupOfFields decl.kind.label decl.isLemma decl.isInstanceDecl
     module := decl.modulePath
@@ -1967,69 +2059,9 @@ private def mkAuditData (decls : Array DeclInfo) (ctx : SiteContext) : AuditData
     dataId := dataFingerprint decls
     names := names.map (·.toString)
     decls := entries
+    excerpt := featured?.isSome
     renamed := ((ctx.diff?.map (·.renamed)).getD #[]).map fun (a, b) => (a.toString, b.toString)
     baselineLabel := (ctx.diff?.map (·.baselineLabel)).getD ""
-  }
-
-/-- Builds the Audit page: what the reader has read, and what that does and does not cover.
-
-The one page on this site whose content is not derived from the library. It exists because the
-reading a referee does is work, and work that cannot be recorded has to be redone — and because the
-number that matters is not how many declarations someone has ticked off but how many claims are
-covered *including everything their statements rest on*, which no checkbox can say by itself. -/
-private def mkAuditPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manual :=
-  {
-    title := #[.text "Audit"]
-    titleString := "Audit"
-    metadata := some {
-      file := some "audit"
-      shortTitle := some "Audit"
-      tag := some (.provided "audit")
-      number := false
-    }
-    content := #[
-      .para #[
-        .text "What you have read, and what follows from it. A declaration is ",
-        .emph #[.text "accepted"],
-        .text " when you have read it and judged that it says what its name claims — and ",
-        .emph #[.text "covered"], .text " when, in addition, every declaration its statement rests \
-          on is accepted too. The gap between those two is the point of this page: accepting a \
-          theorem whose definitions you have not read accepts a sentence, not a theorem."
-      ],
-      .para #[
-        .text "Whether something is ", .emph #[.text "proved"], .text " is a separate question and \
-          is not tracked here. A ", .code "sorry", .text " never blocks acceptance, because \
-          accepting is a judgement about what a statement means; ",
-        .link #[.text "Trust"] "trust/", .text " reports the rest."
-      ],
-      .other (Block.auditData (mkAuditData decls ctx)) #[],
-    ] ++ (if !ctx.usesMeanings then #[] else #[
-      .para #[
-        .bold #[.text "Verdicts remember what they were about. "],
-        .text "Each verdict is recorded against the declaration's meaning at the moment you set \
-          it — a structural hash of the elaborated term, not of how it prints. So a later build of \
-          a revised library can tell you which of your acceptances are of something that has since \
-          changed, and it needs neither the old build nor a ",
-        .code "--baseline", .text " to do it: the exported file carries its own reference points. \
-          Those acceptances are listed above, and they are excluded from every count on this page \
-          rather than quietly inflating it."
-      ]
-    ]) ++ #[
-      .para #[
-        .bold #[.text "What this is not. "],
-        .text "Nothing here is checked or authenticated. The exported file is plain JSON that \
-          anyone can edit, and an accepted declaration is one that a human said says what its name \
-          claims — no more. It is a work aid for the reader who made it, and it should never be \
-          offered to anyone else as evidence that a library was audited."
-      ],
-      .para #[
-        .bold #[.text "Where it is kept. "],
-        .text "In this browser, under this project's name. Clearing your browser data deletes it, \
-          and a second reader on another machine shares none of it — so export the file, which is \
-          the artifact that actually travels."
-      ]
-    ]
-    subParts := #[]
   }
 
 /-- The minimal dependency file, inline.
@@ -2330,7 +2362,7 @@ private def mkGroupPart (group : GroupInfo) (ctx : SiteContext) : Part Manual :=
 A single picture of 1677 declarations is unreadable at any zoom and answers no question a reader
 actually has — it was decoration. What replaced it is the per-declaration graph on each declaration
 page, which is small enough to read and scoped to a question worth asking ("what does *this* rest
-on"), plus the claims and trust pages for whole-library questions. -/
+on"), plus the claims and sorries pages for whole-library questions. -/
 
 /-! ## Claims, assumptions, and trust
 
@@ -2359,34 +2391,39 @@ The corollary for a *reader*: this page inherits the project's discipline. A lib
 private def claimsOf (decls : Array DeclInfo) : Array DeclInfo :=
   decls.filter (·.isClaim)
 
-/-- Builds the page listing every claim, grouped by chapter. -/
-private def mkClaimsPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manual :=
-  Id.run do
+/-- Builds the page listing every claim, grouped by chapter, with the reader's audit state on it.
+
+Claims and audit were two pages, and the split was wrong. Both had the same list down the middle —
+one rendered it as links, the other as links with a verdict attached — and neither was readable
+alone: the claims page could not say which of them you had been through, and the audit page
+repeated the list without ever saying what makes a declaration a claim in the first place. So this
+is one page, and it reads in the order the questions arrive: what does this library claim, what
+does accepting one of them mean, which are they, and how far have you got.
+
+The listing is built here, chapter by chapter, each chapter a fold that starts open — shut one and
+the chapters you have not got to yet come back into view. Only the *state* on a row comes from the
+browser, into slots `audit.js` fills; see `Block.claimList` for why the rows themselves cannot.
+
+The one page on this site whose content is not derived from the library alone. The reading a
+referee does is work, and work that cannot be recorded has to be redone — and the number that
+matters is not how many declarations someone has ticked off but how many claims are covered
+*including everything their statements rest on*, which no checkbox can say by itself. -/
+private def mkClaimsPart (decls : Array DeclInfo) (groups : Array GroupInfo) (ctx : SiteContext)
+    : Part Manual :=
   let claims := claimsOf decls
-  let byGroup := claims.foldl (init := ({} : Std.HashMap String (Array DeclInfo)))
-    fun acc decl => acc.insert decl.groupKey ((acc.getD decl.groupKey #[]).push decl)
-  let mut blocks : Array (Block Manual) := #[
-    .para #[
-      .text "These are the declarations written with the ", .code "theorem", .text " keyword, as \
-        opposed to ", .code "lemma", .text ". The distinction is the author's own: by the usual \
-        convention a ", .code "theorem", .text " is a result worth stating for its own sake, \
-        while a ", .code "lemma", .text " is a step towards one. This page takes that convention \
-        at face value."
-    ],
-    .para #[
-      .bold #[.text "So this list is only as good as the library's discipline about the two \
-        keywords."], .text " Where a project uses them interchangeably, read this as \"all \
-        results\" rather than as a statement of intent."
-    ],
-    .para #[.text s!"{claims.size} of {decls.size} declarations are stated as theorems, \
-      ranked within each chapter by how much machinery they rest on."]
-  ]
-  for (key, groupClaims) in byGroup.toArray.qsort (fun a b => a.1 < b.1) do
-    let sorted := groupClaims.qsort fun a b => closureSize a ctx > closureSize b ctx
-    blocks := blocks.push <| .para #[.bold #[.text (humanizeWord key)]]
-    if let some list := declIndexList sorted ctx then
-      blocks := blocks.push list
-  return {
+  -- Chapters in the site's own order, which is the import graph's, and within one the claims that
+  -- rest on the most machinery first: among results nothing else builds on, that is usually the
+  -- substantial one. A chapter with no claims gets no fold rather than an empty one.
+  let chapterBlocks : Array (Block Manual) := groups.filterMap fun group =>
+    let inChapter := claims.filter (·.groupKey == group.key)
+    let ranked := inChapter.qsort fun a b => closureSize a ctx > closureSize b ctx
+    (mkClaimListBlock ranked ctx).map fun list =>
+      .other (Block.details {
+        summary := humanizeWord group.key
+        startsOpen := true
+        headingLevel := some 3
+      }) #[list]
+  {
     title := #[.text "What This Library Claims"]
     titleString := "What This Library Claims"
     metadata := some {
@@ -2395,7 +2432,63 @@ private def mkClaimsPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
       tag := some (.provided "claims")
       number := false
     }
-    content := blocks
+    content := #[
+      .para #[
+        .text "These are the declarations written with the ", .code "theorem", .text " keyword, as \
+          opposed to ", .code "lemma", .text ". The distinction is the author's own: by the usual \
+          convention a ", .code "theorem", .text " is a result worth stating for its own sake, \
+          while a ", .code "lemma", .text " is a step towards one. This page takes that convention \
+          at face value."
+      ],
+      .para #[
+        .bold #[.text "So this list is only as good as the library's discipline about the two \
+          keywords."], .text " Where a project uses them interchangeably, read this as \"all \
+          results\" rather than as a statement of intent."
+      ],
+      .para #[.text s!"{claims.size} of {decls.size} declarations are stated as theorems, \
+        ranked within each chapter by how much machinery they rest on."],
+      .para #[
+        .text "Against each one is what you have made of it. A declaration is ",
+        .emph #[.text "accepted"],
+        .text " when you have read it and judged that it says what its name claims — and ",
+        .emph #[.text "covered"], .text " when, in addition, every declaration its statement rests \
+          on is accepted too. The gap between those two is the point: accepting a theorem whose \
+          definitions you have not read accepts a sentence, not a theorem."
+      ],
+      .para #[
+        .text "Whether something is ", .emph #[.text "proved"], .text " is a separate question. A ",
+        .code "sorry", .text " is flagged below but never blocks acceptance, because accepting is \
+          a judgement about what a statement means; ",
+        .link #[.text "Sorries and assumptions"] "sorries/", .text " reports the rest."
+      ],
+    ] ++ chapterBlocks ++ #[
+      .other (Block.auditData (mkAuditData decls ctx)) #[],
+    ] ++ (if !ctx.usesMeanings then #[] else #[
+      .para #[
+        .bold #[.text "Verdicts remember what they were about. "],
+        .text "Each verdict is recorded against the declaration's meaning at the moment you set \
+          it — a structural hash of the elaborated term, not of how it prints. So a later build of \
+          a revised library can tell you which of your acceptances are of something that has since \
+          changed, and it needs neither the old build nor a ",
+        .code "--baseline", .text " to do it: the exported file carries its own reference points. \
+          Those acceptances are listed above, and they are excluded from every count on this page \
+          rather than quietly inflating it."
+      ]
+    ]) ++ #[
+      .para #[
+        .bold #[.text "What this is not. "],
+        .text "Nothing here is checked or authenticated. The exported file is plain JSON that \
+          anyone can edit, and an accepted declaration is one that a human said says what its name \
+          claims — no more. It is a work aid for the reader who made it, and it should never be \
+          offered to anyone else as evidence that a library was audited."
+      ],
+      .para #[
+        .bold #[.text "Where it is kept. "],
+        .text "In this browser, under this project's name. Clearing your browser data deletes it, \
+          and a second reader on another machine shares none of it — so export the file, which is \
+          the artifact that actually travels."
+      ]
+    ]
     subParts := #[]
   }
 
@@ -2495,7 +2588,7 @@ private def mkBaselineBlocks (report : DiffReport) (ctx : SiteContext)
         shows accounts for it. What moved is outside the exposed declarations: an upstream package \
         this project was rebuilt against, or project code that is not exposed here. Reading these \
         again means reading them against the new version of whatever they are about, which is what \
-        the ", .link #[.text "Trust"] "trust/", .text " page is for."
+        the ", .link #[.text "Sorries and assumptions"] "sorries/", .text " page is for."
     ]
     blocks := blocks.push list
   if let some list := listOf bodies then
@@ -2571,7 +2664,7 @@ private def mkBaselineBlocks (report : DiffReport) (ctx : SiteContext)
       .bold #[.text "No re-reading follows from these. "],
       .text "Their statements are identical and the kernel has rechecked the new proofs. A proof \
         cannot change what a theorem says, so a reader who accepted these in the baseline still \
-        accepts them — the same argument the ", .link #[.text "Trust"] "trust/",
+        accepts them — the same argument the ", .link #[.text "Sorries and assumptions"] "sorries/",
       .text " page makes about upstream proofs, applied across revisions instead of across the \
         dependency graph."
     ]
@@ -2660,7 +2753,7 @@ private def mkChangesPart (report? : Option DiffReport) (decls : Array DeclInfo)
 /-- Builds the Specifications page: which definitions their author said something about, and —
 the half that does the auditing work — which they did not.
 
-The counterpart to the Trust page. Trust answers "is this proved"; this answers "is this the right
+The counterpart to the sorries page. That one answers "is this proved"; this answers "is this the right
 thing to have proved", to the extent anyone has committed to an answer. Both are lists of gaps, and
 both are only useful because the gap is visible without reading the source.
 
@@ -2688,7 +2781,8 @@ private def mkSpecificationsPart (decls : Array DeclInfo) (ctx : SiteContext) : 
         {if annotations == 1 then "annotation" else "annotations"} on {annotated} \
         {if annotated == 1 then "theorem" else "theorems"}. ",
       .text "Theorems, axioms and instances are not counted: a theorem's meaning is its statement, \
-        an axiom is itself an assumption and belongs on ", .link #[.text "Trust"] "trust/",
+        an axiom is itself an assumption and belongs on ",
+      .link #[.text "Sorries and assumptions"] "sorries/",
       .text ", and instances are plumbing."
     ]
   ]
@@ -2809,17 +2903,24 @@ private def mkBrowsePart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
     subParts := #[]
   }
 
-/-- Builds the Modules page: the whole project's module dependency graph.
+/-- The whole project's module dependency graph, and the heading it sits under.
 
 The one aggregate view that survives at library scale. A graph over every declaration is a
 hairball — that page was removed — but a project has tens of modules, not thousands, and this is
 the only view that shows structure *across* chapters, where the interesting dependencies are: in
 `LeanMachineLearning` half the module dependencies cross a chapter boundary, and the per-chapter
-graphs cannot show any of them. -/
-private def mkModulesPart (groups : Array GroupInfo) (ctx : SiteContext) : Part Manual :=
+graphs cannot show any of them.
+
+Was a page of its own, and did not earn one: it is a picture with two sentences of caption, and the
+listing of every module — the thing a reader goes looking for the moment the graph raises a
+question — was on the landing page all along. So the graph moved to sit directly above that listing
+instead, and the two now read as one section. -/
+private def mkModuleGraphBlocks (groups : Array GroupInfo) (ctx : SiteContext) :
+    Array (Block Manual) :=
   let modules := groups.flatMap (·.modules)
   let (graph, omitted) := connectedOnly (transitiveReduce (mkModuleGraphData modules ctx))
   let intro : Array (Block Manual) := #[
+    .other (Block.sectionHeading "Modules") #[],
     .para #[.text s!"How the project's {modules.size} modules depend on one another. Colour marks \
       the chapter, so the blocks of colour are the chapter structure and the edges between them \
       are where it is crossed."],
@@ -2830,18 +2931,7 @@ private def mkModulesPart (groups : Array GroupInfo) (ctx : SiteContext) : Part 
     if omitted == 0 then #[]
     else #[.para #[.text s!"Showing the {graph.nodes.size} modules that depend on one another; \
       the other {omitted} are independent of the rest of the project."]]
-  {
-    title := #[.text "Modules"]
-    titleString := "Modules"
-    metadata := some {
-      file := some "modules"
-      shortTitle := some "Modules"
-      tag := some (.provided "modules")
-      number := false
-    }
-    content := intro ++ note ++ #[.other (Block.graph graph) #[]]
-    subParts := #[]
-  }
+  intro ++ note ++ #[.other (Block.graph graph) #[]]
 
 /-- The package dependency graph: one node per package the project reaches, an edge from a
 dependency to the package that requires it, and `status` carrying the trust verdict.
@@ -2890,7 +2980,7 @@ private def mkPackageGraphData (decls : Array DeclInfo) (ctx : SiteContext) : Gr
         else none
   { nodes, edges, unit := "package" }
 
-/-- The upstream-trust section of the trust page: the package graph, the verdict, and what to do
+/-- The upstream-trust section of the sorries page: the package graph, the finding, and what to do
 about it.
 
 Written to be honest about the default. With no `--trust`, every upstream package is unaudited and
@@ -2914,32 +3004,37 @@ private def mkUpstreamTrustBlocks (decls : Array DeclInfo) (ctx : SiteContext) :
       .text " were rechecked by the kernel, and anything left unproved in one arrives here as a ",
       .code "sorry", .text " or an extra axiom — both already counted above, upstream included."
     ],
+    -- Names no other page. Specifications is built only for a project that uses `@[specifies]`, and
+    -- this paragraph used to link to it unconditionally, so on every project without an annotation
+    -- the sentence pointed at nothing.
     .para #[
       .text "What does not come for free is an upstream ", .emph #[.text "definition"],
       .text " that a statement is about. A theorem mentioning a definition from another package \
         means what it means only if that definition is the intended one, and no proof settles \
-        that — it is the gap the ",
-      .link #[.text "Specifications"] "specifications/",
-      .text " page records, one package up. So what follows counts statements, not proofs."
+        that — nothing below the statement can, because it is the statement that names it. So what \
+        follows counts statements, not proofs."
     ],
     .para #[
       .text "The graph is the dependency order: the toolchain at the top, this project at the \
         bottom, an edge from each package to the one that requires it."
     ]
   ]
+  -- Stated as what is unaudited, never as what is trusted, for the same reason the sorry count is:
+  -- a package the reader passed to `--trust` is not a finding, and leading with how many of them
+  -- there are turns their own input back into a score.
   let verdict : Array (Inline Manual) :=
     if untrusted.isEmpty then
-      #[.bold #[.text "All "], .text s!"{upstream.size} upstream packages are marked trusted."]
+      #[.text s!"No upstream package is unaudited: every one of the {upstream.size} was passed to ",
+        .code "--trust", .text "."]
     else if trustedUpstream.isEmpty then
-      #[.bold #[.text s!"None of the {upstream.size} upstream packages are marked trusted."],
+      #[.bold #[.text s!"All {upstream.size} upstream packages are unaudited."],
         .text " The site was built without ", .code "--trust", .text ", so every upstream package \
           below counts as unaudited. That is the honest default rather than a finding: pass ",
         .code "--trust PKG", .text " for each package you have audited, and it will vouch for what \
           that package rests on too."]
     else
-      #[.bold #[.text s!"{trustedUpstream.size} of {upstream.size} upstream packages are trusted."],
-        .text " The rest are unaudited, and every declaration whose statement reaches into one says \
-          so on its own page."]
+      #[.bold #[.text s!"{untrusted.size} of {upstream.size} upstream packages are unaudited."],
+        .text " Every declaration whose statement reaches into one says so on its own page."]
   blocks := blocks.push (.para verdict)
   blocks := blocks.push (.other (Block.graph (mkPackageGraphData decls ctx)) #[])
   if !untrusted.isEmpty then
@@ -2953,8 +3048,21 @@ private def mkUpstreamTrustBlocks (decls : Array DeclInfo) (ctx : SiteContext) :
     blocks := blocks.push (.ul rows)
   return blocks
 
-/-- Builds the trust page: everything incomplete or resting on an unusual assumption. -/
-private def mkTrustPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manual :=
+/-- Builds the page listing what is incomplete or assumed: sorries, extra axioms, upstream packages.
+
+**Findings only.** This page was called "Trust", and said things like "1572 of 1808 declarations are
+fully proved". Both were wrong in the same way. "Trust" names a verdict the site is in no position
+to reach — the kernel checking a proof is not a reason to trust what the theorem says, which is the
+whole argument the rest of this tool makes — and a count of what is proved reads as a score, on a
+measure where the number that matters is the one that is not zero. A reader who wants "how much of
+this is done" has the project's own progress tracking for it. What is reported here is what would
+make a referee stop, and nothing else; where there is nothing, the page says so in one line and
+moves on.
+
+The listings fold shut. Each is a few hundred names on a library with real gaps, and the reader
+arriving here needs the counts first — which sections have anything in them at all — and the names
+only for whichever one they decide to open. -/
+private def mkAssumptionsPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manual :=
   Id.run do
   let ordinary : Array Name := #[``Classical.choice, ``propext, ``Quot.sound]
   let sorried := decls.filter (·.dependsOnSorry)
@@ -2967,35 +3075,36 @@ private def mkTrustPart (decls : Array DeclInfo) (ctx : SiteContext) : Part Manu
       "Everything in the library that is incomplete or rests on an assumption beyond the three ",
       "axioms every classical Lean development uses (",
     ]), .code "Classical.choice", .text ", ", .code "propext", .text ", ", .code "Quot.sound",
-      .text "). This is the referee's checklist."],
-    .para #[
-      .bold #[.text s!"{decls.size - sorried.size} of {decls.size} declarations "],
-      .text s!"are fully proved. {sorried.size} depend on a ", .code "sorry",
-      .text s!" ({ownSorry.size} directly, {inherited.size} inherited from something they use)."
-    ]
+      .text "). This is the referee's checklist, and it reports only what is missing: nothing here \
+        is a measure of how far the library has got."]
   ]
+  blocks := blocks.push <| .para <|
+    if sorried.isEmpty then
+      #[.text "No declaration depends on a ", .code "sorry", .text "."]
+    else
+      #[.bold #[.text s!"{sorried.size} of {decls.size} declarations depend on a "],
+        .code "sorry",
+        .text s!" — {ownSorry.size} directly, {inherited.size} inherited from something they use."]
   if let some list := declIndexList (ownSorry.qsort fun a b => a.name.lt b.name) ctx then
-    blocks := blocks.push <| .para #[.bold #[.text s!"Contains a `sorry` directly ({ownSorry.size})"]]
-    blocks := blocks.push list
+    blocks := blocks.push <| .other
+      (Block.details { summary := s!"Contains a `sorry` directly ({ownSorry.size})" }) #[list]
   if let some list := declIndexList (inherited.qsort fun a b => a.name.lt b.name) ctx then
-    blocks := blocks.push <| .para #[
-      .bold #[.text s!"Inherits a `sorry` ({inherited.size})"],
-      .text "  — each declaration's own page names the chain that reaches the gap."
-    ]
-    blocks := blocks.push list
+    blocks := blocks.push <| .other
+      (Block.details { summary := s!"Inherits a `sorry` ({inherited.size})" })
+      #[.para #[.text "Each declaration's own page names the chain that reaches the gap."], list]
   if let some list := declIndexList (extraAxiom.qsort fun a b => a.name.lt b.name) ctx then
-    blocks := blocks.push <| .para #[.bold #[.text s!"Rests on extra axioms ({extraAxiom.size})"]]
-    blocks := blocks.push list
+    blocks := blocks.push <| .other
+      (Block.details { summary := s!"Rests on extra axioms ({extraAxiom.size})" }) #[list]
   else
     blocks := blocks.push <| .para #[.text "No declaration rests on an axiom beyond the ordinary three."]
   blocks := blocks ++ mkUpstreamTrustBlocks decls ctx
   return {
-    title := #[.text "Trust"]
-    titleString := "Trust"
+    title := #[.text "Sorries and assumptions"]
+    titleString := "Sorries and assumptions"
     metadata := some {
-      file := some "trust"
-      shortTitle := some "Trust"
-      tag := some (.provided "trust")
+      file := some "sorries"
+      shortTitle := some "Sorries"
+      tag := some (.provided "sorries")
       number := false
     }
     content := blocks
@@ -3048,7 +3157,7 @@ private def mkLandingBlocks (rootPrefix : Name) (decls : Array DeclInfo) (ctx : 
   if !upstream.isEmpty then
     cost := cost.push #[
       .link #[.text s!"{upstream.size} upstream \
-        {if upstream.size == 1 then "package" else "packages"}"] "trust/",
+        {if upstream.size == 1 then "package" else "packages"}"] "sorries/",
       .text s!", of which {unaudited.size} \
         {if unaudited.size == 1 then "is unaudited" else "are unaudited"}"
     ]
@@ -3090,8 +3199,18 @@ private def mkLandingBlocks (rootPrefix : Name) (decls : Array DeclInfo) (ctx : 
   blocks := blocks.push <| .para #[
     .bold #[.text "The results, largest first by how much machinery they rest on."]
   ]
-  if let some list := declIndexList topClaims ctx then
+  -- The same rows as the claims page, live: docstring, coverage, verdict and the button that starts
+  -- a reading queue. A static list here would have been a second way of presenting the one thing
+  -- this site is most often used to look at, and a reader arriving with work already recorded would
+  -- have had to go somewhere else to see any of it.
+  --
+  -- No chapter folds: this is a ranking across all of them. The payload is an excerpt, so what ships
+  -- is these ten claims and their closures rather than the library — see `mkAuditData`.
+  if let some list := mkClaimListBlock topClaims ctx then
     blocks := blocks.push list
+    blocks := blocks.push <|
+      .other (Block.auditData (mkAuditData decls ctx (featured? := some (topClaims.map (·.name)))))
+        #[]
   blocks := blocks.push <| .para #[.link #[.text "See all claims"] "claims/", .text "."]
   return blocks
 
@@ -3110,19 +3229,24 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
       shortTitle := some title
       number := false
     }
+    -- Claims, then what the project says it is, then how it is built: the three questions in the
+    -- order a reader asks them. The README used to sit *below* the module listing, which put a
+    -- page of chapter contents between "here is what this proves" and the author's own account of
+    -- it. The module graph then leads the listing it is a picture of, rather than standing on a
+    -- page of its own — see `mkModuleGraphBlocks`.
     content := mkLandingBlocks rootPrefix decls ctx
-      ++ mkDashboardBlocks groups
       ++ overviewBlocks
+      ++ mkModuleGraphBlocks groups ctx
+      ++ mkDashboardBlocks groups
     -- Changes comes first when there is anything to say: a returning reader's first question is
     -- what their earlier reading no longer covers, and every other page answers a question they
     -- have already asked once. With neither `--baseline` nor `--provenance` the page does not
     -- exist at all.
     subParts := (if ctx.diff?.isNone && ctx.provenance?.isNone then #[]
         else #[mkChangesPart ctx.diff? decls ctx])
-      ++ #[mkClaimsPart decls ctx]
+      ++ #[mkClaimsPart decls groups ctx]
       ++ (if ctx.usesSpecs then #[mkSpecificationsPart decls ctx] else #[])
-      ++ #[mkBrowsePart decls ctx, mkModulesPart groups ctx, mkTrustPart decls ctx,
-           mkAuditPart decls ctx]
+      ++ #[mkBrowsePart decls ctx, mkAssumptionsPart decls ctx]
       ++ (groups.map fun group => mkGroupPart group ctx)
   }
 

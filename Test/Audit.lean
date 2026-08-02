@@ -92,6 +92,22 @@ Only that the defaults are the inert ones — a project that has never been audi
 #guard (default : AuditDecl).change == ""
 #guard (default : AuditData).renamed.isEmpty
 #guard (default : AuditData).baselineLabel == ""
+-- The default is the whole library with its apparatus, not an excerpt: an excerpt is the special
+-- case and has to be asked for, or a payload built without thinking about it would silently
+-- suppress the progress summary, the queries and export.
+#guard !(default : AuditData).excerpt
 #guard (default : AuditControlData).closure.isEmpty
+
+/-! ## Claims listing
+
+A row says how many of the enclosing block's contents are its own docstring, and the renderer walks
+rows and contents in step. A default that claimed any would make a row with no docstring eat the
+next row's. -/
+
+#guard (default : ClaimRow).docLength == 0
+#guard !(default : ClaimRow).dependsOnSorry
+#guard (default : ClaimListData).rows.isEmpty
+-- A fold is shut unless asked otherwise; the chapters on the claims listing are the exception.
+#guard !(default : DetailsData).startsOpen
 
 end Referee.Test.Audit

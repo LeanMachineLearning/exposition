@@ -5,9 +5,9 @@ given. For a Mathlib-based development that is the larger half of what a reader 
 and it is not uniform: `AlphaRAR` rests on `LeanMachineLearning`, which rests on `mathlib`, and a
 referee may well have audited one and not the other.
 
-`--trust PKG` says which. The trust page then draws the package dependency graph — toolchain at the
-top, project at the bottom — with unaudited packages dashed, lists them with how many declarations
-rest on each, and each of those declarations names them on its own page.
+`--trust PKG` says which. The **Sorries and assumptions** page then draws the package dependency
+graph — toolchain at the top, project at the bottom — with unaudited packages dashed, lists them
+with how many declarations rest on each, and each of those declarations names them on its own page.
 
 Three things the flag means, which are easy to get wrong in either direction:
 
@@ -154,7 +154,7 @@ claims:
 
 Not what a proof calls. An upstream *proof* was rechecked by the kernel, and anything left unproved
 in one arrives as a `sorry` or an extra axiom — both of which `collectAxioms` already reports
-transitively, upstream included, on the trust page. A theorem whose proof calls a
+transitively, upstream included, on the sorries page. A theorem whose proof calls a
 `LeanMachineLearning` lemma has learned nothing from that call that it needs to take on faith.
 
 What counts is an upstream *definition that a statement is about*. If a theorem's statement mentions

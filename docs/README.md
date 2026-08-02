@@ -21,8 +21,9 @@ pages are the detail behind it.
 - **[Upstream trust](trust.md)** — `--trust`, why a trust dependency is a *definition a statement is
   about* rather than anything a proof calls, and the three things that bound what the analysis
   claims.
-- **[Audit state](audit.md)** — verdicts, derived coverage, reading queues, export and import. Also
-  the three limits, which the page states to the reader rather than burying here.
+- **[Claims and audit state](audit.md)** — the one page carrying both: what the library states with
+  `theorem`, and against each one the verdicts, derived coverage, reading queues, export and import.
+  Also the three limits, which the page states to the reader rather than burying here.
 - **[Comparing revisions](revisions.md)** — `--baseline`: what changed since a revision, classified
   by whether a reader has to look again.
 - **[Semantic hashes](semantic-hashes.md)** — `--hashes`: comparing elaborated structure instead of

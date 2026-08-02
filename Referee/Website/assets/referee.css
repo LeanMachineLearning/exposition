@@ -434,9 +434,14 @@ code, pre {
   color: var(--site-accent) !important;
 }
 
-.decl-card details {
+/* A `Block.details` fold. Inside a declaration card it is the proof, closing the card with a rule
+   above it; standing on its own in the page flow — the `sorry` and axiom listings — it has no card
+   to be placed by, so it needs room of its own or two consecutive folds read as one control. */
+.site-fold { margin: .9rem 0; }
+
+.decl-card .site-fold {
   border-top: 1px solid var(--site-border);
-  margin-top: .9rem;
+  margin: .9rem 0 0;
   padding-top: .7rem;
 }
 
@@ -651,7 +656,10 @@ body.hide-theorems [data-decl-group="theorem"] {
   white-space: nowrap;
 }
 
-.decl-index-flag {
+/* Shared with `.audit-flag` on the claims listing: the same fact about a declaration, and a reader
+   moving between the two listings should not have to learn the mark twice. */
+.decl-index-flag,
+.audit-flag {
   background: var(--site-warn-soft);
   border: 1px solid var(--site-warn-border);
   border-radius: 999px;
@@ -1376,10 +1384,62 @@ body.hide-theorems [data-decl-group="theorem"] {
   flex-wrap: wrap;
   gap: .6rem;
   padding: .4rem .7rem;
+  /* Anchors the docstring tooltip below. */
+  position: relative;
 }
 
 .audit-name { text-decoration: none; }
 .audit-name code { overflow-wrap: anywhere; }
+
+/* The docstring, under the claim's name — the declaration's own `docBlocks`, so real paragraphs,
+   code spans and math rather than a flattened string.
+
+   `flex: 0 0 100%` is what puts it on its own line: the row is a wrapping flex line and this is its
+   last item, so it takes a full line to itself under the name and the counts.
+
+   Clamped to three lines. A docstring is prose of any length, and a listing where one claim takes
+   twelve lines and the next takes one is a listing nobody can scan; three is enough to say what a
+   theorem is about, and the declaration's own page has all of it. */
+.audit-doc {
+  /* The row aligns its items on their baselines, which for a clamped multi-line box is the *last*
+     line — leaving three lines of empty space above a one-line docstring. This item is a line of
+     its own, so it opts out. */
+  align-self: flex-start;
+  color: var(--site-ink-2);
+  display: -webkit-box;
+  flex: 0 0 100%;
+  font-size: .85rem;
+  line-height: 1.5;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+/* `-webkit-line-clamp` counts *line boxes*, so it only counts what it can see: a block child is one
+   line however long it runs, which clamps a whole paragraph to one line and then reserves three
+   lines of height for it. Making the paragraphs inline gives the clamp the text it is written for.
+   A docstring of several paragraphs runs together as a result — three lines is a summary, and the
+   declaration's own page is where it is read properly. */
+.audit-doc p {
+  display: inline;
+  margin: 0;
+}
+
+.audit-doc p + p::before { content: " · "; }
+
+.audit-doc code { font-size: .95em; }
+
+/* A fold whose summary is a chapter heading rather than a control. Lighter than `.site-heading`,
+   which separates the page's sections: these subdivide one listing, and a rule across the page at
+   every chapter would break it into what looks like several pages. */
+.site-fold-heading { margin: 1.4rem 0 .4rem; }
+
+.site-fold-heading > summary {
+  color: var(--site-ink-2);
+  font-size: .95rem;
+  letter-spacing: .01em;
+}
 
 .audit-meta { color: var(--site-ink-3); font-size: .8rem; }
 .audit-note-text { color: var(--site-ink-2); font-size: .85rem; }

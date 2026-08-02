@@ -189,6 +189,36 @@ structure DeclIndexData where
   entries : Array DeclIndexEntry
 deriving Repr, ToJson, FromJson, Inhabited
 
+/-- One row of the claims listing.
+
+The listing is rendered *here* rather than by `audit.js`, unlike everything else on that page,
+because a row carries the declaration's docstring and the docstring has to be real markdown — the
+same `docBlocks` the declaration's own card renders, through the same Verso pipeline, so that code
+spans, emphasis and math look the way they look everywhere else. A client building rows from JSON
+can only be handed text, and text is what it looked like.
+
+What the browser still owns is the *state* on the row: coverage, verdict, and the button. Those
+arrive as empty slots that `audit.js` fills and refills, which is also why the rows survive a
+verdict change untouched — nothing is rebuilt, two spans are rewritten. -/
+structure ClaimRow where
+  name : String
+  href : String
+  /-- Project declarations in its statement closure. Shown until the browser replaces it with how
+  many of them the reader has accepted, so a reader without JavaScript still gets the number. -/
+  deps : Nat := 0
+  dependsOnSorry : Bool := false
+  /-- How many of the enclosing block's contents are this row's docstring. The rows share one flat
+  array of contents — a block extension gets its children as a list, not as a tree — so each says
+  how many of them are its own, and the renderer walks the two in step. -/
+  docLength : Nat := 0
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- Data container for ClaimListData. The block's contents are every row's docstring blocks
+concatenated, divided up by `ClaimRow.docLength`. -/
+structure ClaimListData where
+  rows : Array ClaimRow
+deriving Repr, ToJson, FromJson, Inhabited
+
 /-- One row of a specification listing: on a definition's page a theorem offered as part of its
 specification, on a theorem's page a definition the theorem specifies.
 
@@ -324,6 +354,12 @@ deriving Repr, ToJson, FromJson, Inhabited
 /-- Data container for DetailsData. -/
 structure DetailsData where
   summary : String
+  /-- Rendered already open. The default is shut, which is what a fold is usually for; a chapter on
+  the claims listing is the other case — folding it is for putting a chapter you are done with out
+  of the way, not for hiding the page's contents until asked. -/
+  startsOpen : Bool := false
+  /-- Marks a fold whose summary is a heading rather than a control, so it can be styled as one. -/
+  headingLevel : Option Nat := none
 deriving Repr, ToJson, FromJson, Inhabited
 
 /-- Data container for GraphNode. -/

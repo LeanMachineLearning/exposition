@@ -109,6 +109,14 @@ structure AuditData where
   /-- Declaration names, indexed by `AuditDecl.closure`. Parallel to `decls`. -/
   names : Array String
   decls : Array AuditDecl
+  /-- An *excerpt*: a page carrying some claims with their audit state, rather than the library's
+  claims with the apparatus around them. The landing page's ranked top results are one.
+
+  The rows themselves are identical — they are rendered in Lean either way, by `Block.claimList`.
+  What this suppresses is everything around them: the progress summary, the queries, and export,
+  all of which belong to the page that carries every claim rather than to a page carrying ten. The
+  payload is still needed on an excerpt, because coverage is computed in the browser. -/
+  excerpt : Bool := false
   /-- Removed/added pairs with identical statements, from the revision diff. Lets an import offer to
   carry a verdict across what looks like a rename, rather than silently dropping it. -/
   renamed : Array (String × String) := #[]

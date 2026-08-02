@@ -1,7 +1,14 @@
-# Audit state
+# Claims and audit state
 
-Every other page on the site is derived from the compiled library. The Audit page is not: it records
-what a *reader* has decided, and computes what follows.
+The Claims page carries both, because they were never two questions. It lists what the library
+states with `theorem` — see [Authoring](authoring.md) for why that keyword is the signal — and
+against each one what the *reader* has made of it. Every other page on the site is derived from the
+compiled library; this half of this one is not.
+
+They were two pages, and the split was wrong in both directions: the claims list could not say which
+of them you had been through, and the audit checklist repeated the list without ever saying what
+makes a declaration a claim. The page now reads in the order the questions arrive — what does this
+library claim, what does accepting one mean, which are they, and how far have you got.
 
 Two things are tracked per declaration, and only one of them is the reader's to set:
 
@@ -13,19 +20,19 @@ Two things are tracked per declaration, and only one of them is the reader's to 
 The state worth having a name for is the third one that falls out: **accepted but not covered**, a
 reader who believes they are finished and is not. Accepting a regret bound without reading
 `IsAlgEnvSeq` accepts a sentence, not a theorem, and a single checkbox per declaration cannot say
-so. The Audit page therefore leads with covered claims rather than with accepted declarations.
+so. The headline number is therefore covered claims, not accepted declarations.
 
 Deliberately orthogonal to trust: a `sorry`, an axiom or an unaudited package never blocks
 acceptance. Accepting is a judgement about what a statement *means*; whether it is *proved* is what
-the trust page reports. Conflating them would make the checklist useless on any library still being
-written.
+the sorries page reports. Conflating them would make the checklist useless on any library still being
+written. A claim whose closure reaches a `sorry` is *flagged* on its row all the same — the two
+marks answer different questions, and a reader deciding what to read next wants both.
 
 What a reader does with it:
 
-- **Start reading** from a claim on the Audit page walks its statement closure in dependency order,
-  so nothing is read before the definitions it is stated in terms of. That order is free —
-  `transDeps` is already topologically sorted, because the extractor needs it that way to emit a
-  compilable minimal file.
+- **Start reading** from a claim walks its statement closure in dependency order, so nothing is read
+  before the definitions it is stated in terms of. That order is free — `transDeps` is already
+  topologically sorted, because the extractor needs it that way to emit a compilable minimal file.
 - On each declaration, `a` / `q` / `u` set the verdict and `n` moves to the next unread one in the
   queue. There is also *accept this and everything its statement rests on*, which matches the
   minimal file: that file **is** the closure inlined, so a reader who has read one has covered
@@ -37,6 +44,12 @@ What a reader does with it:
   the rename.
 - **Generate report** writes Markdown: claims and their coverage, the open queries with their notes,
   and what the library rests on. Most of a referee report, already written.
+
+The **landing page** carries the same rows for its ranked top results — the same coverage, the same
+verdict, the same button. It is an excerpt rather than a second listing: what ships with it is those
+claims and their closures, which is what their coverage is a question about, and not the rest of the
+library. So a reader arriving with work already recorded sees it on the first page, and a list that
+looked different there would have been a second thing to learn.
 
 Verdicts also show up on the **dependency graphs**: a green `✓` in a node's corner is a declaration
 you accepted, an amber `?` one you left a query on. That is where the question "how much of what

@@ -47,10 +47,10 @@ from git with `/ "LeanSpec"`.
   more here than elsewhere because the file is append-only: a fold that records a change where none
   happened writes that into the record for good. The git reading (`blame`, `log`, `describe`) is
   the only part that shells out, and it is one `git blame` per *file* rather than per declaration.
-- `Referee/Audit.lean` — the payloads the audit page and the per-declaration control hand to
-  `assets/audit.js`, plus `dataFingerprint`, the stamp an exported audit file carries so it can be
-  matched against the build it was made against. The verdicts, coverage, queue, import and export
-  are all the browser's; this is only the data they run on.
+- `Referee/Audit.lean` — the payloads the claims page, the landing page's excerpt of it and the
+  per-declaration control hand to `assets/audit.js`, plus `dataFingerprint`, the stamp an exported
+  audit file carries so it can be matched against the build it was made against. The verdicts,
+  coverage, queue, import and export are all the browser's; this is only the data they run on.
 - `Referee/Diff.lean` — the revision comparison (`--baseline`): a pure function of two
   `CollectedData` values, with no environment and no notion of a page. Classifies each declaration
   as statement-changed, body-changed, indirectly invalidated, changed-underneath, proof-only, added
