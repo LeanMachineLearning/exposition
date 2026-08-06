@@ -3411,6 +3411,88 @@ private def loadCollectedData (path : String) : IO CollectedData := do
     pure data
   | .error err => throw <| IO.userError s!"Failed to decode collected data from {path}: {err}"
 
+/-! ## Pruning the sidebar's inherited sub-tables
+
+Verso's split table of contents emits, on every page, the children of *every* level on the path to
+that page. That suits a manual, where a level has a handful of siblings. It does not suit this site:
+the tree is chapter → module → declaration, so every declaration page carries a table listing all of
+its module's declarations. The cost is quadratic in a module's size, and monolithic Lean files are
+where it bites — one 2223-declaration module produced a 600 kB table on each of 2223 pages, 1.34 GB
+of that site's 1.5 GB.
+
+Those bytes were never read. `assets/toc.js` has always removed the non-root blocks on load
+(`.split-toc:not(.book)`), because the navigation they duplicate is better served by the module
+page's declaration list, by Browse and by search. This removes them before they are written rather
+than after they are parsed: the same site a reader has always seen, minus the transfer, the parse
+and the storage.
+
+The root block stays. It is what the sidebar actually shows, and `toc.js` reads the utility pages'
+real hrefs out of it (`findUtilityHrefs`) before building the top nav, so dropping it would break
+those links rather than merely shrink them. -/
+
+/-- The opening tag of a sub-table block. Matched exactly, so that `class="split-toc book"` — the
+root block, which is kept — does not match it. -/
+private def splitTocOpenTag : String := "<div class=\"split-toc\">"
+
+/-- Given the text immediately following a `splitTocOpenTag`, the text immediately following the
+`</div>` that closes it, or `none` if the tags are unbalanced.
+
+Splitting on `</div>` rather than walking characters keeps this linear and free of `String.Pos`
+arithmetic: each piece is the text between two closing tags, and the number of `<div` occurrences in
+it is how far the nesting went in between. Verso never nests these blocks inside one another, so the
+first return to depth zero is this block's end. -/
+private def afterSplitTocBlock (s : String) : Option String := Id.run do
+  let pieces := s.splitOn "</div>"
+  let mut depth : Int := 1
+  let mut consumed := 0
+  for piece in pieces do
+    consumed := consumed + 1
+    -- The opening tags inside this piece, then the `</div>` that terminated it.
+    depth := depth + ((piece.splitOn "<div").length - 1 : Nat) - 1
+    if depth == 0 then
+      return some (String.intercalate "</div>" (pieces.drop consumed))
+  -- Nothing closes the final piece, so reaching here means the block never closed.
+  return none
+
+/-- Removes every sub-table block from one rendered page, keeping the root block.
+
+Conservative by construction: if any block turns out to be unbalanced, the page is returned exactly
+as Verso wrote it. A sidebar larger than it needs to be is a size problem; truncated HTML is a
+broken page. -/
+private def pruneSidebarSubTocs (html : String) : String := Id.run do
+  match html.splitOn splitTocOpenTag with
+  | [] | [_] => return html
+  | first :: rest =>
+    let mut out := first
+    for chunk in rest do
+      let some tail := afterSplitTocBlock chunk
+        | return html
+      out := out ++ tail
+    return out
+
+/-- Rewrites every `.html` file under `dir`, returning how many were shortened and by how much.
+
+Recursive rather than a single `readDir`: the pages sit one directory deeper per level of the tree,
+which is where all but a handful of them live. -/
+private partial def pruneSidebarSubTocsIn (dir : System.FilePath) : IO (Nat × Nat) := do
+  if !(← dir.pathExists) then
+    return (0, 0)
+  let mut pages := 0
+  let mut saved := 0
+  for entry in (← dir.readDir) do
+    if (← entry.path.isDir) then
+      let (p, s) ← pruneSidebarSubTocsIn entry.path
+      pages := pages + p
+      saved := saved + s
+    else if entry.path.extension == some "html" then
+      let text ← IO.FS.readFile entry.path
+      let pruned := pruneSidebarSubTocs text
+      if pruned.utf8ByteSize < text.utf8ByteSize then
+        IO.FS.writeFile entry.path pruned
+        pages := pages + 1
+        saved := saved + (text.utf8ByteSize - pruned.utf8ByteSize)
+  return (pages, saved)
+
 /-- Builds and renders the Verso site from already-collected data. Needs no Lean environment
 and no access to the target project's source tree: `data` and `cfg`'s render-time flags
 (`--repo-url`/`--site-url`/`--title`/`--output`) are all it consults. -/
@@ -3577,8 +3659,17 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     match cfg.outputDir with
     | some out => ["--output", out]
     | none => []
-  manualMain root (options := versoArgs)
+  let code ← manualMain root (options := versoArgs)
     (config := renderConfig data.externalDecls ctx.trusted cfg.showTrustedUpstream)
+  if code != 0 then
+    return code
+  -- After Verso has written the pages, and only on success: a half-rendered site is not one to
+  -- rewrite in place.
+  let (pages, saved) ← pruneSidebarSubTocsIn ((cfg.outputDir.getD ".") / "html-multi")
+  if pages > 0 then
+    IO.println s!"Pruned the sidebar's inherited sub-tables from {pages} pages, \
+      saving {saved / 1048576} MB"
+  return code
 
 /-- `collect`: imports the target project, runs the analysis, and writes the result as JSON
 to `cfg.dataPath`. -/
