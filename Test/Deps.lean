@@ -197,10 +197,33 @@ def mentions (declName constName : Name) (dataOnly : Bool) : MetaM Bool := do
   let all := usedConstantsOf env ``boxedCalled info (includeValue := true)
   return all.any isInternalName && !data.any isInternalName
 
--- `constPropMask` reads declared types: `boxedOfProof`'s second parameter is the `Prop` one.
+/-! ### Choice: the case the mask must *not* cover
+
+`Exists.choose`'s proof argument is not an obligation discharged beside the data — it is what
+supplies the data, and the lemma proving it is the only project declaration a definition of this
+shape names at all. Masking every `Prop` parameter dropped it, which is why the mask is restricted
+to constants that return a structure. -/
+
+theorem existsPos : ∃ n : Nat, 0 < n := ⟨1, Nat.one_pos⟩
+
+/-- The shape of `IsPreBrownianReal.mk`: the whole body is `.choose` of a project lemma. -/
+noncomputable def chosenPos : Nat := existsPos.choose
+
+-- The lemma survives the data walk, where an unrestricted mask would have dropped it.
+/-- info: true -/
+#guard_msgs in
+#eval mentions ``chosenPos ``existsPos (dataOnly := true)
+
+-- `constPropMask` reads declared types: `boxedOfProof`'s second parameter is the `Prop` one, and
+-- `boxedOfProof` returns a structure, so the mask applies to it.
 /-- info: #[false, true] -/
 #guard_msgs in
 #eval constPropMask ``boxedOfProof
+-- `Exists.choose` returns a bare type variable rather than a structure, so it masks nothing even
+-- though its third parameter *is* a proof. This is the check that pins the restriction down.
+/-- info: #[] -/
+#guard_msgs in
+#eval constPropMask ``Exists.choose
 -- An unknown constant masks nothing, so every argument stays data (the conservative direction).
 /-- info: #[] -/
 #guard_msgs in
