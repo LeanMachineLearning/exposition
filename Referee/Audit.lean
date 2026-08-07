@@ -43,6 +43,7 @@ not a work aid, export is a first-class action rather than an afterthought. See 
 
 This module is only the Lean half: the data each page hands to that script, plus the fingerprint
 that lets an imported file recognize the build it was made against.
+
 -/
 
 open Lean
