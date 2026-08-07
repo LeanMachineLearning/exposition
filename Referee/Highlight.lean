@@ -161,6 +161,100 @@ def FileHighlighting.fromJson? (json : Json) : Except String FileHighlighting :=
 instance : ToJson FileHighlighting := ⟨FileHighlighting.toJson⟩
 instance : FromJson FileHighlighting := ⟨FileHighlighting.fromJson?⟩
 
+/-! ## Driving the frontend with asynchronous elaboration
+
+`Elab.async` defaults to `false`, and is turned on only by `runFrontend` and the language server —
+so a tool that drives `Command.elabCommandTopLevel` itself, as this one does, elaborates every
+command on a single thread no matter how many cores it was given. On a monolithic module that is
+the dominant cost: on a 3 000-line file, elaboration measured 17.5 s sequentially against 1.7 s
+with the option set, and the whole `highlight-module` run went from 41.9 s to 12.7 s.
+
+Turning it on has a price the option's own documentation names — the caller becomes "responsible
+for processing messages and other data not only in the resulting command state but also from async
+tasks". Two things move out of the command state, and reading it the obvious way loses both
+*silently*:
+
+* **Info trees.** A command's tree keeps `hole`s whose contents arrive later, recorded in
+  `InfoState.lazyAssignment`. Taking `infoState.trees` directly yields the holes unfilled, and
+  highlighting quietly drops everything inside them. Measured on the same file: 96 of 146
+  declarations lost their `definedNames`, which is the key `build-site` maps a declaration to its
+  highlighting by — so they would have rendered as plain code, with `errors` still reporting none.
+  `InfoState.substituteLazy` fills the holes in.
+* **Messages.** Diagnostics raised inside an asynchronous task are reported through
+  `Command.State.snapshotTasks` rather than accumulating in `State.messages`.
+
+Both are gathered *after* the command loop rather than inside it, and that is what preserves the
+win: a proof body elaborates while the frontend moves on to the next command, so forcing each one
+where it is produced would serialize precisely what the option parallelizes. -/
+
+/-- One command's output, captured before its asynchronous parts have been waited for.
+
+`infoState` is kept whole rather than reduced to its trees, because `lazyAssignment` — the part that
+says what is still missing — lives on it and must survive until `finishItems`. -/
+structure PendingItem where
+  commandSyntax : Syntax
+  infoState : InfoState
+  /-- Messages already in the command state when the command returned. -/
+  messages : MessageLog
+  /-- Tasks this command spawned; their diagnostics are the other half of its messages. -/
+  snaps : Array (Language.SnapshotTask Language.SnapshotTree)
+
+/-- Parses and elaborates one command, returning whether it was the last.
+
+Mirrors SubVerso's `Compat.Frontend.processCommand`, except that it defers the two pieces that
+asynchronous elaboration makes expensive to read eagerly. -/
+def processPendingCommand : FrontendM (Bool × PendingItem) := do
+  updateCmdPos
+  let cmdState ← getCommandState
+  let ictx ← getInputContext
+  let pstate ← getParserState
+  let scope := cmdState.scopes.head!
+  let pmctx := { env := cmdState.env, options := scope.opts,
+                 currNamespace := scope.currNamespace, openDecls := scope.openDecls }
+  let (cmd, ps, messages) :=
+    profileit "parsing" scope.opts fun _ =>
+      Parser.parseCommand ictx pmctx pstate cmdState.messages
+  modify fun s => { s with commands := s.commands.push cmd }
+  setParserState ps
+  setMessages {}
+  runCommandElabM <| setInfoState { enabled := true }
+  elabCommandAtFrontend cmd
+  let st ← getCommandState
+  let item : PendingItem := {
+    commandSyntax := cmd
+    infoState := st.infoState
+    messages := messages ++ st.messages
+    snaps := st.snapshotTasks
+  }
+  -- Taken, not copied: leaving them would make the next command collect this one's tasks again,
+  -- and every later command's messages would grow by everything before it.
+  modify fun s => { s with commandState := { s.commandState with snapshotTasks := #[] } }
+  pure (Parser.isTerminalCommand cmd, item)
+
+/-- Waits for every command's asynchronous work and assembles the frontend result.
+
+The only blocking point in the pipeline. By the time it runs, every command has been dispatched, so
+the tasks it waits on have been running concurrently rather than one after another. -/
+def finishItems (headerSyntax : Syntax) (pending : Array PendingItem) :
+    Compat.Frontend.FrontendResult :=
+  { headerSyntax
+    items := pending.map fun p => {
+      commandSyntax := p.commandSyntax
+      info := p.infoState.substituteLazy.get.trees
+      messages := p.snaps.foldl (init := p.messages) fun msgs task =>
+        task.get.getAll.foldl (init := msgs) (· ++ ·.diagnostics.msgLog) } }
+
+/-- Runs the frontend over every command of the file, elaborating asynchronously where Lean can. -/
+partial def processCommandsAsync (headerSyntax : Syntax) :
+    FrontendM Compat.Frontend.FrontendResult := do
+  let mut done := false
+  let mut pending := #[]
+  while !done do
+    let (done', item) ← processPendingCommand
+    done := done'
+    pending := pending.push item
+  return finishItems headerSyntax pending
+
 /-- Runs the Lean frontend over a source file and returns one `ModuleItem` per command — its
 source range, syntax kind, the names it defines, and its highlighted code — plus any elaboration
 errors.
@@ -183,12 +277,17 @@ unsafe def highlightSource (fname : System.FilePath) : IO FileHighlighting := do
   let commandState : Command.State := { env, maxRecDepth := defaultMaxRecDepth, messages := msgs }
   -- `pp.tagAppFns` makes the delaborator tag applied functions, so that function positions in
   -- rendered terms carry hover information instead of being inert text.
+  --
+  -- `Elab.async` opts into multi-threaded elaboration, which `runFrontend` and the language server
+  -- set for themselves but a caller driving the frontend directly does not get. See the section
+  -- above for what `processCommandsAsync` has to do to earn it.
   let scopes :=
     let sc := commandState.scopes[0]!
-    { sc with opts := sc.opts.setBool `pp.tagAppFns true } :: commandState.scopes.tail!
+    { sc with opts := (sc.opts.setBool `pp.tagAppFns true).setBool `Elab.async true }
+      :: commandState.scopes.tail!
   let commandState := { commandState with scopes }
   let cmdSt ← IO.mkRef { commandState, parserState, cmdPos := parserState.pos }
-  let res ← Compat.Frontend.processCommands headerStx pctx cmdSt
+  let res ← processCommandsAsync headerStx pctx cmdSt
   let res := res.updateLeading contents
   let hls ← (Frontend.runCommandElabM <| liftTermElabM <| highlightFrontendResult res) pctx cmdSt
   let items : Array ModuleItem := hls.zip res.syntax |>.map fun (hl, stx) => {
@@ -220,7 +319,12 @@ unsafe def writeModuleHighlighting (modName : Name) (outPath : System.FilePath) 
   let result ← highlightModule modName
   if let some parent := outPath.parent then
     IO.FS.createDirAll parent
-  IO.FS.writeFile outPath (toString (ToJson.toJson result))
+  -- `compress`, not `toString`: `ToString Json` pretty-prints, which on a single module cost
+  -- 651 ms against 91 ms and wrote 11.3 MB where 9.2 MB says the same thing. These files are
+  -- an intermediate that only `build-site` reads back, so the indentation buys nothing and is
+  -- paid for twice — once writing it, once parsing it again. `collect` already writes its data
+  -- this way.
+  IO.FS.writeFile outPath (ToJson.toJson result).compress
 
 /-- Worker entry point for a standalone file (an extracted minimal file rather than a project
 module): highlight it and write its JSON, including whether it compiled. -/
@@ -228,7 +332,12 @@ unsafe def writeFileHighlighting (leanPath outPath : System.FilePath) : IO Unit 
   let result ← highlightSource leanPath
   if let some parent := outPath.parent then
     IO.FS.createDirAll parent
-  IO.FS.writeFile outPath (toString (ToJson.toJson result))
+  -- `compress`, not `toString`: `ToString Json` pretty-prints, which on a single module cost
+  -- 651 ms against 91 ms and wrote 11.3 MB where 9.2 MB says the same thing. These files are
+  -- an intermediate that only `build-site` reads back, so the indentation buys nothing and is
+  -- paid for twice — once writing it, once parsing it again. `collect` already writes its data
+  -- this way.
+  IO.FS.writeFile outPath (ToJson.toJson result).compress
 
 /-- One unit of work in a fan-out run: a display label and the arguments to pass the worker. -/
 structure WorkItem where
