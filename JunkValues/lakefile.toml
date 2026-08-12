@@ -13,4 +13,8 @@ name = "JunkValues"
 # deliberately does *not* import `JunkValues.Extra` — the optional rule sources are opt-in by import,
 # so nothing in core reaches them. Without this glob they would be silently absent from the build,
 # which is how the restructure was first noticed.
-globs = ["JunkValues.+"]
+#
+# It must be `.*` (the module *and* its submodules), not `.+` (the submodules *only*): `.+` drops the
+# root `JunkValues` module, so every submodule builds and `JunkValues.olean` never does, and any
+# consumer that writes `import JunkValues` fails with "object file … does not exist".
+globs = ["JunkValues.*"]
