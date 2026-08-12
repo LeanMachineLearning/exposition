@@ -1,0 +1,16 @@
+name = "JunkValues"
+version = "0.1.0"
+defaultTargets = ["JunkValues"]
+
+# Deliberately dependency-free: a project that wants to know where its definitions rest on a junk
+# value should not have to take on this repo's build (Verso, SubVerso, MD4Lean, …) to find out.
+# Lean core only. Note in particular that this package does *not* depend on Mathlib, even though
+# Mathlib is where almost every rule it ships comes from — see `JunkValues/Catalogue.lean` for how the
+# catalogue is stated without naming Mathlib as a dependency.
+[[lean_lib]]
+name = "JunkValues"
+# `JunkValues` alone would build only the root module and whatever it imports, and the root
+# deliberately does *not* import `JunkValues.Extra` — the optional rule sources are opt-in by import,
+# so nothing in core reaches them. Without this glob they would be silently absent from the build,
+# which is how the restructure was first noticed.
+globs = ["JunkValues.+"]

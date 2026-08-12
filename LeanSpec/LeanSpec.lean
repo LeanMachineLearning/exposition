@@ -160,6 +160,27 @@ it is applied to, and in that exported view a theorem of the current module does
 private def isProof (info : ConstantInfo) : AttrM Bool :=
   Meta.MetaM.run' (Meta.isProp info.type)
 
+/-- The declaration an entry about the pair `(a, b)` is anchored to — a local one.
+
+Both attributes here relate two declarations, and neither requires them to be declared in the same
+module: `attribute [specifies myDefinition] someImportedTheorem` and
+`attribute [characterization property myDefinition] SomeImportedPredicate` are the shapes that let
+one predicate characterize definitions in several modules without being copied into each. An
+attribute writes its entry into the module being *elaborated*, so either of those records the claim
+in a module that a reader of the local side reaches.
+
+`none` when both are imported, which is the one configuration to reject: the entry would sit in a
+module that neither `a` nor `b` points back to, so a consumer that reaches either of them through
+its own imports would never see it.
+
+The result also feeds `asyncDecl`, which has to name a declaration of the current async context
+when there is one — under `@[attr]` on a declaration that context is the declaration itself, and a
+standalone `attribute` command has none. -/
+private def anchor? (env : Environment) (a b : Name) : Option Name :=
+  if (env.getModuleIdxFor? a).isNone then some a
+  else if (env.getModuleIdxFor? b).isNone then some b
+  else none
+
 /-- The definition a bare `@[specifies]` refers to: the innermost enclosing namespace of `declName`
 that names something a specification can be about. Walks outwards (`Foo.Bar.baz` tries `Foo.Bar`,
 then `Foo`) so that a theorem in a nested namespace still finds its subject, skipping ancestors
@@ -193,9 +214,6 @@ initialize registerBuiltinAttribute {
         | _ => throwError "invalid `specifies` attribute, expected \
           `@[specifies definition \"comment\"]`"
     let env ← getEnv
-    unless (env.getModuleIdxFor? declName).isNone do
-      throwError "cannot apply `specifies` to `{declName}`, which is declared in an imported \
-        module: the annotation would not be recorded in this module's `.olean`"
     let some info := env.find? declName
       | throwError "unknown declaration `{declName}`"
 
@@ -220,6 +238,11 @@ initialize registerBuiltinAttribute {
     if ← isProof targetInfo then
       throwError "`{target}` is itself a proof, but `specifies` names the definition that the \
         annotated theorem is a property of"
+    let some anchor := anchor? env declName target
+      | throwError "cannot record that `{declName}` specifies `{target}`: both are declared in \
+          imported modules, so the entry would sit in a module neither of them points back to and \
+          a consumer reaching either through its own imports would not see it. Write the \
+          annotation in the module that declares one of them."
 
     if (specEntries env).any fun e => e.theoremName == declName && e.target == target then
       throwError "`{declName}` is already part of the specification of `{target}`"
@@ -237,7 +260,7 @@ initialize registerBuiltinAttribute {
 
     let comment := (commentStx?.map TSyntax.getString).getD ""
     modifyEnv fun env =>
-      specExt.addEntry (asyncDecl := declName) env { theoremName := declName, target, comment }
+      specExt.addEntry (asyncDecl := anchor) env { theoremName := declName, target, comment }
 }
 
 /-!
@@ -309,9 +332,28 @@ mutually un-importable (see the note on the `specifies` name above). The three r
 share one registered name, distinguished by a mandatory keyword.
 
 The relation gets no attribute at all: it is read off the uniqueness theorem's conclusion. That is
-the only thing that could work — `Eq` is declared in core, `Filter.EventuallyEq` in Mathlib, and
-this file refuses to annotate an imported declaration; and a relation like `Setoid.r s` is a
-partial application with no declaration to annotate in the first place.
+the only thing that could work — a relation like `Setoid.r s` is a partial application with no
+declaration to annotate in the first place, and requiring one on `Eq` and `Filter.EventuallyEq`
+would make every project re-annotate core and Mathlib before it could state a uniqueness theorem.
+
+### Where the annotation lives
+
+A predicate and the definition it characterizes need not be declared in the same module, and the
+case that needs them not to be is a *shared* predicate — `IsCondExp`, say — registered against
+each of several definitions from those definitions' own modules:
+
+```lean
+attribute [characterization property myDefinition] SomeImportedPredicate
+```
+
+An attribute writes its entry into the module being elaborated, so this records the claim where a
+reader of `myDefinition` finds it. Without it a shared predicate would have to be copied, once per
+definition, into every module that wanted to use it.
+
+What is rejected is only the case where the two declarations an entry relates are *both* imported.
+The entry would then sit in a module neither of them points back to, and a consumer that reached
+either through its own imports would never see it. Same rule for `@[specifies]`, whose entries
+relate a theorem and a definition.
 
 ### The same `.olean` caveats
 
@@ -681,9 +723,6 @@ initialize registerBuiltinAttribute {
     let comment := (commentStx?.bind Syntax.isStrLit?).getD ""
 
     let env ← getEnv
-    unless (env.getModuleIdxFor? declName).isNone do
-      throwError "cannot apply `characterization` to `{declName}`, which is declared in an \
-        imported module: the annotation would not be recorded in this module's `.olean`"
     let some info := env.find? declName
       | throwError "unknown declaration `{declName}`"
 
@@ -708,6 +747,11 @@ initialize registerBuiltinAttribute {
           land in `Prop` with a last argument of the type its definition has, or returns, so that \
           `{declName} … ({target} …)` is a proposition. Here the property is\
           {indentExpr info.type}\nand the definition is{indentExpr targetInfo.type}"
+      let some anchor := anchor? env declName target
+        | throwError "cannot record a characterization of `{target}` by `{declName}`: both are \
+            declared in imported modules, so the entry would sit in a module neither of them \
+            points back to and a consumer reaching either through its own imports would not see \
+            it. Write the annotation in the module that declares one of them."
       if (charEntries env).any fun e =>
           e.role == .property && e.declName == declName && e.target == target then
         throwError "`{declName}` is already registered as a characterizing property of `{target}`"
@@ -723,7 +767,7 @@ initialize registerBuiltinAttribute {
             nothing down. Set `characterization.checkNotCircular` to `false` to silence this."
 
       modifyEnv fun env =>
-        charExt.addEntry (asyncDecl := declName) env
+        charExt.addEntry (asyncDecl := anchor) env
           { declName, role := .property, property := declName, target, comment }
     else
       unless ← isProof info do
@@ -765,20 +809,26 @@ initialize registerBuiltinAttribute {
               or between one such object and {andList targets}. Its statement is\
               {indentExpr info.type}"
 
+      let some anchor := anchor? env declName target
+        | throwError "cannot record that `{declName}` is the {role.keyword} part of the \
+            characterization of `{target}`: both are declared in imported modules, so the entry \
+            would sit in a module neither of them points back to and a consumer reaching either \
+            through its own imports would not see it. Write the annotation in the module that \
+            declares one of them."
       if (charEntries env).any fun e =>
           e.role == role && e.declName == declName && e.property == pred && e.target == target then
         throwError "`{declName}` is already registered as the {role.keyword} part of the \
           characterization of `{target}` by `{pred}`"
 
       modifyEnv fun env =>
-        charExt.addEntry (asyncDecl := declName) env
+        charExt.addEntry (asyncDecl := anchor) env
           { declName, role, property := pred, target, relation, relationHead, comment }
       -- A theorem of a characterization is a fortiori part of the specification of the
       -- definition, so it is recorded as one too — see the note on `specEntries` above. Skipped
       -- when the author also wrote `@[specifies]`, whose own duplicate check is an error.
       unless (specEntries env).any fun e => e.theoremName == declName && e.target == target do
         modifyEnv fun env =>
-          specExt.addEntry (asyncDecl := declName) env
+          specExt.addEntry (asyncDecl := anchor) env
             { theoremName := declName, target, comment }
 }
 

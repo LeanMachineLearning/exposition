@@ -1,0 +1,47 @@
+{"plugins": [],
+ "package": "JunkValues",
+ "options": {},
+ "name": "JunkValues",
+ "isModule": true,
+ "importArts":
+ {"JunkValues.Scan":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Scan.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Scan.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Scan.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Scan.ir"]],
+  "JunkValues.RuleSet":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.ir"]],
+  "JunkValues.Rule":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.ir"]],
+  "JunkValues.Report":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Report.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Report.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Report.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Report.ir"]],
+  "JunkValues.Registry":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.ir"]],
+  "JunkValues.Guard":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Guard.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Guard.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Guard.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Guard.ir"]],
+  "JunkValues.Frontend":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Frontend.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Frontend.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Frontend.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Frontend.ir"]],
+  "JunkValues.Elab":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Elab.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Elab.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Elab.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Elab.ir"]]},
+ "dynlibs": []}

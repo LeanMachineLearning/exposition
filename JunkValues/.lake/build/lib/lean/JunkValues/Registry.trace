@@ -1,0 +1,38 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"rs": "53ff572cd8f9e248.ir.sig",
+  "r": "bdd8f81de1bd25d7.ir",
+  "o":
+  ["14469e16fe0aa9e6.olean",
+   "0d83ea7a8f223a9d.olean.server",
+   "1b9900e21aa47ca4.olean.private"],
+  "m": true,
+  "i": "8a6a08fdc848d424.ilean",
+  "c": "c2850bdee3757c73.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean /home/rdegenne/.elan/toolchains/leanprover--lean4---v4.33.0-rc1/bin/lean /home/rdegenne/Documents/Lean/exposition/JunkValues/JunkValues/Registry.lean -o /home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.olean -i /home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.ilean -c /home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/ir/JunkValues/Registry.c --setup /home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/ir/JunkValues/Registry.setup.json --json",
+   "level": "trace"}],
+ "inputs":
+ [["deps",
+   [["JunkValues/JunkValues:extraDep",
+     [["@JunkValues:extraDep", "00000000000006bb"]]],
+    ["imports",
+     [["JunkValues.Rule transitive imports (public)", "00000000000006bb"],
+      ["JunkValues.Rule:importArts", "9842f0963dfcfbfb"]]]]],
+  ["libs",
+   [["import dynlibs", "00000000000006bb"],
+    ["package external libraries", "00000000000006bb"],
+    ["module dynlibs", "00000000000006bb"],
+    ["module plugins", "00000000000006bb"]]],
+  ["Lean 4.33.0, commit 62eed1db4d67327ec8120be05f1a1b0847d74561",
+   "8fa8fbe052c71a8e"],
+  ["/home/rdegenne/Documents/Lean/exposition/JunkValues/JunkValues/Registry.lean",
+   "c1008524e7ed41ec"],
+  ["options", "00000000000006bb"],
+  ["isModule: true", "760fcc16989f4b9b"],
+  ["Module.name: JunkValues.Registry", "356c4abb9ae77be9"],
+  ["Package.id?: (some JunkValues)", "ba808cb64edf0db0"],
+  ["Module.leanArgs: #[]", "00000000000006bb"]],
+ "depHash": "b75537c87146f9a9"}

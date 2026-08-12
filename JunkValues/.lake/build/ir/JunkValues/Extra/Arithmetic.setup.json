@@ -1,0 +1,27 @@
+{"plugins": [],
+ "package": "JunkValues",
+ "options": {},
+ "name": "JunkValues.Extra.Arithmetic",
+ "isModule": true,
+ "importArts":
+ {"JunkValues.RuleSet":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.ir"]],
+  "JunkValues.Rule":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.ir"]],
+  "JunkValues.Registry":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.ir"]],
+  "JunkValues.Extra.Entry":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Entry.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Entry.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Entry.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Entry.ir"]]},
+ "dynlibs": []}

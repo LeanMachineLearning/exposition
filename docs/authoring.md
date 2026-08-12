@@ -95,6 +95,31 @@ a gap rather than dropped, and says which half is missing. Each of the three dec
 *Part of a characterization* back-link on its own page, so a reader landing on `IsEntropy.unique`
 learns what it is for.
 
+**The Specification section does not repeat any of it.** Both theorems of a characterization also
+register as `@[specifies]` annotations — that is what lets a consumer which only knows about
+specifications still see them — so a characterized definition would otherwise list them twice on one
+page: once inside the claim that determines it, and again below as loose properties it happens to
+satisfy. The second listing is strictly weaker and says nothing the first did not, so whatever the
+Characterization section showed is dropped from the Specification section below it, which says so
+when its count no longer matches the project's annotations. The same holds in the other direction: a
+theorem that is one of a claim's three parts gets the *Part of a characterization* back-link and not
+a second *Part of a specification* one. A definition whose only `@[specifies]` theorems are its
+characterization's therefore has no Specification section at all — and is *not* told it has no
+specification, because it has one, directly above.
+
+**A complete claim also gets its own dependency graph.** The picture a declaration page draws is
+what the definition is *built from*, which for a constructed object is an expensive answer to a
+question the reader may not be asking: building a stochastic integral is work, and recognising one
+is a predicate. So the graph on a characterized definition's page carries a switch — *Construction*
+against one *via `IsEntropy`* per complete claim — and the second view draws the property, the
+relation the uniqueness theorem stops at, and everything those two mean. The definition and the two
+theorems appear in it but are not expanded: that is the claim the view is making, and the note above
+the picture gives both node counts so the gap between them is a number rather than an impression.
+
+Only complete bundles get a view. Existence without uniqueness determines nothing, so offering it as
+something to read *instead of* the construction would send a reader away thinking they knew what the
+object was.
+
 Both theorems also register as `@[specifies]` annotations, so everything above applies to them
 unchanged: a characterized definition counts as specified on the Specifications page and the Browse
 column with no extra work. Those two pages do not yet separate the characterized from the merely

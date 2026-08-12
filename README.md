@@ -58,14 +58,15 @@ smallest thing a reader can check a statement against, optionally linked into th
 
 ## Usable without the rest
 
-Two pieces are separate, dependency-free Lake packages — Lean core only — so a project can take
-either one without taking Referee's build (Verso, SubVerso, MD4Lean, …) along with it. Referee is a
-consumer of both, not their owner.
+Three pieces are separate, dependency-free Lake packages — Lean core only — so a project can take
+any one of them without taking Referee's build (Verso, SubVerso, MD4Lean, …) along with it. Referee
+is a consumer of all three, not their owner.
 
 | | |
 |---|---|
 | [`LeanDeps/`](LeanDeps/) | What every declaration rests on: the constants its statement uses, and the ones its statement and proof use — recovering the four things an elaborated term drops (compiler helpers, `Expr.proj` structures, notation expansions, coercion instances) — plus reverse edges and transitive closure in topological order. |
 | [`LeanSpec/`](LeanSpec/) | `@[specifies]` and `@[characterization]`: which theorems their author offers as the specification of a definition, and which properties pin one down uniquely. |
+| [`JunkValues/`](JunkValues/) | `@[junk_value]` and a linter: where a definition rests on the value a total function returns outside its intended domain — *if `f + g` is not integrable then `∫ (f + g) = 0`*. A rule is not a hand-maintained table entry but the theorem that already proves the collapse, so no rule can claim a default the kernel has not checked. Rules for libraries you cannot annotate live in [`Extra/`](JunkValues/JunkValues/Extra/) and are opt-in by import. |
 
 ```lean
 require LeanDeps from git

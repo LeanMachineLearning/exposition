@@ -1,0 +1,36 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"rs": "e86780be5b9ba268.ir.sig",
+  "r": "9ad77e8b5fa33348.ir",
+  "o":
+  ["e704b36919f83476.olean",
+   "242fc58b8a969b04.olean.server",
+   "eb54e6758a3b74fd.olean.private"],
+  "m": true,
+  "i": "22d4159e4bec576c.ilean",
+  "c": "8f72a21286c70cdb.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean /home/rdegenne/.elan/toolchains/leanprover--lean4---v4.33.0-rc1/bin/lean /home/rdegenne/Documents/Lean/exposition/JunkValues/JunkValues/Rule.lean -o /home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.olean -i /home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.ilean -c /home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/ir/JunkValues/Rule.c --setup /home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/ir/JunkValues/Rule.setup.json --json",
+   "level": "trace"}],
+ "inputs":
+ [["deps",
+   [["JunkValues/JunkValues:extraDep",
+     [["@JunkValues:extraDep", "00000000000006bb"]]],
+    ["imports", "00000000000006bb"]]],
+  ["libs",
+   [["import dynlibs", "00000000000006bb"],
+    ["package external libraries", "00000000000006bb"],
+    ["module dynlibs", "00000000000006bb"],
+    ["module plugins", "00000000000006bb"]]],
+  ["Lean 4.33.0, commit 62eed1db4d67327ec8120be05f1a1b0847d74561",
+   "8fa8fbe052c71a8e"],
+  ["/home/rdegenne/Documents/Lean/exposition/JunkValues/JunkValues/Rule.lean",
+   "811b581f646995f8"],
+  ["options", "00000000000006bb"],
+  ["isModule: true", "760fcc16989f4b9b"],
+  ["Module.name: JunkValues.Rule", "8159900b06b3a6d8"],
+  ["Package.id?: (some JunkValues)", "ba808cb64edf0db0"],
+  ["Module.leanArgs: #[]", "00000000000006bb"]],
+ "depHash": "1da78f57173dcf78"}

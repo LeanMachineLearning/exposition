@@ -294,33 +294,11 @@ code, pre {
 
 /* ------------------------------------------------------- declaration cards */
 
+/* The top margin came off the heading that used to sit between the page title and the card. The
+   card is now the first thing under the title and still needs the gap. */
 .decl-section {
+  margin-top: 1.4rem;
   scroll-margin-top: 5rem;
-}
-
-.decl-heading {
-  align-items: baseline;
-  display: flex;
-  gap: .5rem;
-  margin: 2.2rem 0 .6rem;
-}
-
-.decl-heading code {
-  font-size: 1.05rem;
-  font-weight: 600;
-}
-
-.decl-permalink {
-  color: var(--site-ink-3);
-  font-size: .85rem;
-  opacity: 0;
-  text-decoration: none;
-  transition: opacity .12s ease;
-}
-
-.decl-heading:hover .decl-permalink,
-.decl-permalink:focus-visible {
-  opacity: 1;
 }
 
 .decl-card {
@@ -375,15 +353,6 @@ code, pre {
 
 .decl-card-label--theorem {
   color: var(--site-kind-theorem);
-}
-
-.decl-card-name {
-  display: block;
-  font-family: var(--verso-code-font-family);
-  font-size: .95rem;
-  font-weight: 550;
-  margin-top: .15rem;
-  overflow-wrap: anywhere;
 }
 
 .decl-card-tagbar {
@@ -1456,6 +1425,49 @@ body.hide-theorems [data-decl-group="theorem"] {
   padding: .9rem;
 }
 
+/* The view switch: which node set the picture draws. A segmented control rather than another pill
+   in the toolbar, because it is a different order of choice — the toolbar narrows what you see of
+   one graph, this changes which question the graph answers. */
+.graph-views {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin-bottom: .5rem;
+  width: fit-content;
+}
+
+.graph-view-btn {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border);
+  color: var(--site-ink-2);
+  cursor: pointer;
+  font-family: var(--verso-structure-font-family);
+  font-size: .85rem;
+  padding: .4rem .9rem;
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease;
+}
+
+.graph-view-btn + .graph-view-btn { border-left: none; }
+.graph-view-btn:first-child { border-radius: 999px 0 0 999px; }
+.graph-view-btn:last-child { border-radius: 0 999px 999px 0; }
+.graph-view-btn:hover { border-color: var(--site-border-strong); color: var(--site-ink); }
+
+/* The selected view. Filled rather than merely outlined: with two pills side by side an outline
+   difference is not legible at a glance, and which one you are looking at is the whole point. */
+.graph-view-btn[aria-pressed="true"] {
+  background: var(--site-accent);
+  border-color: var(--site-accent);
+  color: var(--site-surface);
+}
+
+.graph-viewnote {
+  color: var(--site-ink-3);
+  font-size: .84rem;
+  line-height: 1.55;
+  margin: 0 0 .7rem;
+  max-width: 62ch;
+}
+
 .graph-toolbar {
   align-items: center;
   display: flex;
@@ -1569,6 +1581,17 @@ body.hide-theorems [data-decl-group="theorem"] {
 .graph-panel-warn {
   color: var(--site-warn);
   font-weight: 550;
+}
+
+/* A node this view stopped at. Set apart with a rule and quiet ink rather than the warning colour:
+   it corrects an assumption the reader is entitled to make about the picture, which is worth
+   interrupting for, but nothing here is wrong. */
+.graph-panel-cut {
+  border-left: 2px dotted var(--site-border-strong);
+  color: var(--site-ink-2);
+  line-height: 1.5;
+  margin: .5rem 0;
+  padding-left: .6rem;
 }
 
 /* The selected declaration's statement. Scrolls rather than wraps: a broken Lean statement is

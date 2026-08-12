@@ -1,0 +1,42 @@
+{"plugins": [],
+ "package": "JunkValues",
+ "options": {},
+ "name": "JunkValues.Extra",
+ "isModule": true,
+ "importArts":
+ {"JunkValues.RuleSet":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/RuleSet.ir"]],
+  "JunkValues.Rule":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Rule.ir"]],
+  "JunkValues.Registry":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Registry.ir"]],
+  "JunkValues.Extra.Entry":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Entry.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Entry.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Entry.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Entry.ir"]],
+  "JunkValues.Extra.Discovery":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Discovery.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Discovery.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Discovery.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Discovery.ir"]],
+  "JunkValues.Extra.Catalogue":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Catalogue.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Catalogue.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Catalogue.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Catalogue.ir"]],
+  "JunkValues.Extra.Arithmetic":
+  [["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Arithmetic.olean",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Arithmetic.olean.server"],
+   ["/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Arithmetic.ir.sig",
+    "/home/rdegenne/Documents/Lean/exposition/JunkValues/.lake/build/lib/lean/JunkValues/Extra/Arithmetic.ir"]]},
+ "dynlibs": []}

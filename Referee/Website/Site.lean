@@ -138,17 +138,17 @@ block_extension Block.declCard (_payload : DeclCardData) where
       else "decl-card"
     let labelClass := if isMainTheorem then "decl-card-label decl-card-label--theorem" else "decl-card-label"
     let declGroup := declGroupOfFields payload.kindLabel payload.isLemma payload.isInstanceDecl
+    -- No name of its own. The card is the only one on its page and the page's `<h1>` is that name,
+    -- so a heading above the card and a name inside it printed it a second and third time — once
+    -- abbreviated, once in full — within a few lines of the title. The `id` moves here from the
+    -- heading that carried it, so `#anchorId` still lands on the card.
     pure {{
-      <section class="decl-section" data-decl-kind={{payload.kindLabel}} data-card-group={{declGroup}}>
-        <h2 id={{payload.anchorId}} class="decl-heading">
-          <code>{{payload.shortName}}</code>
-          <a class="decl-permalink" href={{s!"#{payload.anchorId}"}} title="Permalink">"🔗"</a>
-        </h2>
+      <section id={{payload.anchorId}} class="decl-section" data-decl-kind={{payload.kindLabel}}
+          data-card-group={{declGroup}}>
         <div class={{cardClass}}>
           <div class="decl-card-header">
             <div class="decl-card-title">
               <span class={{labelClass}}>{{displayLabel}}</span>
-              <code class="decl-card-name">{{payload.fullName}}</code>
             </div>
             <div class="decl-card-tagbar">{{tagsHtml}}</div>
           </div>
@@ -1189,23 +1189,20 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
         leanCodeBlock ((ctx.declHighlights.get? decl.name).map (Highlight.declCode decl.name))
           decl.displaySignature
       else .code decl.displaySignature
-    -- The proof, then the links. Nothing about the declaration's dependencies: "Type uses" is the
-    -- expanded *Its statement mentions* list further down, "Body uses" is inside *Everything it rests
-    -- on*, and both are drawn in the graph as well — three renderings of one fact, the first of them
-    -- in the place a reader looks for what the declaration *says*. "Used by" had no second home but
-    -- answers a question this page is not for: who else depends on this is a property of the library,
-    -- not of the claim.
+    -- The proof, then the links. Nothing about the declaration's dependencies: "Type uses" and
+    -- "Body uses" are both drawn in the graph directly below, and a second rendering of the same
+    -- fact in the place a reader looks for what the declaration *says* is worse than none. "Used by"
+    -- has no second home but answers a question this page is not for: who else depends on this is a
+    -- property of the library, not of the claim.
     if let some proof := decl.proofText? then
       blocks := blocks.push <| .other (Block.details { summary := "Proof" }) #[.code proof]
     if let some block := mkLinkParagraph sourceUrl issueUrl then
       blocks := blocks.push block
     let cardData : DeclCardData := {
       anchorId := anchorIdOf decl.name
-      shortName := decl.name.getString!
       kindLabel := decl.kind.label
       isLemma := decl.isLemma
       isInstanceDecl := decl.isInstanceDecl
-      fullName := decl.name.toString
       tags := #[
         if decl.dependsOnSorry then some "depends transitively on sorry" else none
       ].filterMap id
@@ -1268,14 +1265,23 @@ questions:
   question about the closure, and this is the trust surface — the same set the sorries page counts. On
   `AlphaRAR` it comes to at most 9 nodes on any page and 0 on most, the whole surface into
   `LeanMachineLearning` being 15 declarations.
-* **audited** packages, for the focus declaration only. Here the question is not trust — the reader
-  has already said they accept the package — but *what this statement is about*, which is a property
-  of this statement and not of everything below it. Over the whole closure it would be several
-  hundred Mathlib nodes; for one statement it is a median of 21.
+* **audited** packages, for the `statements` declarations only. Here the question is not trust — the
+  reader has already said they accept the package — but *what this statement is about*, which is a
+  property of this statement and not of everything below it. Over the whole closure it would be
+  several hundred Mathlib nodes; for one statement it is a median of 21. Normally the one declaration
+  the page is about; a characterization view passes the property and the relation instead, those
+  being the statements that view exists to show.
+
+`pinned` names constants that must be drawn whatever their package's trust and whatever
+`showTrustedUpstream` says: a characterization stops at a relation that is very often an upstream
+one (`Filter.EventuallyEq`), and a view whose whole subject is the relation cannot leave it out
+because Mathlib happens to be audited. Toolchain constants are still dropped — `Eq` as a node says
+nothing — since `packageOf` refuses them.
 
 Proof-only references are excluded from both by `depsOf` being `meaningDeps`. -/
 private def withUpstreamNodes (data : GraphData) (decls : Array DeclInfo) (ctx : SiteContext)
-    (depsOf : DeclInfo → Array Name) (focus? : Option Name := none) : GraphData :=
+    (depsOf : DeclInfo → Array Name) (statements : Array Name := #[])
+    (pinned : Array Name := #[]) : GraphData :=
   let shown : Std.HashSet String := data.nodes.foldl (fun acc n => acc.insert n.id) {}
   let packageOf (dep : Name) : Option (Name × Bool) := do
     let ext ← ctx.externalDecls.get? dep
@@ -1298,9 +1304,14 @@ private def withUpstreamNodes (data : GraphData) (decls : Array DeclInfo) (ctx :
           | none => acc
   -- Audited packages only on request: see `Cli.showTrustedUpstream` for why the default is off.
   let focusDecls :=
-    if ctx.showTrustedUpstream then decls.filter (fun d => focus? == some d.name) else #[]
+    if ctx.showTrustedUpstream then decls.filter (fun d => statements.contains d.name) else #[]
   let surface := (gather focusDecls true).fold (init := gather decls false) fun acc k v =>
     acc.insert k v
+  let surface := pinned.foldl (init := surface) fun acc name =>
+    if ctx.declByName.contains name then acc
+    else match packageOf name with
+      | some pkg => acc.insert name pkg
+      | none => acc
   /- Close the surface over each expanded package's own edges, so an unaudited package is drawn with
   the structure it actually has rather than as a flat row of the names this project happens to
   mention. Only packages `collect` could walk inside its budget carry edges at all
@@ -1515,26 +1526,6 @@ private def sorryChain (start : Name) (ctx : SiteContext) : Option (Array Name) 
       cursor := p
   return some path.reverse
 
-/-- A compact one-line-per-entry listing of dependencies.
-
-The reason this is not a list of cards: closures here reach 522 declarations, and rendering a full
-card each produced 176k cards across the corpus and pages averaging 454 KB. A reader scanning a
-closure wants names, kinds, and whether anything is flagged; the full statement is one click, or
-in the minimal file. -/
-private def compactDepList (names : Array Name) (ctx : SiteContext) : Option (Block Manual) :=
-  let entries := names.filterMap fun name => do
-    let d ← ctx.declByName.get? name
-    let href ← ctx.declPageHrefs.get? name
-    pure {
-      name := name.toString
-      href := href
-      kind := d.displayKind
-      group := declGroupOfFields d.kind.label d.isLemma d.isInstanceDecl
-      dependsOnSorry := d.dependsOnSorry
-      : DeclIndexEntry
-    }
-  if entries.isEmpty then none else some (.other (Block.declIndex { entries }) #[])
-
 /-- Number of project declarations in a declaration's closure. Used both as the audit-surface
 measure and to rank claims: among results nothing else builds on, the one resting on the most
 machinery is usually the substantial one. -/
@@ -1656,9 +1647,12 @@ auditing work — show where it is absent.
 
 All of it is gated on `SiteContext.usesSpecs`; see the note there. -/
 
-/-- The theorems put forward as `decl`'s specification, with their statements. -/
-private def specTheoremRows (decl : DeclInfo) (ctx : SiteContext) : Array SpecRow :=
-  decl.specifiedBy.map fun link =>
+/-- The theorems put forward as a definition's specification, with their statements.
+
+Takes the links rather than the declaration because the caller filters them first: a theorem the
+characterization above already showed is not shown again here. See `charShownNames`. -/
+private def specTheoremRows (links : Array SpecLink) (ctx : SiteContext) : Array SpecRow :=
+  links.map fun link =>
     match ctx.declByName.get? link.name with
     | some thm => {
         name := link.name.toString
@@ -1677,9 +1671,11 @@ No statements here, unlike the other direction. The reader is on the theorem's p
 its statement above; what they are missing is which definition it speaks for — and a definition's
 "statement" can be a whole structure body, which would swamp the note it is meant to carry. The
 target may also be outside the project (a `Mathlib` definition), in which case there is no page to
-link to and the name is shown plain. -/
-private def specTargetRows (decl : DeclInfo) (ctx : SiteContext) : Array SpecRow :=
-  decl.specifies.map fun link =>
+link to and the name is shown plain.
+
+Takes the links rather than the declaration for the same reason `specTheoremRows` does. -/
+private def specTargetRows (links : Array SpecLink) (ctx : SiteContext) : Array SpecRow :=
+  links.map fun link =>
     let target? := ctx.declByName.get? link.name
     { name := link.name.toString
       href := ctx.declPageHrefs.getD link.name ""
@@ -1845,36 +1841,78 @@ private def mkCharBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Ma
     blocks := blocks.push <| .other (Block.specList { entries := charPartOfRows decl ctx }) #[]
   return blocks
 
+/-- The declarations the characterization section directly above has already put on the page: for
+each claim, its property and both kinds of theorem.
+
+Both theorems of a characterization also register as `@[specifies]` annotations — see
+`DeclInfo.characterizedBy` — so without this every characterized definition listed them twice on one
+page: once inside the claim that determines it, and again a few lines below as loose properties it
+happens to satisfy. The second listing is strictly weaker than the first and says nothing the first
+did not, so it is the one that goes.
+
+Empty when `usesChars` is false, which is exactly when no characterization is rendered: nothing is
+ever hidden from the specification on the strength of a card the reader cannot see. -/
+private def charShownNames (decl : DeclInfo) (ctx : SiteContext) : Std.HashSet Name :=
+  if !ctx.usesChars then {} else
+    decl.characterizedBy.foldl (init := ({} : Std.HashSet Name)) fun acc bundle =>
+      let acc := bundle.existence.foldl (·.insert ·) (acc.insert bundle.property)
+      bundle.uniqueness.foldl (fun acc u => acc.insert u.name) acc
+
+/-- The claims the "Part of a characterization" listing has already named, for the other direction:
+a theorem that is one of a claim's three parts also carries `@[specifies]` for the same target, so
+the target is otherwise named twice on the theorem's page. -/
+private def charShownTargets (decl : DeclInfo) (ctx : SiteContext) : Std.HashSet Name :=
+  if !ctx.usesChars then {} else
+    decl.characterizes.foldl (init := ({} : Std.HashSet Name)) fun acc link =>
+      acc.insert link.target
+
 /-- The specification section of a declaration page: two directions and one absence.
 
 The absence is the reason this is worth rendering at all. A definition with a specification gets a
 list a reader can check; a definition without one gets told so, in the same place, because "nobody
 has said what this means" is exactly the finding an auditor is looking for and it is invisible
-otherwise. -/
+otherwise.
+
+Both directions are filtered against what the characterization above already showed; see
+`charShownNames`. The absence is *not* filtered — it is decided on the unfiltered annotations, so a
+definition whose only `@[specifies]` theorems are its characterization's is told nothing rather than
+told it has no specification. It has one; it is the section above. -/
 private def mkSpecBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
   Id.run do
   if !ctx.usesSpecs then
     return #[]
+  let shownNames := charShownNames decl ctx
+  let specifiedBy := decl.specifiedBy.filter fun link => !shownNames.contains link.name
+  let shownTargets := charShownTargets decl ctx
+  let specifies := decl.specifies.filter fun link => !shownTargets.contains link.name
   let mut blocks : Array (Block Manual) := #[]
-  if !decl.specifiedBy.isEmpty then
+  if !specifiedBy.isEmpty then
     blocks := blocks.push <|
-      .other (Block.sectionHeading s!"Specification ({decl.specifiedBy.size})") #[]
-    blocks := blocks.push <| .para #[
+      .other (Block.sectionHeading s!"Specification ({specifiedBy.size})") #[]
+    blocks := blocks.push <| .para <| #[
       .text "What the author offers as evidence that ", .code decl.name.toString,
       .text " is the intended definition. Each of these theorems is marked ", .code "@[specifies]",
       .text " in the source, so this list is the author's claim rather than anything derived."
-    ]
-    blocks := blocks.push <| .other (Block.specList { entries := specTheoremRows decl ctx }) #[]
-  else if decl.isDefinitionLike then
+    ] ++
+      -- Said only when something was in fact dropped, and said here rather than as a note on the
+      -- missing rows: a count that no longer matches the project's annotations is the one thing a
+      -- reader might otherwise take for a bug in the site.
+      (if specifiedBy.size == decl.specifiedBy.size then #[] else
+        #[.text " The characterization's own theorems are not repeated here — they are above, in \
+          the stronger claim they belong to."])
+    blocks := blocks.push <|
+      .other (Block.specList { entries := specTheoremRows specifiedBy ctx }) #[]
+  else if decl.isDefinitionLike && decl.specifiedBy.isEmpty then
     blocks := blocks.push <| .para #[
       .bold #[.text "No specification. "],
       .text "No theorem in this project is marked as part of what ", .code decl.name.toString,
       .text " means, so nothing here settles whether it is the intended definition — that is a \
         judgement the reader has to make from the body."
     ]
-  if !decl.specifies.isEmpty then
+  if !specifies.isEmpty then
     blocks := blocks.push <| .para #[.bold #[.text "Part of a specification"]]
-    blocks := blocks.push <| .other (Block.specList { entries := specTargetRows decl ctx }) #[]
+    blocks := blocks.push <|
+      .other (Block.specList { entries := specTargetRows specifies ctx }) #[]
   return blocks
 
 /-! ## Revisions
@@ -2157,11 +2195,104 @@ private def mkMinimalFileLink (decl : DeclInfo) (ctx : SiteContext) : Array (Blo
   return #[.para <| #[.text "Self-contained, with its dependencies inlined and proofs replaced by ",
     .code "sorry", .text ": "] ++ joinInlines offers.toList #[.text " · "] ++ #[.text "."]]
 
-/-- Builds a dedicated detail page for one declaration: its own card, its audit surface and trust
-summary, its local dependency graph, and compact listings of what it rests on.
+/-- Deduplicates `names`, keeping the first occurrence of each. -/
+private def dedupNames (names : Array Name) : Array Name :=
+  (names.foldl (init := ((#[] : Array Name), ({} : Std.HashSet Name))) fun (out, seen) n =>
+    if seen.contains n then (out, seen) else (out.push n, seen.insert n)).1
 
-Deliberately *not* a card per transitive dependency, which is what the previous version rendered:
-see `compactDepList`. -/
+/-- The characterization views of a definition's dependency graph: one per complete claim.
+
+The picture a declaration page draws by default is what the definition is *built from*, which for a
+constructed object is an expensive answer to a question the reader may not be asking. A
+characterization offers a second and usually far cheaper one: to know what an object *is* it is
+enough to read the property that pins it down and the relation the uniqueness theorem stops at, and
+neither of those mentions the construction. Building a stochastic integral is work; recognising one
+is a predicate. This draws that second picture — the two seeds and everything they mean.
+
+The definition and the two theorems are drawn but *not* expanded: their own dependencies enter only
+where the picture already contains them. That is not a truncation to apologise for, it is the claim
+the view is making, and the construction is one button away for a reader who wants it. What the
+overlap shows is real either way — an edge from the property's closure into the definition means the
+two genuinely share that dependency.
+
+Only complete bundles get a view. Existence without uniqueness determines nothing, so offering it as
+something to read *instead of* the construction would be a false economy — the reader would come
+away thinking they knew what the object was. -/
+private def mkCharGraphViews (decl : DeclInfo) (ctx : SiteContext) (baseSize : Nat) :
+    Array GraphView :=
+  decl.characterizedBy.filterMap fun bundle =>
+    if !bundle.isComplete then none else
+    -- The property, and each distinct relation the claim stops at. A toolchain relation (`Eq`,
+    -- `Iff`) stays in the seed list and is dropped by `withUpstreamNodes`, on the same grounds as
+    -- `charRelationRow?` drops it from the cards: a node labelled `Eq` explains nothing.
+    let heads := bundle.uniqueness.foldl (init := (#[] : Array Name)) fun acc u =>
+      if u.relationHead.isAnonymous then acc else acc.push u.relationHead
+    let seeds := dedupNames (#[bundle.property] ++ heads)
+    -- The seeds and their meaning closures: everything a reader has to accept in order to read the
+    -- claim. A seed outside the project contributes no closure here and is drawn in the upstream
+    -- band instead, which is why it is pinned below.
+    let expanded := dedupNames <| seeds.foldl (init := #[]) fun acc s =>
+      match ctx.declByName.get? s with
+      | none => acc
+      | some d => (acc.push s) ++ d.dataTransDeps
+    -- The two theorems: nodes, not roots. Nothing below them is pulled in beyond what the seeds
+    -- already reach, which for the existence theorem is the whole point — its statement names the
+    -- definition, and following that would drag the construction back in through the side door.
+    let claimNames := dedupNames
+      (expanded ++ bundle.existence ++ bundle.uniqueness.map (·.name))
+    let claimDecls := claimNames.filterMap ctx.declByName.get?
+    let graphDecls := (dedupNames (claimNames.push decl.name)).filterMap ctx.declByName.get?
+    -- `claimDecls` rather than `graphDecls` for the band, which differ by the definition alone: the
+    -- upstream a view reports has to be the upstream of what it says you need, and the definition's
+    -- own unaudited references are exactly what this view says you can skip. The theorems stay in,
+    -- because a reader does read their statements — and because a property that lives upstream is
+    -- drawn in the band, where its edges to those theorems are the only thing tying the picture
+    -- together.
+    let data := transitiveReduce
+      (withUpstreamNodes
+        (mkGraphData graphDecls ctx.declPageHrefs meaningDeps (focus? := decl.name)
+          (projectName := ctx.rootPrefix.toString))
+        claimDecls ctx meaningDeps (statements := seeds) (pinned := seeds))
+    -- Exactly the nodes whose dependencies were not followed: the definition and the theorems,
+    -- minus any of them the seeds' closures reached anyway — a predicate built with a proof term
+    -- can genuinely contain one of its own theorems, and a node whose parents *are* all drawn must
+    -- not claim otherwise.
+    let expandedSet : Std.HashSet Name := expanded.foldl (·.insert ·) {}
+    -- Keyed by the node's own id, which is the name as a string, rather than by `Name`: that is
+    -- what the payload carries, and re-parsing it to compare would be a second chance to disagree.
+    let cut : Std.HashSet String :=
+      (#[decl.name] ++ bundle.existence ++ bundle.uniqueness.map (·.name)).foldl
+        (init := {}) fun acc n => if expandedSet.contains n then acc else acc.insert n.toString
+    let marked := data.nodes.map fun (n : GraphNode) =>
+      if cut.contains n.id then { n with unexpanded := true } else n
+    let data := { data with nodes := marked }
+    some {
+      label := s!"via {bundle.property.getString!}"
+      -- The count last and stated flatly in both directions. A characterization is usually the
+      -- cheaper thing to read and sometimes is not, and a note that only knew how to report a
+      -- saving would be advertising rather than measuring.
+      note := s!"What the claim itself rests on: the property {bundle.property}, the relation it \
+        determines its subject up to, and everything those two mean. The definition and the claim's \
+        theorems are drawn but not expanded — that is what the view claims, not a gap in it. \
+        {data.nodes.size} nodes here against {baseSize} for the construction."
+      unexpandedNote := s!"Drawn without its dependencies. This view follows what \
+        {bundle.property} and the relation mean and stops there, so nothing above this node in the \
+        picture is what it rests on — that is the Construction view's subject, left out here on \
+        purpose rather than missing."
+      nodes := data.nodes
+      edges := data.edges }
+
+/-- Builds a dedicated detail page for one declaration: its own card, its dependency graph, its
+audit surface and trust summary, and the claims its author makes about it.
+
+That is the order the questions come in. What is this (the card), what does it rest on (the graph),
+what would accepting it cost and is anything wrong with it (the audit), and what did the author say
+it means (the characterization, then the specification).
+
+Deliberately *not* a card per transitive dependency, which is what an early version rendered: a
+closure here reaches 522 declarations, and 522 cards is a page nobody reads. The one-line-per-entry
+listings that replaced those cards are gone too, for the weaker form of the same reason — they
+enumerated in text exactly what the picture directly above them draws. -/
 private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   Id.run do
   -- The graph's node set follows `meaningDeps` (via `dataTransDeps`), as everything the reader is
@@ -2169,28 +2300,17 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   -- not part of what this declaration means. The wider `transDeps` is the extraction closure and
   -- appears nowhere on the page.
   let graphDecls := #[decl] ++ (decl.dataTransDeps.filterMap ctx.declByName.get?)
-  -- The minimal file is linked once, from `mkMinimalFileLink` below. There used to be a second
-  -- link here whose relative path resolved *underneath* the declaration page and 404'd, and the
-  -- page ended up advertising the same artifact three times.
   let mut blocks : Array (Block Manual) := #[]
   -- Above the card, not below it: a reader who accepted this declaration in the baseline has to
   -- learn that their reading is void *before* re-reading it, not after.
   blocks := blocks ++ mkChangeBlocks decl ctx
   blocks := blocks.push (mkDeclBlock decl ctx)
-  -- Immediately under the card and before the verdict control: "has this changed since I read it"
-  -- is the question a returning reader asks before deciding whether to read it again, so it comes
-  -- before the control that records the answer.
+  -- Immediately under the card: "has this changed since I read it" is the question a returning
+  -- reader asks before deciding whether to read it again, and it is about the card above.
   blocks := blocks ++ mkProvenanceBlocks decl ctx
-  -- Directly under the card: this is the action the page exists to enable, and burying it below
-  -- the closure listings would put it past the fold on every page that has one.
-  blocks := blocks ++ mkAuditControlBlocks decl ctx
-  blocks := blocks ++ mkAuditBlocks decl ctx
-  -- Before the dependency machinery, because it answers a different and prior question. The
-  -- closures below say what a declaration costs to accept; the specification says what it means.
-  -- The characterization comes first of the two: it answers the same question and settles it,
-  -- where a specification only narrows it, so a reader who has one has less use for the other.
-  blocks := blocks ++ mkCharBlocks decl ctx
-  blocks := blocks ++ mkSpecBlocks decl ctx
+  -- Still part of reading the declaration itself, so it stays with the card. Linked once: there
+  -- used to be a second link further down whose relative path resolved *underneath* the declaration
+  -- page and 404'd, and the page ended up advertising the same artifact three times.
   blocks := blocks ++ mkMinimalFileLink decl ctx
   -- Transitively reduced: 23 declarations here carry 68 direct edges, most of them implied by a
   -- longer path, and drawing all of them buries the structure in crossings and forces the layout
@@ -2203,7 +2323,32 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
     (withUpstreamNodes
       (mkGraphData graphDecls ctx.declPageHrefs meaningDeps (focus? := decl.name)
         (projectName := ctx.rootPrefix.toString))
-      graphDecls ctx meaningDeps (focus? := decl.name))
+      graphDecls ctx meaningDeps (statements := #[decl.name]))
+  -- A characterized definition gets a second picture of what it rests on *as a claim*; see
+  -- `mkCharGraphViews`. Empty for everything else, and then the graph is exactly what it was.
+  let charViews :=
+    if ctx.usesChars then mkCharGraphViews decl ctx graphData.nodes.size else #[]
+  let graphData :=
+    if charViews.isEmpty then graphData
+    else
+      let others :=
+        if charViews.size == 1 then "The other view asks" else "The other views ask"
+      -- "Rests on nothing" is an answer and has to be given. On an uncharacterized page it is the
+      -- paragraph above the graph; here that paragraph is suppressed, and the chrome no longer
+      -- collapses to the lone-node hint either — the picture has structure in another view — so
+      -- this note is the only place left that can say it.
+      { graphData with
+        viewLabel := "Construction"
+        viewNote :=
+          if graphData.nodes.size <= 1 then
+            s!"Nothing to draw: {decl.name}'s own definition rests on no other declaration in this \
+              project and names nothing from a package left unaudited. {others} what it takes to \
+              recognise one instead, which is a different question."
+          else
+            s!"Everything {decl.name} is built from: the closure of its own definition. {others} \
+              what it takes to recognise one instead — a different question, and usually a much \
+              smaller one."
+        views := charViews }
   blocks := blocks.push (.para #[.bold #[.text "Dependency graph"]])
   -- Drawn even when there is nothing to draw. Gating it on having dependencies made the shape of a
   -- declaration page vary with its content, so a reader could not tell "this rests on nothing" from
@@ -2211,7 +2356,9 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   -- answer is worth having. It also used to hide a graph that did have something to show: a
   -- declaration with no *project* dependencies can still name constants from an unaudited upstream
   -- package, and `withUpstreamNodes` draws those.
-  if graphData.nodes.size <= 1 then
+  -- Not said when there is a characterization view: "nothing to draw" would be read as a statement
+  -- about the picture below it, which in that case has a second view with something in it.
+  if graphData.nodes.size <= 1 && charViews.isEmpty then
     blocks := blocks.push (.para #[
       .emph #[.text "Nothing to draw. "],
       .text "Its statement rests on no other declaration in this project, and names nothing from a \
@@ -2219,19 +2366,17 @@ private def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
         missing picture."
     ])
   blocks := blocks.push (.other (Block.graph graphData) #[])
-  -- Layer 2 of the audit: what the *statement* mentions. This is where "does this say what I
-  -- think it says" is decided, so it is shown expanded and before the rest of the closure.
-  let directTypeDeps := decl.typeDeps.filter ctx.declByName.contains
-  if let some block := compactDepList directTypeDeps ctx then
-    blocks := blocks.push
-      (.para #[.bold #[.text s!"Its statement mentions ({directTypeDeps.size})"]])
-    blocks := blocks.push block
-  -- Layer 3: everything else it rests on. Affects trust rather than meaning, so it is folded.
-  let rest := decl.dataTransDeps.filter fun n =>
-    ctx.declByName.contains n && !directTypeDeps.contains n
-  if let some block := compactDepList rest ctx then
-    blocks := blocks.push <|
-      .other (Block.details { summary := s!"Everything it rests on ({rest.size})" }) #[block]
+  -- Below the picture it is a verdict on. What accepting this declaration would cost is a question
+  -- about the closure the graph has just drawn, and the control that records the answer belongs
+  -- with the surface it is answering about rather than under the card.
+  blocks := blocks ++ mkAuditControlBlocks decl ctx
+  blocks := blocks ++ mkAuditBlocks decl ctx
+  -- Last, because they answer a different and later question. Everything above says what this
+  -- declaration costs to accept; these say what it means. The characterization comes first of the
+  -- two: it answers that question and settles it, where a specification only narrows it — and what
+  -- it shows is dropped from the specification rather than repeated there, see `charShownNames`.
+  blocks := blocks ++ mkCharBlocks decl ctx
+  blocks := blocks ++ mkSpecBlocks decl ctx
   return {
     title := #[.code decl.name.toString]
     titleString := decl.name.toString

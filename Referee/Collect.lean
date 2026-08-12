@@ -156,12 +156,13 @@ structure LinkInfo where
   href? : Option String := none
 deriving Repr, ToJson, FromJson
 
-/-- Data container for DeclCardData. -/
+/-- Data container for DeclCardData.
+
+No name field: the card is the only one on its page, and the page's title is the declaration's
+name. -/
 structure DeclCardData where
   anchorId : String
-  shortName : String
   kindLabel : String
-  fullName : String
   isLemma : Bool := false
   isInstanceDecl : Bool := false
   tags : Array String := #[]
@@ -396,12 +397,40 @@ structure GraphNode where
   band stacks in: a package sits above one that depends on it, so the band reads the same way the
   dependency rows below it do. -/
   upstreamRank : Nat := 0
+  /-- Drawn without following its own dependencies, so nothing above it in the picture is its.
+
+  A graph is normally closed downwards — every node's dependencies are drawn — and a reader is
+  entitled to assume it. A view that stops somewhere on purpose (a characterization stops at the
+  definition and its theorems) breaks that assumption, and an unmarked node whose parents happen to
+  be absent is indistinguishable from one that rests on nothing. So the node is marked, the key
+  explains the mark, and clicking it says so in as many words. -/
+  unexpanded : Bool := false
 deriving Repr, ToJson, FromJson
 
 /-- Data container for GraphEdge. -/
 structure GraphEdge where
   source : String
   target : String
+deriving Repr, ToJson, FromJson
+
+/-- A second node set for the same picture, offered to the reader as a switch.
+
+The one case there is: a definition that carries a characterization rests, *as a claim*, on far less
+than it rests on as a construction — building a stochastic integral is work, and recognising one is
+a property and a relation. The two views answer "what do I have to accept to believe this was built"
+and "what do I have to read to know what it is", and only drawing both makes the gap visible. -/
+structure GraphView where
+  /-- The switch's label. Short: it sits in a row of buttons. -/
+  label : String
+  /-- One sentence above the picture saying what this node set is and what it leaves out. Shown only
+  while the view is selected, since it describes this view rather than the graph. -/
+  note : String := ""
+  /-- What to say when the reader clicks a node this view stopped at (`GraphNode.unexpanded`). Held
+  on the view rather than on each node because it is one fact about where this view cuts, and
+  writing it into every cut node would repeat the same sentence across the payload. -/
+  unexpandedNote : String := ""
+  nodes : Array GraphNode
+  edges : Array GraphEdge
 deriving Repr, ToJson, FromJson
 
 /-- Data container for GraphData. -/
@@ -414,6 +443,15 @@ structure GraphData where
   /-- The project's own name, which labels the first of its dependency rows the way each upstream
   package labels the first row of its block. -/
   projectName : String := ""
+  /-- The switch's label for `nodes`/`edges` themselves, which are always the first view. Empty when
+  `views` is, and then no switch is drawn at all: a picture with one view needs no name for it. -/
+  viewLabel : String := ""
+  /-- The note for the first view, on the same terms as `GraphView.note`. -/
+  viewNote : String := ""
+  /-- The views offered *besides* `nodes`/`edges`. Empty on every graph but a characterized
+  definition's, which is why the first view is left in place rather than folded into this array —
+  the payload rides in every page and the common case must not pay for the rare one. -/
+  views : Array GraphView := #[]
 deriving Repr, ToJson, FromJson
 
 /-- One end of a specification link, as written with the `@[specifies]` attribute of the `LeanSpec`

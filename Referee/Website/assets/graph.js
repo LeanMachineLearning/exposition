@@ -16,15 +16,30 @@ document.addEventListener('DOMContentLoaded', () => {
   const dataNode = document.getElementById('graph-data');
   if (!root || !dataNode || !window.d3) return;
 
+  const esc = s => String(s).replace(/[&<>"]/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
   const graph = JSON.parse(dataNode.textContent);
-  const allNodes = graph.nodes.map(n => ({ ...n }));
-  const allEdges = graph.edges.map(e => ({ ...e }));
-  const groups = [...new Set(allNodes.map(n => n.groupKey))].sort();
+  /* The picture can offer more than one node set for the same subject — a characterized definition
+     is drawn both as what it is built from and as what it takes to recognise it (see `GraphView`).
+     The payload's own `nodes`/`edges` are always the first view.
+
+     Everything the chrome describes is computed over *every* view's nodes rather than the current
+     one: the chapter filter, the key, whether there is a focus node. A control that appeared and
+     vanished as the reader switched would read as a bug, and re-deriving the key per view would
+     mean the legend describing the picture changed underneath the picture. */
+  const views = [{ label: graph.viewLabel || '', note: graph.viewNote || '',
+                   nodes: graph.nodes, edges: graph.edges }].concat(graph.views || []);
+  const everyNode = views.flatMap(v => v.nodes);
+  let viewIx = 0;
+  let allNodes = views[0].nodes.map(n => ({ ...n }));
+  let allEdges = views[0].edges.map(e => ({ ...e }));
+  const groups = [...new Set(everyNode.map(n => n.groupKey))].sort();
   // What a node stands for. The same component draws declaration graphs and module graphs, and
   // the explanatory text has to say which it is looking at.
   const UNIT = graph.unit || 'declaration';
   const UNITS = UNIT + 's';
-  const hasFocus = allNodes.some(n => n.focus);
+  const hasFocus = everyNode.some(n => n.focus);
 
   /* The reader's own verdicts, read through `audit.js` rather than out of localStorage, so the
      graph, the Browse table and the declaration pages cannot disagree about what a verdict is.
@@ -46,8 +61,8 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   // Package graphs carry trust verdicts rather than chapters and `sorry` flags, so the
   // legend has to describe a different picture.
-  const hasUntrusted = allNodes.some(n => n.status === 'untrusted');
-  const hasTrusted = allNodes.some(n => n.status === 'trusted');
+  const hasUntrusted = everyNode.some(n => n.status === 'untrusted');
+  const hasTrusted = everyNode.some(n => n.status === 'trusted');
 
   // ---------------------------------------------------------------- constants
 
@@ -91,6 +106,9 @@ document.addEventListener('DOMContentLoaded', () => {
        reader has explicitly vouched for these. */
     theme.trusted = css('--site-ink-3', '#7c838e');
     theme.band = isDark() ? 'rgba(255,255,255,.035)' : 'rgba(20,22,26,.028)';
+    /* The cut mark. Deliberately the quiet ink rather than a warning colour: a view that stops
+       somewhere on purpose is not reporting a problem, and amber here would read as one. */
+    theme.cut = css('--site-ink-3', '#7c838e');
   };
   readTheme();
 
@@ -137,6 +155,13 @@ document.addEventListener('DOMContentLoaded', () => {
       ? { term: 'Top band',
           text: `Upstream declarations, grouped by package and labelled in the margin. They sit
                  above the dependency rows because nothing in the picture precedes them.` } : null,
+    /* Only when some view contains one. The mark contradicts the rule stated two entries above —
+       that the rows are a dependency depth every node bottoms out in — so where it can appear it
+       has to be described, and where it cannot, describing it would be a warning about nothing. */
+    everyNode.some(n => n.unexpanded)
+      ? { term: 'Dotted stub above a node',
+          text: `This view does not follow that ${UNIT}'s own dependencies, so nothing above it is
+                 what it rests on. Click it to see what is being left out and why.` } : null,
     { term: 'Violet dashed edge, curving up',
       text: `A dependency <em>cycle</em>: those ${UNITS} refer to each other, so no ordering of rows
              can place both below everything they depend on.` },
@@ -154,9 +179,21 @@ document.addEventListener('DOMContentLoaded', () => {
      of being indistinguishable from a graph further down the page. What is dropped is the chrome
      that would then describe things the reader cannot see: rows, arrows, cycles, colour-by-chapter,
      and a filter over a single node. */
-  const isLone = allNodes.length <= 1 && allEdges.length === 0;
+  const isLone = views.every(v => v.nodes.length <= 1 && v.edges.length === 0);
+
+  /* The view switch, when there is more than one view. Outside the `isLone` gate that suppresses
+     the rest of the chrome: a lone construction node next to a characterization with structure in
+     it is precisely the case worth being able to switch to. */
+  const viewSwitch = views.length < 2 ? '' : `
+    <div class="graph-views" role="group" aria-label="What to draw">
+      ${views.map((v, i) =>
+        `<button type="button" class="graph-view-btn" data-view="${i}" aria-pressed="${i === 0}"
+         >${esc(v.label || `View ${i + 1}`)}</button>`).join('')}
+    </div>
+    <p class="graph-viewnote" id="graph-viewnote">${esc(views[0].note || '')}</p>`;
 
   root.innerHTML = `
+    ${viewSwitch}
     ${isLone ? '' : `<div class="graph-toolbar">
       <input id="graph-filter" type="search" placeholder="Filter ${UNITS} by name" />
       ${groups.length > 1 ? `<select id="graph-group">
@@ -618,6 +655,12 @@ document.addEventListener('DOMContentLoaded', () => {
     nodeSel.exit().remove();
     const enter = nodeSel.enter().append('g').attr('class', 'graph-node').style('cursor', 'pointer');
     enter.append('rect').attr('class', 'graph-box').attr('rx', 8).attr('ry', 8);
+    /* The cut mark: a dotted stub rising out of the node's top edge and ending in nothing, drawn on
+       a node whose own dependencies this view does not follow. It points into the empty space where
+       they would have been, which is the thing being said — and it is a mark rather than another
+       outline style because the node it most needs to appear on is the focus node, whose outline is
+       already spoken for, as are dashed amber and dashed grey. */
+    enter.append('path').attr('class', 'graph-cut');
     enter.append('text').attr('class', 'graph-label');
     // The verdict badge, in the node's top-right corner rather than inside it: the label is
     // centred and truncated to the box width, so anything placed in the body would either collide
@@ -649,6 +692,14 @@ document.addEventListener('DOMContentLoaded', () => {
       .attr('stroke-width', n => (n.focus ? 2 : 1.3))
       .attr('stroke-dasharray', n =>
         ((n.status === 'sorry' || n.status === 'untrusted') && !n.focus ? '4 3' : null));
+    /* Over the box's top-left corner, not its middle: edges land at the top centre, where the mark
+       was invisible under the arrowheads, and the verdict badge owns the top-right. */
+    all.select('path.graph-cut')
+      .attr('d', n => (n.unexpanded ? `M${-n.cell.w / 2 + 11},${-NODE_H / 2 - 3}v-13` : null))
+      .attr('stroke', theme.cut)
+      .attr('stroke-width', 1.8)
+      .attr('stroke-linecap', 'round')
+      .attr('stroke-dasharray', '1.5 3');
     all.select('text.graph-label')
       .attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
       .attr('fill', n => (n.focus ? theme.focusInk : theme.ink))
@@ -738,10 +789,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* Declaration names are not safe to interpolate raw: Lean names legitimately contain `<` and `&`
      (`«term_<_»`, for one), which would otherwise be swallowed as markup. */
-  const esc = s => String(s).replace(/[&<>"]/g,
-    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-
-
   function updatePanel() {
     // Absent on a lone-node graph, which has nothing to report about neighbours or rows.
     if (!panel) return;
@@ -773,6 +820,13 @@ document.addEventListener('DOMContentLoaded', () => {
       : n.status === 'untrusted'
       ? `<p class="graph-panel-warn">⚠ not audited${
           up.package ? ` — from <code>${esc(up.package)}</code>` : ''}</p>` : '';
+    /* Said on every click of a cut node, not once per visit. A reader who has just traced an edge
+       upwards and found nothing above this box is owed the reason at the moment they ask, and the
+       view supplies the sentence because only it knows where it stopped and why. */
+    const cut = n.unexpanded
+      ? `<p class="graph-panel-cut">✂ ${esc(views[viewIx].unexpandedNote
+          || 'Drawn without its dependencies: this view deliberately stops here.')}</p>`
+      : '';
     /* An upstream *definition* needs its body as well as its type. The type of `Filter.Tendsto` is
        `(α → β) → Filter α → Filter β → Prop`, whose arguments all read as hypotheses and which never
        says that it means `map f l₁ ≤ l₂` — and "is this the definition I think it is" is the whole
@@ -788,6 +842,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <h2>${esc(n.label)}</h2>
       <p class="graph-panel-meta">${esc(n.kind)}${where ? ` · <code>${esc(where)}</code>` : ''}</p>
       ${warn}
+      ${cut}
       ${sig}
       ${doc}
       ${n.href ? `<p><a class="decl-card-action" href="${esc(n.href)}">Open declaration</a></p>` : ''}`;
@@ -847,6 +902,28 @@ document.addEventListener('DOMContentLoaded', () => {
       state.sel = null; highlight(null); updatePanel();
     });
   }
+
+  /* Switching views swaps the node set the filter and the layout work from, and leaves everything
+     else — the query, the chapter, the key's open state — exactly as the reader left it. */
+  const viewNote = document.getElementById('graph-viewnote');
+  const viewButtons = [...root.querySelectorAll('.graph-view-btn')];
+  function selectView(i) {
+    if (i === viewIx || !views[i]) return;
+    viewIx = i;
+    allNodes = views[i].nodes.map(n => ({ ...n }));
+    allEdges = views[i].edges.map(e => ({ ...e }));
+    viewButtons.forEach((b, j) => b.setAttribute('aria-pressed', String(j === i)));
+    if (viewNote) viewNote.textContent = views[i].note || '';
+    /* Back to how a freshly loaded graph looks, zoom included. Carrying the reader's transform
+       across a switch sounds considerate and is not: two views of the same declaration have
+       different extents, and a transform that framed one can leave the other off screen entirely —
+       the switch would look broken rather than empty. */
+    svg.call(zoom.transform, d3.zoomIdentity);
+    state.sel = null;
+    apply();
+    updatePanel();
+  }
+  viewButtons.forEach(b => b.addEventListener('click', () => selectView(Number(b.dataset.view))));
 
   document.addEventListener('referee:themechange', () => {
     readTheme();

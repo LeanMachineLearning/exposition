@@ -25,6 +25,16 @@ This tool is one such consumer — `Referee/Collect.lean` delegates every depend
 it — but it is not a privileged one. -/
 require LeanDeps from "LeanDeps"
 
+/-- Junk-value analysis — where a definition rests on the value a total function returns outside the
+domain its name suggests — as a *separate, dependency-free package*, for the same reason as
+`LeanSpec` and `LeanDeps`.
+
+Its independence is load-bearing in one extra way: the analysis is most useful *while writing*, as a
+linter in the project being developed, and a project cannot take on a linter that drags Verso in
+behind it. It also, deliberately, does not depend on Mathlib, although that is where nearly every
+rule it ships comes from. -/
+require JunkValues from "JunkValues"
+
 /--
 The site's CSS and JavaScript, authored as real files and embedded with `include_str`.
 
@@ -41,8 +51,8 @@ lean_lib Referee where
   needs := #[websiteAssets]
 
 lean_lib Test where
-  globs := #[`Test, `Test.Audit, `Test.Characterization, `Test.Collect, `Test.Deps, `Test.Diff,
-    `Test.Extract, `Test.Highlight, `Test.Provenance, `Test.Spec]
+  globs := #[`Test, `Test.Audit, `Test.Characterization, `Test.CharacterizationExtra, `Test.Collect, `Test.Deps, `Test.Diff,
+    `Test.Extract, `Test.Highlight, `Test.JunkValues, `Test.JunkValuesExtra, `Test.Provenance, `Test.Spec]
 
 /-- Theorems about the library, as opposed to the `#guard` examples in `Test`.
 
