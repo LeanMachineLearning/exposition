@@ -141,7 +141,7 @@ def myOp (f : Nat → Nat) : Nat := if f 0 = 0 then 7 else 0
 
 /-- The rule, with a real proof — and the annotation that is the core of this package. -/
 @[junk_value "outside `Good` the operation is 0, which is also a value it takes inside `Good`"]
-theorem myOp_undef (f : Nat → Nat) (h : ¬ Good f) : myOp f = 0 := if_neg h
+theorem myOp_undef (f : Nat → Nat) (h : ¬ Good f) : myOp f = 0 := ite_eq_right h
 
 /-- A definition resting on the junk value, with nothing ruling it out. -/
 def usesMyOp (f : Nat → Nat) : Nat := myOp f + 1

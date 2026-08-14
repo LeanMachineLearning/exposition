@@ -80,12 +80,13 @@ namespace LeanDeps.Test
 
 /-! ## `Expr`-level constant collection
 
-`Expr.getUsedConstants` recurses *through* an `Expr.proj` node without ever reporting the
-structure name it carries, so a structure an elaborated term reaches only by projecting a field
-would be missing from the declaration's `deps`/`typeDeps`. `projStructureNames` recovers exactly
-those names and `exprUsedConstants` adds them to what core reports. See `projStructureNames` for
-why this is a guard rather than a fix for an observed failure — on real targets the recovered
-names are always upstream types, which the project-local filters drop regardless.
+Up to Lean 4.33, `Expr.getUsedConstants` recursed *through* an `Expr.proj` node without ever
+reporting the structure name it carries, so a structure an elaborated term reaches only by
+projecting a field would have been missing from the declaration's `deps`/`typeDeps`;
+`projStructureNames` recovered exactly those names and `exprUsedConstants` appended them to what
+core reports. Core closed the gap in 4.34, so `exprUsedConstants` is now `getUsedConstants`
+unchanged, and `projStructureNames` remains the proven statement of the recovery that would be
+needed again were core to regress — the first guard below is what would fail.
 
 Both are pure functions of an `Expr`, so — unlike `usedConstantsOf`, which needs an
 `Environment` — they can be checked here directly. -/
@@ -94,8 +95,10 @@ private def natE : Expr := .const `Nat []
 private def zeroE : Expr := .const `Nat.zero []
 private def projA : Expr := .proj `A 0 (.bvar 0)
 
--- The gap being closed: core reports no constant at all for a projection of a bound variable.
-#guard Expr.getUsedConstants projA == (#[] : Array Name)
+-- The 4.34 fix `exprUsedConstants` now relies on: core itself reports the structure name of a
+-- projection of a bound variable. If this fails, core dropped the name again and
+-- `exprUsedConstants` must go back to appending `projStructureNames`.
+#guard Expr.getUsedConstants projA == #[`A]
 #guard projStructureNames projA == #[`A]
 #guard exprUsedConstants projA == #[`A]
 
@@ -111,9 +114,8 @@ private def projA : Expr := .proj `A 0 (.bvar 0)
 -- ...while two *different* projections of the same structure both report it (consumers dedup).
 #guard projStructureNames (.app projA (.proj `A 1 (.bvar 0))) == #[`A, `A]
 
--- With no projection anywhere, nothing is added and `exprUsedConstants` agrees with core.
+-- With no projection anywhere, `projStructureNames` finds nothing to recover.
 #guard projStructureNames (.app natE zeroE) == (#[] : Array Name)
-#guard exprUsedConstants (.app natE zeroE) == Expr.getUsedConstants (.app natE zeroE)
 
 -- Ordinary constants and projected structures are both reported.
 #guard exprUsedConstants (.app zeroE projA) == #[`Nat.zero, `A]

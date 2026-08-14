@@ -360,9 +360,9 @@ theorem visited_emitted : ∀ (f : Nat) (st : VisitState) (n x : Name),
     intro st n x hx hnot
     obtain ⟨visited, order⟩ := st
     by_cases hn : visited.contains n
-    · rw [visitFuel, if_pos hn] at hx
+    · rw [visitFuel, ite_eq_left hn] at hx
       exact absurd hx hnot
-    · rw [visitFuel, if_neg hn] at hx ⊢
+    · rw [visitFuel, ite_eq_right hn] at hx ⊢
       simp only at hx ⊢
       rw [← Array.foldl_toList] at hx ⊢
       by_cases hxn : x = n
@@ -391,8 +391,8 @@ theorem mem_visited_of_visit (f : Nat) (st : VisitState) (n : Name) :
     (visitFuel dm (f + 1) st n).1.contains n := by
   obtain ⟨visited, order⟩ := st
   by_cases hn : visited.contains n
-  · rw [visitFuel, if_pos hn]; exact hn
-  · rw [visitFuel, if_neg hn]
+  · rw [visitFuel, ite_eq_left hn]; exact hn
+  · rw [visitFuel, ite_eq_right hn]
     simp only
     rw [← Array.foldl_toList]
     exact visited_mono_fold dm f _ _ _ (by simp [Std.HashSet.contains_insert])
@@ -443,7 +443,9 @@ result rests on less than it does, which is indistinguishable from a result that
 less.
 
 `projStructureNames` recovers the structure names carried by `Expr.proj` nodes, which
-`Expr.getUsedConstants` drops. Its own docstring records that it was added as "a correctness guard,
+`Expr.getUsedConstants` dropped up to Lean 4.33 (core reports them itself since 4.34, so the walk
+is now the kept-in-reserve statement of the recovery rather than a live part of
+`exprUsedConstants`). Its own docstring records that it was added as "a correctness guard,
 not a fix for an observed failure" — which is exactly the situation where a proof beats a test,
 because the failure would be on term shapes no target project happened to elaborate.
 
@@ -495,8 +497,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.app f a)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       obtain ⟨i1, i2, i3⟩ := ihf (acc, seen) hinv
       obtain ⟨j1, j2, j3⟩ := iha _ i1
@@ -518,8 +520,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.lam nm t b bi)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       obtain ⟨i1, i2, i3⟩ := iht (acc, seen) hinv
       obtain ⟨j1, j2, j3⟩ := ihb _ i1
@@ -541,8 +543,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.forallE nm t b bi)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       obtain ⟨i1, i2, i3⟩ := iht (acc, seen) hinv
       obtain ⟨j1, j2, j3⟩ := ihb _ i1
@@ -564,8 +566,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.letE nm t v b nd)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       obtain ⟨i1, i2, i3⟩ := iht (acc, seen) hinv
       obtain ⟨j1, j2, j3⟩ := ihv _ i1
@@ -591,8 +593,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.mdata d b)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       obtain ⟨i1, i2, i3⟩ := ihb (acc, seen) hinv
       refine ⟨?_, i2, fun s hsm => i3 s (by simpa [projNames] using hsm)⟩
@@ -607,8 +609,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.proj sn idx b)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       have hinv' : ProjInv (acc.push sn, seen) := fun x hx t htm =>
         Array.mem_push.mpr (Or.inl (hinv x hx t htm))
@@ -632,8 +634,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.bvar i)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       refine ⟨?_, fun x hx => hx, by simp [projNames]⟩
       intro x hx s hsm
@@ -647,8 +649,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.fvar fv)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       refine ⟨?_, fun x hx => hx, by simp [projNames]⟩
       intro x hx s hsm
@@ -662,8 +664,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.mvar mv)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       refine ⟨?_, fun x hx => hx, by simp [projNames]⟩
       intro x hx s hsm
@@ -677,8 +679,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.sort u)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       refine ⟨?_, fun x hx => hx, by simp [projNames]⟩
       intro x hx s hsm
@@ -692,8 +694,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.const nm us)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       refine ⟨?_, fun x hx => hx, by simp [projNames]⟩
       intro x hx s hsm
@@ -707,8 +709,8 @@ theorem go_spec : ∀ (e : Expr) (st : Array Name × Std.HashSet Expr), ProjInv 
     obtain ⟨acc, seen⟩ := st
     rw [projStructureNames.go]
     by_cases hs : seen.contains (Expr.lit l)
-    · rw [if_pos hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
-    · rw [if_neg hs]
+    · rw [ite_eq_left hs]; exact ⟨hinv, fun x hx => hx, hinv _ hs⟩
+    · rw [ite_eq_right hs]
       simp only
       refine ⟨?_, fun x hx => hx, by simp [projNames]⟩
       intro x hx s hsm
@@ -861,8 +863,8 @@ theorem deps_visited : ∀ (f : Nat) (st : VisitState) (n : Name),
     obtain ⟨visited, order⟩ := st
     have hf' : unvisitedKeys dm visited < f + 1 := hf
     by_cases hn : visited.contains n
-    · rw [visitFuel, if_pos hn] at hy; exact absurd hy hny
-    · rw [visitFuel, if_neg hn] at hy ⊢
+    · rw [visitFuel, ite_eq_left hn] at hy; exact absurd hy hny
+    · rw [visitFuel, ite_eq_right hn] at hy ⊢
       simp only at hy ⊢
       rw [← Array.foldl_toList] at hy ⊢
       by_cases hempty : dm.getD n #[] = #[]
