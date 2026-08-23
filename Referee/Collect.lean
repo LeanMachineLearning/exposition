@@ -39,6 +39,29 @@ namespace Referee
 open Verso.Output Html
 open LeanDeps
 
+/-- What the site's search index is built over (`--search`).
+
+The default indexes what Verso indexes: the full text of every page. That is the right answer for a
+manual, whose pages are prose a reader half-remembers a phrase from. It is the wrong answer for a
+library of a few hundred thousand declarations, where the index outgrows everything else on the site
+— measured at 16.7 kB per declaration, which is 5 GB across Mathlib, in a file every page loads
+eagerly — and where what a reader is looking for is a *name*, not a sentence. -/
+inductive SearchMode where
+  /-- Verso's index over the full text of every page. -/
+  | full
+  /-- An index over page titles only: for this site, declaration and module names. -/
+  | names
+  /-- No index at all, and no search box. -/
+  | none
+deriving Repr, BEq, Inhabited
+
+/-- How `--search` spells each mode. -/
+def SearchMode.ofString? : String → Option SearchMode
+  | "full" => some .full
+  | "names" => some .names
+  | "none" => some .none
+  | _ => Option.none
+
 /-- CLI options used to configure site generation. Shared across the `collect`,
 `extract`, `build-site`, and `all` subcommands; each one only consults the fields relevant
 to it. -/
@@ -107,6 +130,32 @@ structure Cli where
   /-- What to call this revision in the ledger (`--ref`). Defaults to `git describe --tags
   --always`, which prefers a tag and falls back to a short sha. -/
   revisionRef : Option String := none
+  /-- Whether `build-site` lifts the inline `<style>`/`<script>` blocks Verso repeats on every page
+  into shared files (`--no-hoist-assets` turns it off).
+
+  On by default, which is the unusual choice for a flag that rewrites output, and it is defensible
+  because the transform removes only duplication: 74% of a declaration page is boilerplate that is
+  byte-identical on every other page, and the reader is served the same site with a fraction of the
+  transfer. The flag exists for the case where one self-contained file per page matters more than
+  its size — an archive, or a host that cannot serve the assets alongside. -/
+  hoistAssets : Bool := true
+  /-- What the search index is built over (`--search`).
+
+  A render-time flag, like `--trust`: the index is derived from the rendered pages, so changing it
+  costs a `build-site` and never a re-import. -/
+  searchMode : SearchMode := .full
+  /-- Whether `build-site` renders one chapter at a time instead of the whole library in one Verso
+  invocation (`--per-chapter`).
+
+  Verso builds the entire document tree before streaming any page out, so a monolithic render's
+  peak memory tracks the library — measured at 14.95 GB for 28,251 declarations and projected past
+  150 GB for Mathlib. Per-chapter rendering bounds the peak by the largest chapter instead, at the
+  cost of a stitching pass afterwards: the global artifacts Verso derives from the whole tree
+  (sidebar, `xref.json`, the `find` page, search buckets, hover data) are merged from the
+  per-chapter runs. Requires `--search names` or `none`: merging full-text inverted indexes would
+  mean re-indexing everything, and at the scale where this flag matters the full index was never
+  viable anyway. -/
+  perChapter : Bool := false
 deriving Repr
 
 /-- Classification of exposed Lean declarations. -/
@@ -627,11 +676,18 @@ structure DeclInfo where
   Differs from `deps` only for `def`/`abbrev`/`instance`; equal to it for everything else. -/
   dataDeps : Array Name := #[]
   usedBy : Array Name := #[]
+  /-- The transitive closure of `closureDeps`, topologically ordered. **Derived, not stored**: since
+  format version 12 `collect` leaves this empty and `CollectedData.withClosures` recomputes it from
+  the direct edges on every load. Measured on `Mathlib.Analysis`, materialized closures were 69.9%
+  of `data.json` and the reason `collect` could not fit in memory at whole-Mathlib scale; the
+  direct edges they are derived from were 12.6%. -/
   transDeps : Array Name := #[]
   /-- The transitive closure of `meaningDeps`, topologically ordered, as `transDeps` is of
   `closureDeps`. Kept separate rather than replacing `transDeps` because `Referee.Extract` seeds each
   standalone file's `keep` set from `transDeps`, and a file whose kept tactic bodies lost the lemmas
-  they call would no longer compile. -/
+  they call would no longer compile.
+
+  Derived on load exactly as `transDeps` is; see there. -/
   dataTransDeps : Array Name := #[]
   docstringBlock? : Option (Block Manual) := none
 deriving Repr, ToJson, FromJson
@@ -1006,8 +1062,19 @@ decode error when handed a JSON file written by an older `collect`.
   structure of the upstream packages small enough to walk
 - 10: adds `DeclInfo.characterizedBy` and `DeclInfo.characterizes`
 - 11: wraps the document in an `InternedData` envelope, sharing its repeated subtrees (see `intern`).
-  No field of `CollectedData` changed; what changed is how it is written and read -/
-def collectedDataVersion : Nat := 11
+  No field of `CollectedData` changed; what changed is how it is written and read
+- 12: stops storing `DeclInfo.transDeps` and `DeclInfo.dataTransDeps`; every consumer recomputes
+  them from the direct edges via `CollectedData.withClosures` on load. No field was removed, so a
+  version-11 file still decodes — its stored closures are simply ignored in favor of the recomputed
+  ones, which is why `minReadableDataVersion` stays at 11. The bump exists for the other direction:
+  an older binary handed a version-12 file must refuse it rather than silently render the empty
+  closures it carries. -/
+def collectedDataVersion : Nat := 12
+
+/-- The oldest data-format version the current binary can read. Version 11 remains readable because
+the only change in 12 is that closures are no longer stored, and this binary recomputes them from
+the direct edges regardless of what the file carries — so an old `--baseline` keeps working. -/
+def minReadableDataVersion : Nat := 11
 
 /-- The full result of the `collect` subcommand's analysis, persisted as JSON so `extract`
 and `build-site` can run without re-importing the target project. `moduleOrder` and
@@ -1123,6 +1190,16 @@ def usage : String :=
     "                       `build-site`. Optional; without it the site says nothing about when",
     "                       anything changed",
     "  --ref NAME           What to call this revision in the ledger (default: git describe)",
+    "  --search MODE        What the search index covers: `full` (every page's text, the default),",
+    "                       `names` (page titles only — declaration and module names), or `none`.",
+    "                       The full index runs about 17 kB per declaration and is loaded eagerly by",
+    "                       every page, so `names` is what makes a large library searchable at all",
+    "  --no-hoist-assets    Keep Verso's inline CSS and JavaScript in every page instead of lifting",
+    "                       the shared blocks into files under `-verso-data/`. Hoisting is on by",
+    "                       default and removes only duplication: it is about 74% of a page",
+    "  --per-chapter        Render the site one chapter at a time, bounding `build-site`'s peak",
+    "                       memory by the largest chapter instead of the whole library, then stitch",
+    "                       the global artifacts together. Requires `--search names` or `none`",
     "  --module NAME        Internal: the module `highlight-module` should process",
     "  --input FILE         Internal: the file `highlight-file` should process",
   ]
@@ -1186,6 +1263,17 @@ def parseArgs : List String → Except String Cli
   | "--ref" :: name :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with revisionRef := some name }
+  | "--no-hoist-assets" :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with hoistAssets := false }
+  | "--per-chapter" :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with perChapter := true }
+  | "--search" :: mode :: rest => do
+      let some mode := SearchMode.ofString? mode
+        | .error s!"--search expects one of full, names, none; got: {mode}"
+      let cfg ← parseArgs rest
+      pure { cfg with searchMode := mode }
   | flag :: _ =>
       .error s!"Unknown or incomplete option: {flag}\n\n{usage}"
 
@@ -2659,15 +2747,18 @@ def meaningDeps (decl : DeclInfo) : Array Name :=
 
 `Proofs/Deps.lean` proves these properties of the *functions* that build the closures —
 `transitiveDeps_closed`, `topologicalClosure_nodup`, `mem_topologicalClosure_of_mem_start`. What the
-site renders is not those functions' output but a `CollectedData` that has been through `toJson`,
-`intern`, a file, `Json.parse`, `resolve` and `fromJson?`. The round trip across that boundary is
-*not* proved — see `Proofs/Collect.lean` for why it is out of reach in this toolchain — so a theorem
-about the producer establishes nothing about the value the renderer holds.
+site renders has been through `toJson`, `intern`, a file, `Json.parse`, `resolve` and `fromJson?`,
+and the round trip across that boundary is *not* proved — see `Proofs/Collect.lean` for why it is
+out of reach in this toolchain — so a theorem about the producer establishes nothing about the value
+the renderer holds.
 
-These checks close that gap from the other end. They restate the proved properties as assertions on
-the decoded data, so that a violation — from a corrupted file, a truncated write, a version skew, or
-a future change that stops routing a closure through `LeanDeps.transitiveDeps` — is reported rather
-than rendered.
+Since format version 12 the closures themselves no longer make that trip: `CollectedData.withClosures`
+recomputes them in-process, after decoding, from the direct edges. That narrows what these checks
+defend against, and they are kept for what remains. The *edges* still cross the unproved boundary, a
+corrupted or truncated file still deserves a report rather than a render, and the recomputation has
+wiring of its own that a proof about `transitiveDeps` does not cover — seeding from `closureDeps`
+versus `meaningDeps` per declaration kind, and the map the closure is taken over. A future change
+that stops routing a closure through `LeanDeps.transitiveDeps` is caught here and nowhere else.
 
 The site is a trust instrument; rendering a closure that is quietly wrong is worse than failing.
 -/
@@ -2870,12 +2961,30 @@ def attachTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
 /-- Adds the transitive closure of `meaningDeps` as `dataTransDeps`, exactly as
 `attachTransitiveDeps` does for `closureDeps`.
 
-This is the node set of a declaration's dependency graph: the declarations its *meaning* rests on.
-Computed here rather than at render time so that the graph and the closure listings cannot disagree
-about what counts, which is the same reason `transDeps` is precomputed. -/
+This is the node set of a declaration's dependency graph: the declarations its *meaning* rests on. -/
 def attachDataTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
   let depsMap : Std.HashMap Name (Array Name) :=
     decls.foldl (fun acc decl => acc.insert decl.name (meaningDeps decl)) {}
   decls.map fun decl => { decl with dataTransDeps := LeanDeps.transitiveDeps depsMap decl.name }
+
+/-- Fills in `transDeps` and `dataTransDeps` for every declaration, from the direct edges.
+
+Every consumer of collected data calls this exactly once, right after obtaining it — after
+`decodeCollectedData` on the file paths, after `collectData` on the in-process `all` path — and no
+producer stores the result. That single call site is what preserves the property the old
+collect-time computation had: the graph, the closure listings, the audit queues and extraction all
+read the same arrays, so they cannot disagree about what a closure contains.
+
+Overwrites whatever the fields held, rather than filling only when empty. A version-11 file arrives
+with closures; ignoring them in favor of the recomputation means every render is backed by the
+in-process functions `Proofs/Deps.lean` reasons about, regardless of the file's age, and a
+version-11 file whose stored closures had been corrupted is corrected rather than trusted.
+
+The cost is one `transitiveDeps` walk per declaration per closure kind — linear in the total number
+of closure entries, seconds at 28k declarations. It is paid on load instead of at collect time
+because storing the result is what did not scale: materialized closures measured at 69.9% of
+`data.json` on `Mathlib.Analysis`, against 12.6% for the direct edges they derive from. -/
+def CollectedData.withClosures (data : CollectedData) : CollectedData :=
+  { data with decls := data.decls |> attachTransitiveDeps |> attachDataTransitiveDeps }
 
 end Referee

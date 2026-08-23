@@ -7,7 +7,7 @@ environment produces **data**, and rendering is a pure function of that data.
 
 | phase | needs `lake env`? | produces |
 |---|---|---|
-| `collect` | yes | `data.json` — declarations, dependencies, docstrings, axioms, `sorry` status, and (given `--hashes`) semantic hashes |
+| `collect` | yes | `data.json` — declarations, *direct* dependencies, docstrings, axioms, `sorry` status, and (given `--hashes`) semantic hashes. Transitive closures are deliberately not stored: every consumer recomputes them from the direct edges on load, because materialized closures dominated both the file and `collect`'s memory at scale |
 | `provenance` | no (needs git) | `provenance.json` — when each declaration's meaning last changed, and where its source was last edited |
 | `extract` | yes | `extracted/*.lean` — the self-contained minimal file per declaration |
 | `highlight` | yes | `highlighting/*.json` — interactive Lean for each project module |
