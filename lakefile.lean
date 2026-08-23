@@ -5,7 +5,7 @@ package Referee where
   version := v!"0.1.0"
   leanOptions := #[⟨`autoImplicit, false⟩]
 
-require verso from git "https://github.com/leanprover/verso" @ "v4.34.0-rc1"
+require verso from git "https://github.com/leanprover/verso" @ "v4.34.0-rc2"
 
 /-- The `@[specifies]` attribute, as a *separate, dependency-free package* rather than a library of
 this one. A project that wants to annotate its specifications must depend on it, and must not have
