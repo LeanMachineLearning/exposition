@@ -84,12 +84,32 @@ requires from git with `/ "JunkValues"`.
   declaration *card* shows — no docstring, since the card renders that above the code, and no leading
   blank lines. Pure, and unit-tested in `Test/Highlight.lean`; a whole extracted file is rendered
   from the untrimmed highlighting.
-- `Referee/Website/Site.lean` — Verso page construction and the CLI subcommands. The site's
-  CSS and JavaScript live in `Referee/Website/assets/` as real files and are embedded with
-  `include_str`. D3 is vendored there too rather than fetched from a CDN at page load. Everything
-  specification-related is gated on `SiteContext.usesSpecs`, so a project that does not annotate
-  gets exactly the site it got before the feature existed — and the same gating, on its own flag,
-  covers trust, revisions, semantic hashes and provenance.
+- `Referee/Website/` — Verso page construction and the CLI, in ten modules that stack in one
+  direction. Each imports the layer below it and nothing above:
+
+  | module | what it holds |
+  |---|---|
+  | `Blocks.lean` | the chapter/module tree, and every `block_extension` with the HTML it becomes |
+  | `Assets.lean` | the stylesheet and scripts, and Verso's `RenderConfig` |
+  | `Context.lean` | `SiteContext` — everything a page builder may ask — and the loaders that fill it |
+  | `Graph.lean` | dependency-graph data, its upstream band, and the transitive reduction |
+  | `Declaration.lean` | one declaration's page, section by section |
+  | `Pages.lean` | the chapter, module, utility, landing and root pages |
+  | `Project.lean` | importing the target project, `collectData`, and reading the data back |
+  | `PostProcess.lean` | the three rewrites of what Verso wrote: sidebar, inline assets, search index |
+  | `PerChapter.lean` | `--per-chapter` rendering and the stitch passes it needs |
+  | `Site.lean` | `buildSiteFrom`, and the subcommand dispatch `Main.lean` calls |
+
+  The site's CSS and JavaScript live in `Referee/Website/assets/` as real files and are embedded
+  with `include_str`. D3 is vendored there too rather than fetched from a CDN at page load.
+  Everything specification-related is gated on `SiteContext.usesSpecs`, so a project that does not
+  annotate gets exactly the site it got before the feature existed — and the same gating, on its own
+  flag, covers trust, revisions, semantic hashes, provenance and `formalization.yaml`.
+
+  Every one of these sits in a plain `public section` rather than an `@[expose]` one. That is what
+  lets a module keep its helpers `private`: an exposed public definition may not call a private one,
+  so exposing them would have dragged all 164 helpers of the former single file into the package's
+  API. Unexposed, only the 50 that genuinely cross a module boundary are public.
 - `Test/` — `#guard`-based unit tests (`lake build Test`), split the same way as the code they
   cover: `Test/Collect.lean` for this tool, `Test/Diff.lean` and `Test/Provenance.lean` for the two
   pure comparison passes, `Test/Audit.lean` for the audit payloads, `Test/Highlight.lean` for the
