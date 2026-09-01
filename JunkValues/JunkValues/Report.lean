@@ -38,8 +38,8 @@ The user-facing request that motivated this tool was about *downstream* definiti
 integral that may be junk, and everything built on `B` inherits that. `inheritRisk` computes it, and
 deliberately takes the dependency graph as a plain map rather than computing it, so that the caller
 decides which edges count — statement-only edges for a theorem, statement-and-proof for a
-definition. That is the same division of labour `LeanDeps` makes for its own graph passes, and for
-the same reason.
+definition. That is the same division of labour `MeaningGraph` makes for its own graph passes, and
+for the same reason.
 -/
 
 open Lean

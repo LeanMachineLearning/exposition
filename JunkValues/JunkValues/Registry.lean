@@ -23,10 +23,11 @@ fires.
 
 ## Reading the annotations from another process
 
-Same mechanism, and the same two caveats, as [`LeanSpec`](../../LeanSpec/): entries live in a
-persistent environment extension, survive into the `.olean`, and are matched back to extensions *by
-name* when imported — so a reading process must link this library and call
-`importModules (loadExts := true)`, and:
+Same mechanism, and the same two caveats, as
+[`Characterization`](https://github.com/RemyDegenne/characterization): entries live in a persistent
+environment extension, survive into the `.olean`, and are matched back to extensions *by name* when
+imported — so a reading process must link this library and call `importModules (loadExts := true)`,
+and:
 
 * `JunkRule`'s field layout is part of the on-disk format. Entries are deserialized as a memory image
   into whatever type the *reader's* copy of this library declares. Adding or reordering fields is not
@@ -93,7 +94,7 @@ initialize registerBuiltinAttribute {
       throwError "`junk_value` must be a global attribute: it records a fact about the definition, \
         not about a section or a namespace"
     -- `Attr.simple` is the bare `@[junk_value]` as parsed by the catch-all attribute parser; the
-    -- same ambiguity `LeanSpec` documents, handled the same way.
+    -- same ambiguity `Characterization` documents, handled the same way.
     let (positions, noteStx?) ←
       if stx.getKind == ``Lean.Parser.Attr.simple then
         pure (#[], none)

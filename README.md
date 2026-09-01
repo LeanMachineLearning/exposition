@@ -31,9 +31,11 @@ On top of that are the pages a referee needs and ordinary documentation does not
   bottoms out where trust has to start rather than at the project boundary. Upstream *proofs* need
   no trust: the kernel rechecked them. Upstream *definitions your statements are about* do.
 - **[Specifications](docs/authoring.md)** — for projects that annotate with
-  [`@[specifies]`](LeanSpec/): which definitions their author said something about, which they said
-  nothing about, and, on each definition's page, the properties themselves. Its stronger sibling
-  [`@[characterization]`](LeanSpec/) records the claim that a property pins the definition down
+  [`@[specifies]`](https://github.com/RemyDegenne/characterization): which definitions their author
+  said something about, which they said nothing about, and, on each definition's page, the
+  properties themselves. Its stronger sibling
+  [`@[characterization]`](https://github.com/RemyDegenne/characterization)
+  records the claim that a property pins the definition down
   *uniquely*, up to a stated relation — and, unlike `@[specifies]`, the attribute checks that the
   theorems really say so. Those get a section of their own above the specification, leading with the
   relation, because "the unique such object up to `=`" and "up to a.e. equality" are different
@@ -61,16 +63,19 @@ smallest thing a reader can check a statement against, optionally linked into th
 Three pieces are separate, dependency-free Lake packages — Lean core only — so a project can take
 any one of them without taking Referee's build (Verso, SubVerso, MD4Lean, …) along with it. Referee
 is a consumer of all three, not their owner.
+[`MeaningGraph`](https://github.com/RemyDegenne/meaning-graph) and
+[`Characterization`](https://github.com/RemyDegenne/characterization)
+have repositories of their own; `JunkValues` is required from this one.
 
 | | |
 |---|---|
-| [`LeanDeps/`](LeanDeps/) | What every declaration rests on: the constants its statement uses, and the ones its statement and proof use — recovering the four things an elaborated term drops (compiler helpers, `Expr.proj` structures, notation expansions, coercion instances) — plus reverse edges and transitive closure in topological order. |
-| [`LeanSpec/`](LeanSpec/) | `@[specifies]` and `@[characterization]`: which theorems their author offers as the specification of a definition, and which properties pin one down uniquely. |
+| [`MeaningGraph`](https://github.com/RemyDegenne/meaning-graph) | What every declaration rests on: the constants its statement uses, and the ones its statement and proof use — recovering the four things an elaborated term drops (compiler helpers, `Expr.proj` structures, notation expansions, coercion instances) — plus reverse edges and transitive closure in topological order. |
+| [`Characterization`](https://github.com/RemyDegenne/characterization) | `@[specifies]` and `@[characterization]`: which theorems their author offers as the specification of a definition, and which properties pin one down uniquely. |
 | [`JunkValues/`](JunkValues/) | `@[junk_value]` and a linter: where a definition rests on the value a total function returns outside its intended domain — *if `f + g` is not integrable then `∫ (f + g) = 0`*. A rule is not a hand-maintained table entry but the theorem that already proves the collapse, so no rule can claim a default the kernel has not checked. Rules for libraries you cannot annotate live in [`Extra/`](JunkValues/JunkValues/Extra/) and are opt-in by import. |
 
 ```lean
-require LeanDeps from git
-  "https://github.com/LeanMachineLearning/exposition" @ "main" / "LeanDeps"
+require Characterization from git "https://github.com/RemyDegenne/characterization" @ "main"
+require MeaningGraph from git "https://github.com/RemyDegenne/meaning-graph" @ "main"
 ```
 
 ## Status

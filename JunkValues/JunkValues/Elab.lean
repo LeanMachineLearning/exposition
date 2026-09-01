@@ -5,7 +5,8 @@ public import Lean.Elab.Command
 -- The linter and the two commands are *meta* declarations: they run during elaboration of the file
 -- being checked, not at its runtime. Under the module system a `meta` definition may only use
 -- definitions available at the meta phase, so everything they call has to be imported twice — once
--- for each phase. This is the same double import `Test/Deps.lean` needs for its `#guard`s.
+-- for each phase. This is the same double import `MeaningGraph`'s `Test.lean` needs for its
+-- `#guard`s.
 meta import JunkValues.Frontend
 meta import Lean.Elab.Command
 

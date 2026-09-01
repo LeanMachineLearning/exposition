@@ -15,8 +15,8 @@ This module audits the *pure* logic of `Collect.lean`:
 * the small name/string helpers used to build hrefs and signatures;
 * the dependency-graph passes as they apply to a collected `DeclInfo` array
   (`attachReverseDeps`, `attachTransitiveDeps`), i.e. the field plumbing and the `closureDeps` edge
-  choice — the passes themselves live in `LeanDeps` and are checked in `Test/Deps.lean`, together
-  with the rest of the dependency analysis;
+  choice — the passes themselves live in `MeaningGraph` and are checked there, together with the
+  rest of the dependency analysis;
 * `attachSpecifiedBy`, which reverses the author's `@[specifies]` links, and `isDefinitionLike`,
   the classification every specification count is taken over (reading the annotations out of the
   environment needs a real project and is exercised end to end, not here);
@@ -310,11 +310,11 @@ private def dualProtected : Array String := #[
 
 /-! ## Dependency-graph passes
 
-These run on an already-collected `Array DeclInfo`, wrapping the graph passes of `LeanDeps`. What
-is checked here is the `DeclInfo` side: which field each pass writes, and which edges it follows
-(`closureDeps`: type-only for theorems). We build small synthetic graphs and check the derived
-fields. `mkDecl` fills the structure with inert defaults so each test only specifies the fields
-that matter (`name`, `deps`, `typeDeps`, `kind`).
+These run on an already-collected `Array DeclInfo`, wrapping the graph passes of `MeaningGraph`.
+What is checked here is the `DeclInfo` side: which field each pass writes, and which edges it
+follows (`closureDeps`: type-only for theorems). We build small synthetic graphs and check the
+derived fields. `mkDecl` fills the structure with inert defaults so each test only specifies the
+fields that matter (`name`, `deps`, `typeDeps`, `kind`).
 -/
 
 private def mkDecl (name : Name) (deps : Array Name := #[]) (typeDeps : Array Name := #[])
@@ -639,9 +639,9 @@ private def sampleDeclForJson : DeclInfo := {
 
 /-! ## Integrity of decoded collected data
 
-`Proofs/Deps.lean` proves the closure properties of the *functions* that build `transDeps` and
-`dataTransDeps`. `CollectedData.integrityViolations` restates them as checks on the decoded value,
-which is what carries them across the unproved `intern`/`resolve` round trip.
+`MeaningGraph`'s `Proofs.lean` proves the closure properties of the *functions* that build
+`transDeps` and `dataTransDeps`. `CollectedData.integrityViolations` restates them as checks on the
+decoded value, which is what carries them across the unproved `intern`/`resolve` round trip.
 
 A checker that never fires is worth nothing, so what is pinned here is that it fires: one fixture
 per property, each violating exactly that property, plus a well-formed one that passes. -/

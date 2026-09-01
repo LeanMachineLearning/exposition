@@ -2,39 +2,43 @@
 
 ## Code Layout
 
-Two of the three libraries here are **separate Lake packages**, not libraries of this one, and for
-the same reason: each is useful to a project that has no interest in building a site, and requiring
-one must not drag Verso and the rest of this tool's build along with it. Lake's dependency unit is
-the package, so a `lean_lib` of this package could not be required in isolation. Referee requires
-both by path (`require … from "LeanSpec"`), which is the same package an outside project requires
-from git with `/ "LeanSpec"`.
+Several of the libraries Referee rests on are **separate Lake packages**, not libraries of this one,
+and for the same reason: each is useful to a project that has no interest in building a site, and
+requiring one must not drag Verso and the rest of this tool's build along with it. Lake's dependency
+unit is the package, so a `lean_lib` of this package could not be required in isolation. Two of them
+went further and are repositories of their own, required from git; `JunkValues` is still here and
+required by path (`require … from "JunkValues"`), which is the same package an outside project
+requires from git with `/ "JunkValues"`.
 
-- `LeanDeps/` — the dependency analysis. Lean core only: no Lake, no Verso, no notion of a site or
-  of an output format. It answers, for every declaration of a project, which constants its type uses
-  and which its type and body use, looking through compiler-generated helpers (`_proof_N`,
-  `match_N`, field defaults) and recovering the dependencies an elaborated term drops (`Expr.proj`
-  structures, notation expansions, coercion instances). It also holds the graph passes that run on
-  the result: reverse edges and transitive closure in topological order. Entry points:
-  `LeanDeps.Context.of` / `Context.declDeps` / `declDepsOf`. See
-  [`LeanDeps/README.md`](../LeanDeps/README.md).
-- `LeanSpec/` — the `@[specifies]` attribute. It is the part of this repository a *target* project
-  depends on, so it must not pull Verso along with it: Lean core only, one file, no dependencies.
-  This package depends on it too, for the other end of the same wire — reading the annotations back
-  out of a compiled project requires the environment extension to be registered in the reading
-  process. See [`LeanSpec/README.md`](../LeanSpec/README.md).
+- [`MeaningGraph`](https://github.com/RemyDegenne/meaning-graph) — the dependency analysis, in a
+  repository of its own. Lean core only: no Lake, no Verso, no notion of a site or of an output
+  format. It answers, for every declaration of a project, which constants its type uses and which
+  its type and body use, looking through compiler-generated helpers (`_proof_N`, `match_N`, field
+  defaults) and recovering the dependencies an elaborated term drops (`Expr.proj` structures,
+  notation expansions, coercion instances). It also holds the graph passes that run on the result:
+  reverse edges and transitive closure in topological order. Entry points:
+  `MeaningGraph.Context.of` / `Context.declDeps` / `declDepsOf`. Its own `#guard`s and proofs live
+  with it, so nothing here tests it.
+- [`Characterization`](https://github.com/RemyDegenne/characterization) — the `@[specifies]` and
+`@[characterization]` attributes, in a
+  repository of its own. It is the part of this stack a *target* project depends on, so it must not
+  pull Verso along with it: Lean core only, one file, no dependencies. Referee depends on it too,
+  for the other end of the same wire — reading the annotations back out of a compiled project
+  requires the environment extension to be registered in the reading process. Its own checks live
+  with it, so nothing here tests it.
 - `Referee/Collect.lean` — walks the environment and builds one `DeclInfo` per exposed
   declaration (signature, docstring, source snippet, kind), delegating all dependency computation to
-  `LeanDeps` and deciding only which edges Referee follows. There are two such choices:
+  `MeaningGraph` and deciding only which edges Referee follows. There are two such choices:
   `closureDeps` (type-only for theorems) drives `transDeps`, which `Referee/Extract.lean` seeds each
   standalone file from and which therefore has to stay closed over proofs; `meaningDeps` additionally
-  drops the proofs *inside* a definition's value (`LeanDeps.dataValueConstants`) and drives everything
-  the reader is shown — the dependency graph, the upstream-trust analysis, the audit closure and its
-  reading queues, and the revision diff — because a lemma called only by a bundled structure's
-  `left_inv` obligation is not part of what the definition means or of what a reader must trust.
-  `sorry` status is a single transitive flag (`dependsOnSorry`) obtained from
+  drops the proofs *inside* a definition's value (`MeaningGraph.dataValueConstants`) and drives
+  everything the reader is shown — the dependency graph, the upstream-trust analysis, the audit
+  closure and its reading queues, and the revision diff — because a lemma called only by a bundled
+  structure's `left_inv` obligation is not part of what the definition means or of what a reader
+  must trust. `sorry` status is a single transitive flag (`dependsOnSorry`) obtained from
   `Lean.collectAxioms`, i.e. the same answer `#print axioms` gives. `@[specifies]` annotations are
-  read here too and reversed by `attachSpecifiedBy`, the one field on `DeclInfo` that is not
-  derived from the environment but taken from the author.
+  read here too and reversed by `attachSpecifiedBy`, the one field on `DeclInfo` that is not derived
+  from the environment but taken from the author.
 
   It also builds `externalDecls`, the upstream constants the project's statements name — with each
   one's signature, its value or fields, and its docstring, so a graph node can be read without
@@ -73,11 +77,11 @@ from git with `/ "LeanSpec"`.
   gets exactly the site it got before the feature existed — and the same gating, on its own flag,
   covers trust, revisions, semantic hashes and provenance.
 - `Test/` — `#guard`-based unit tests (`lake build Test`), split the same way as the code they
-  cover: `Test/Deps.lean` for `LeanDeps`, `Test/Collect.lean` and `Test/Extract.lean` for this tool,
-  `Test/Diff.lean` and `Test/Provenance.lean` for the two pure comparison passes, `Test/Audit.lean`
-  for the audit payloads, and `Test/Spec.lean` for the `@[specifies]` attribute — the annotations it
-  records, read back out of the environment, with each rejection pinned by `#guard_msgs`, since
-  those messages are the attribute's entire user interface.
+  cover: `Test/Collect.lean` and `Test/Extract.lean` for this tool, `Test/Diff.lean` and
+  `Test/Provenance.lean` for the two pure comparison passes, `Test/Audit.lean` for the audit
+  payloads, and `Test/Spec.lean` for the `@[specifies]` attribute — the annotations it records, read
+  back out of the environment, with each rejection pinned by `#guard_msgs`, since those messages are
+  the attribute's entire user interface.
 
   The pure passes are where the tests earn the most. `Referee/Diff.lean` and
   `Referee/Provenance.lean` are functions from data to data with no environment and no notion of a
@@ -102,10 +106,10 @@ Both are built by CI (`.github/workflows/lean_action_ci.yml`) as an explicit ste
 is a default Lake target and so neither is covered by a plain `lake build`.
 
 Between the two sits `CollectedData.integrityViolations`, which is neither: it restates what
-`Proofs/Deps.lean` proves about the closure-building *functions* as assertions on the *decoded*
-`data.json`, and `build-site` fails rather than render data that violates them. The proofs stop at
-`toJson`; the file, the interning and the parse are unproved, so the properties have to be re-checked
-where the renderer actually holds the value. See [What of this could be proved
+`MeaningGraph`'s `Proofs.lean` proves about the closure-building *functions* as assertions on the
+*decoded* `data.json`, and `build-site` fails rather than render data that violates them. The proofs
+stop at `toJson`; the file, the interning and the parse are unproved, so the properties have to be
+re-checked where the renderer actually holds the value. See [What of this could be proved
 correct](design/VERIFICATION.md).
 
 

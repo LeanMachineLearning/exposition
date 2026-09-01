@@ -1,10 +1,7 @@
 /.lake
-# `LeanSpec/` and `LeanDeps/` are nested Lake packages with build directories of their own. Their
-# (empty) manifests are committed, so that a project requiring one from git does not get a
-# "missing manifest" warning.
+# `JunkValues/` is a nested Lake package with a build directory of its own. Its (empty) manifest is
+# committed, so that a project requiring it from git does not get a "missing manifest" warning.
 /JunkValues/.lake
-/LeanSpec/.lake
-/LeanDeps/.lake
 /_out/
 /*-out*/
 /dist/

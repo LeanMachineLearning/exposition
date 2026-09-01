@@ -22,8 +22,8 @@ handful of theorems — it agrees with the textbook formula, it is non-negative,
 classical notion in the classical case — and nothing in the environment distinguishes those from a
 lemma used once on the way to something else.
 
-[`LeanSpec`](../LeanSpec/) is a separate, dependency-free Lake package holding one attribute for
-recording them at the theorem:
+[`Characterization`](https://github.com/RemyDegenne/characterization) is a separate, dependency-free
+Lake package holding one attribute for recording them at the theorem:
 
 ```lean
 @[specifies entropy "agrees with the textbook formula on finite supports"]
@@ -53,8 +53,8 @@ not rendered, and nothing on any page mentions specifications at all.
 
 The attribute is checked, not decorative: the target is an identifier, so a typo or a renamed
 definition is a build error rather than a stale line in a metadata file. See
-[`LeanSpec/README.md`](../LeanSpec/README.md) for how to depend on it, what else it validates, and why
-the attribute is not called `spec`.
+[its README](https://github.com/RemyDegenne/characterization) for how to depend on it, what else
+it validates, and why the attribute is not called `spec`.
 
 **A characterization is the stronger claim, and the attribute checks it.** `@[specifies]` records
 that a theorem is *part of* what a definition means; `@[characterization]` records that a property
@@ -123,5 +123,5 @@ object was.
 Both theorems also register as `@[specifies]` annotations, so everything above applies to them
 unchanged: a characterized definition counts as specified on the Specifications page and the Browse
 column with no extra work. Those two pages do not yet separate the characterized from the merely
-specified; `LeanSpec.characterizations`, and `DeclInfo.characterizedBy` downstream of it, expose the
-distinction for when they do.
+specified; `Characterization.characterizations`, and `DeclInfo.characterizedBy` downstream of it,
+expose the distinction for when they do.

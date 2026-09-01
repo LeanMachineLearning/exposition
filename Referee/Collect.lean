@@ -9,8 +9,8 @@ public import Lake.Load.Workspace
 public import MD4Lean
 public import VersoManual
 public import VersoManual.Markdown
-public import LeanDeps
-public import LeanSpec
+public import MeaningGraph
+public import Characterization
 public import Referee.SourceSyntax
 
 @[expose] public section
@@ -21,8 +21,8 @@ public import Referee.SourceSyntax
 Walks a compiled project's environment and builds one `DeclInfo` per exposed declaration:
 signature, docstring, source location and snippet, kind, and dependency lists.
 
-The dependency analysis itself lives in `LeanDeps` — a standalone module that knows nothing about
-this tool's output. This file only decides *which* dependency edges Referee follows
+The dependency analysis itself lives in `MeaningGraph` — a standalone module that knows nothing
+about this tool's output. This file only decides *which* dependency edges Referee follows
 (`meaningDeps` for what a declaration means and rests on, `closureDeps` for the wider extraction
 closure) and attaches the results to `DeclInfo`.
 -/
@@ -37,7 +37,7 @@ open Manual
 namespace Referee
 
 open Verso.Output Html
-open LeanDeps
+open MeaningGraph
 
 /-- What the site's search index is built over (`--search`).
 
@@ -503,9 +503,9 @@ structure GraphData where
   views : Array GraphView := #[]
 deriving Repr, ToJson, FromJson
 
-/-- One end of a specification link, as written with the `@[specifies]` attribute of the `LeanSpec`
-package: the declaration at the other end and the author's note on why the theorem belongs in the
-specification (empty when they wrote none).
+/-- One end of a specification link, as written with the `@[specifies]` attribute of the
+`Characterization` package: the declaration at the other end and the author's note on why the
+theorem belongs in the specification (empty when they wrote none).
 
 Used in both directions — on a theorem the `name` is the definition being specified, on a
 definition it is a theorem specifying it — because both ends want the same comment. -/
@@ -517,7 +517,7 @@ deriving Repr, BEq, ToJson, FromJson, Inhabited
 /-- A uniqueness theorem of a characterization, with the relation it stops at.
 
 The relation is the whole load-bearing part and the reason it is carried as text rather than as a
-name: `LeanSpec` reads it off the theorem's conclusion as written (`x = y`, `f =ᵐ[μ] g`,
+name: `Characterization` reads it off the theorem's conclusion as written (`x = y`, `f =ᵐ[μ] g`,
 `IsoRel a b`), which is what a reader needs to see, while the head constant is only good for
 grouping. A characterization up to a coarse relation says correspondingly less, and nothing but
 showing the relation can convey that. -/
@@ -530,8 +530,8 @@ structure CharUniqueness where
 deriving Repr, BEq, ToJson, FromJson, Inhabited
 
 /-- One characterization claimed for a definition, as written with the `@[characterization]`
-attribute of the `LeanSpec` package: a predicate, the theorems saying the definition satisfies it,
-and the theorems saying nothing else does.
+attribute of the `Characterization` package: a predicate, the theorems saying the definition
+satisfies it, and the theorems saying nothing else does.
 
 Stronger than a `SpecLink` in exactly one way that matters to a reader, and it is worth being
 precise about which. `@[specifies]` is an unchecked claim; the shapes here *are* checked — the
@@ -614,10 +614,10 @@ structure DeclInfo where
 
   Almost everything else on `DeclInfo` is derived from the environment; this is not. It is the
   author's editorial claim about which properties pin a definition down, read back from the
-  environment extension the `LeanSpec` package writes, and there is no way to infer it. Empty for
-  every declaration of a project that does not use that package — which is why nothing downstream
-  treats its absence as an error. The named definition need not be exposed, or even belong to this
-  project. -/
+  environment extension the `Characterization` package writes, and there is no way to infer it.
+  Empty for every declaration of a project that does not use that package — which is why nothing
+  downstream treats its absence as an error. The named definition need not be exposed, or even
+  belong to this project. -/
   specifies : Array SpecLink := #[]
   /-- For a definition: the exposed theorems that carry `@[specifies thisDeclaration …]`, in
   declaration order. The reverse index of `specifies`, computed by `attachSpecifiedBy`. -/
@@ -625,10 +625,10 @@ structure DeclInfo where
   /-- For a definition: the characterizations its author claims for it — the strictly stronger
   claim that a property does not merely hold of it but *determines* it, up to a stated relation.
 
-  Read from the same `LeanSpec` extension as `specifies`, and empty for a project that does not use
-  the attribute. Both theorems of a characterization also register as `@[specifies]` annotations, so
-  everything here is visible in `specifiedBy` too; this field is what lets the site tell a
-  definition that has been pinned down from one that has merely been described. -/
+  Read from the same `Characterization` extension as `specifies`, and empty for a project that does
+  not use the attribute. Both theorems of a characterization also register as `@[specifies]`
+  annotations, so everything here is visible in `specifiedBy` too; this field is what lets the site
+  tell a definition that has been pinned down from one that has merely been described. -/
   characterizedBy : Array CharBundle := #[]
   /-- For a declaration that is one of the three parts of a characterization: which claims it
   belongs to and in what role. The reverse index of `characterizedBy`, computed by
@@ -670,8 +670,8 @@ structure DeclInfo where
   deps : Array Name
   typeDeps : Array Name := #[]
   /-- `deps` with the proofs inside the value skipped: what the declaration's statement and *data*
-  rest on. See `LeanDeps.dataValueConstants` for why a bundled structure instance's proof fields are
-  not part of its meaning, and `meaningDeps` for where this is used.
+  rest on. See `MeaningGraph.dataValueConstants` for why a bundled structure instance's proof fields
+  are not part of its meaning, and `meaningDeps` for where this is used.
 
   Differs from `deps` only for `def`/`abbrev`/`instance`; equal to it for everything else. -/
   dataDeps : Array Name := #[]
@@ -2317,7 +2317,7 @@ def loadedPackagesOf (env : Environment) (packages : Array PackageInfo) : Array 
   acc.toArray.qsort Name.lt
 
 /-- The edges the project-local *closure* follows: type-only for theorems, type and body for
-everything else. Computed from the raw `LeanDeps` result, before a `DeclInfo` exists to ask.
+everything else. Computed from the raw `MeaningGraph` result, before a `DeclInfo` exists to ask.
 
 This is the wider of the two edge choices and exists for one consumer: `transDeps`, which
 `Referee.Extract` seeds each standalone file from. A file whose kept tactic bodies lost the lemmas
@@ -2402,22 +2402,22 @@ its type and whatever its constructors and field defaults mention. -/
 def upstreamMeaningDeps (env : Environment) (name : Name) (info : ConstantInfo) :
     Lean.Meta.MetaM (Array Name) := do
   match info with
-  | .thmInfo _ => return LeanDeps.exprUsedConstants info.type
+  | .thmInfo _ => return MeaningGraph.exprUsedConstants info.type
   | .defnInfo _ =>
-    return LeanDeps.usedConstantsOf env name info (includeValue := false)
-      ++ (← LeanDeps.dataValueConstants info)
-  | _ => return LeanDeps.usedConstantsOf env name info (includeValue := true)
+    return MeaningGraph.usedConstantsOf env name info (includeValue := false)
+      ++ (← MeaningGraph.dataValueConstants info)
+  | _ => return MeaningGraph.usedConstantsOf env name info (includeValue := true)
 
 /-- What a dependency of an upstream constant should appear as: itself, or — when it is a
 compiler-generated helper — whatever it in turn references.
 
-The same treatment `LeanDeps.expandThroughInternals` gives the project's own declarations, restated
-here because that one is scoped to the project. Without it an `_autoParam` (the tactic behind a
-structure field's default) or a `match_1` becomes a node in the picture, and nobody wrote it.
-Recursion is guarded by `seen`, so a helper referring to itself terminates. -/
+The same treatment `MeaningGraph.expandThroughInternals` gives the project's own declarations,
+restated here because that one is scoped to the project. Without it an `_autoParam` (the tactic
+behind a structure field's default) or a `match_1` becomes a node in the picture, and nobody
+wrote it. Recursion is guarded by `seen`, so a helper referring to itself terminates. -/
 partial def upstreamVisibleDeps (env : Environment) (packages : Array PackageInfo) (pkg : Name)
     (seen : Std.HashSet Name) (d : Name) : Lean.Meta.MetaM (Array Name) := do
-  if !LeanDeps.isInternalName d then return #[d]
+  if !MeaningGraph.isInternalName d then return #[d]
   if seen.contains d then return #[]
   let some info := env.find? d | return #[]
   let ds ← try upstreamMeaningDeps env d info catch _ => pure #[]
@@ -2556,8 +2556,8 @@ def directUpstreamPackages (env : Environment) (packages : Array PackageInfo)
   acc.toArray.qsort Name.lt
 
 /-- Collects all exposed declarations and computes their primary metadata. The dependency lists
-(`deps`, `typeDeps`) come from `LeanDeps`; everything else — signature, docstring, source snippet,
-kind, `sorry` status — is computed here. -/
+(`deps`, `typeDeps`) come from `MeaningGraph`; everything else — signature, docstring, source
+snippet, kind, `sorry` status — is computed here. -/
 def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     (pkg : Lake.Package) (env : Environment) (packages : Array PackageInfo := #[]) :
     IO (Array DeclInfo) := do
@@ -2565,7 +2565,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
   -- would silently equal `deps` and the graph would be unchanged. It needs `MetaM` because deciding
   -- whether a constructor field is `Prop`-valued is a typing question.
   let depsCtx ← runCoreIO env
-    (Lean.Meta.MetaM.run' (LeanDeps.Context.of env rootPrefix).withDataValueConsts)
+    (Lean.Meta.MetaM.run' (MeaningGraph.Context.of env rootPrefix).withDataValueConsts)
   let declAxioms ← axiomsOfDecls env (depsCtx.constants.filterMap fun (name, _, _) =>
     if depsCtx.exposed.contains name then some name else none)
   let simpTheorems ← runCoreIO env Lean.Meta.getSimpTheorems
@@ -2575,19 +2575,19 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       | .decl declName .. => acc.insert declName
       | _ => acc) {}
   -- The project's `@[specifies]` annotations, grouped by the theorem carrying them. Reading them
-  -- needs no cooperation from the target beyond depending on `LeanSpec`: the entries ride in the
-  -- `.olean`s and are matched to this process's copy of the extension by name during
+  -- needs no cooperation from the target beyond depending on `Characterization`: the entries ride
+  -- in the `.olean`s and are matched to this process's copy of the extension by name during
   -- `importModules (loadExts := true)`. A project without the dependency yields an empty array.
   let specsByTheorem : Std.HashMap Name (Array SpecLink) :=
-    (LeanSpec.specEntries env).foldl (init := {}) fun acc entry =>
+    (Characterization.specEntries env).foldl (init := {}) fun acc entry =>
       let link : SpecLink := { name := entry.target, comment := entry.comment }
       acc.insert entry.theoremName ((acc.getD entry.theoremName #[]).push link)
-  -- The `@[characterization]` annotations, already assembled into bundles by `LeanSpec` and keyed
-  -- by the definition each claims to pin down. Incomplete bundles are kept rather than dropped: a
-  -- property with no uniqueness theorem is a claim its author started and did not finish, which is
-  -- worth showing as such and not worth silently rendering as a characterization.
+  -- The `@[characterization]` annotations, already assembled into bundles by `Characterization` and
+  -- keyed by the definition each claims to pin down. Incomplete bundles are kept rather than
+  -- dropped: a property with no uniqueness theorem is a claim its author started and did not
+  -- finish, which is worth showing as such and not worth silently rendering as a characterization.
   let charsByTarget : Std.HashMap Name (Array CharBundle) :=
-    (LeanSpec.characterizations env).foldl (init := {}) fun acc c =>
+    (Characterization.characterizations env).foldl (init := {}) fun acc c =>
       let bundle : CharBundle := {
         property := c.property
         comment := c.comment
@@ -2595,7 +2595,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
         uniqueness := c.uniqueness.map fun e =>
           { name := e.declName, relation := e.relation, relationHead := e.relationHead } }
       acc.insert c.target ((acc.getD c.target #[]).push bundle)
-  let mut cache : LeanDeps.Cache := {}
+  let mut cache : MeaningGraph.Cache := {}
   let mut fileLines : Std.HashMap System.FilePath (Array String) := {}
   -- Parsed once per file alongside its lines, and for the same reason: every declaration in a module
   -- asks the same question of the same source.
@@ -2658,10 +2658,10 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       match doc? with
       | some doc => markdownToBlocks doc
       | none => #[]
-    -- The constants this declaration rests on, recovered by `LeanDeps` (which also looks through
-    -- compiler-generated helpers and recovers the notation/coercion dependencies the elaborated
-    -- term drops). The reverse notation direction — a declaration whose *source* uses a notation —
-    -- is handled syntactically during extraction, where the parsed syntax is available.
+    -- The constants this declaration rests on, recovered by `MeaningGraph` (which also looks
+    -- through compiler-generated helpers and recovers the notation/coercion dependencies the
+    -- elaborated term drops). The reverse notation direction — a declaration whose *source* uses a
+    -- notation — is handled syntactically during extraction, where the parsed syntax is available.
     let (declDeps, cache') := depsCtx.declDeps cache name info
     cache := cache'
     let axs := declAxioms.getD name #[]
@@ -2712,14 +2712,14 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
 /-! ## Dependency-graph passes
 
 Each of these is a thin adapter that projects `decls` onto the plain `(name, deps)` graph the
-`LeanDeps` passes work on, runs the pass, and writes the result back into the corresponding
+`MeaningGraph` passes work on, runs the pass, and writes the result back into the corresponding
 `DeclInfo` field. What varies between them is only *which* edges they follow — full `deps` for
 `usedBy`, `closureDeps` for the extraction closure and `meaningDeps` for the meaning closure.
 -/
 
 /-- Adds reverse dependency links (`usedBy`) between exposed declarations, sorted by name. -/
 def attachReverseDeps (decls : Array DeclInfo) : Array DeclInfo :=
-  let rev := LeanDeps.reverseDeps (decls.map fun decl => (decl.name, decl.deps))
+  let rev := MeaningGraph.reverseDeps (decls.map fun decl => (decl.name, decl.deps))
   decls.map fun decl => { decl with usedBy := (rev.getD decl.name #[]).qsort Name.lt }
 
 /-- `closureDepsOf` for a `DeclInfo`. Drives `transDeps`, and through it extraction; also the
@@ -2745,7 +2745,7 @@ def meaningDeps (decl : DeclInfo) : Array Name :=
 
 /-! ## Integrity of the collected data
 
-`Proofs/Deps.lean` proves these properties of the *functions* that build the closures —
+`MeaningGraph`'s `Proofs.lean` proves these properties of the *functions* that build the closures —
 `transitiveDeps_closed`, `topologicalClosure_nodup`, `mem_topologicalClosure_of_mem_start`. What the
 site renders has been through `toJson`, `intern`, a file, `Json.parse`, `resolve` and `fromJson?`,
 and the round trip across that boundary is *not* proved — see `Proofs/Collect.lean` for why it is
@@ -2758,7 +2758,7 @@ defend against, and they are kept for what remains. The *edges* still cross the 
 corrupted or truncated file still deserves a report rather than a render, and the recomputation has
 wiring of its own that a proof about `transitiveDeps` does not cover — seeding from `closureDeps`
 versus `meaningDeps` per declaration kind, and the map the closure is taken over. A future change
-that stops routing a closure through `LeanDeps.transitiveDeps` is caught here and nowhere else.
+that stops routing a closure through `MeaningGraph.transitiveDeps` is caught here and nowhere else.
 
 The site is a trust instrument; rendering a closure that is quietly wrong is worse than failing.
 -/
@@ -2767,8 +2767,8 @@ The site is a trust instrument; rendering a closure that is quietly wrong is wor
 once, and a wall of near-identical lines buries the useful first one. -/
 def maxReportedViolations : Nat := 12
 
-/-- Internal consistency checks on decoded collected data, as reader-facing messages. Empty when
-the data satisfies everything `Proofs/Deps.lean` proves of the functions that produced it.
+/-- Internal consistency checks on decoded collected data, as reader-facing messages. Empty when the
+data satisfies everything `MeaningGraph`'s `Proofs.lean` proves of the functions that produced it.
 
 Each check names the theorem it restates, so a failure points at whether the *property* is wrong or
 the *data* is. -/
@@ -2934,15 +2934,16 @@ reader must take on faith from upstream is a *definition* their statements are a
 reached only by a lemma that some proof called is not a package this declaration rests on, whether
 that proof is a theorem's or one bundled into a definition's value.
 
-Reuses `LeanDeps.transitiveDeps` for the closure rather than iterating a fixpoint: the closure is
-over 784-ish project declarations, not over the environment, so it is cheap and already written. -/
+Reuses `MeaningGraph.transitiveDeps` for the closure rather than iterating a fixpoint: the closure
+is over 784-ish project declarations, not over the environment, so it is cheap and already
+written. -/
 def attachUpstreamPackages (decls : Array DeclInfo) : Array DeclInfo :=
   let depsMap : Std.HashMap Name (Array Name) :=
     decls.foldl (fun acc decl => acc.insert decl.name (meaningDeps decl)) {}
   let ownPkgs : Std.HashMap Name (Array Name) :=
     decls.foldl (fun acc decl => acc.insert decl.name decl.upstreamPackages) {}
   decls.map fun decl =>
-    let closure := #[decl.name] ++ LeanDeps.transitiveDeps depsMap decl.name
+    let closure := #[decl.name] ++ MeaningGraph.transitiveDeps depsMap decl.name
     let acc := closure.foldl (init := ({} : Std.HashSet Name)) fun acc name =>
       (ownPkgs.getD name #[]).foldl (init := acc) (·.insert ·)
     { decl with upstreamPackages := acc.toArray.qsort Name.lt }
@@ -2956,7 +2957,7 @@ This is the *extraction* closure and is deliberately wider than what the site re
 def attachTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
   let depsMap : Std.HashMap Name (Array Name) :=
     decls.foldl (fun acc decl => acc.insert decl.name (closureDeps decl)) {}
-  decls.map fun decl => { decl with transDeps := LeanDeps.transitiveDeps depsMap decl.name }
+  decls.map fun decl => { decl with transDeps := MeaningGraph.transitiveDeps depsMap decl.name }
 
 /-- Adds the transitive closure of `meaningDeps` as `dataTransDeps`, exactly as
 `attachTransitiveDeps` does for `closureDeps`.
@@ -2965,7 +2966,7 @@ This is the node set of a declaration's dependency graph: the declarations its *
 def attachDataTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
   let depsMap : Std.HashMap Name (Array Name) :=
     decls.foldl (fun acc decl => acc.insert decl.name (meaningDeps decl)) {}
-  decls.map fun decl => { decl with dataTransDeps := LeanDeps.transitiveDeps depsMap decl.name }
+  decls.map fun decl => { decl with dataTransDeps := MeaningGraph.transitiveDeps depsMap decl.name }
 
 /-- Fills in `transDeps` and `dataTransDeps` for every declaration, from the direct edges.
 
@@ -2977,8 +2978,8 @@ read the same arrays, so they cannot disagree about what a closure contains.
 
 Overwrites whatever the fields held, rather than filling only when empty. A version-11 file arrives
 with closures; ignoring them in favor of the recomputation means every render is backed by the
-in-process functions `Proofs/Deps.lean` reasons about, regardless of the file's age, and a
-version-11 file whose stored closures had been corrupted is corrected rather than trusted.
+in-process functions `MeaningGraph`'s `Proofs.lean` reasons about, regardless of the file's age, and
+a version-11 file whose stored closures had been corrupted is corrected rather than trusted.
 
 The cost is one `transitiveDeps` walk per declaration per closure kind — linear in the total number
 of closure entries, seconds at 28k declarations. It is paid on load instead of at collect time

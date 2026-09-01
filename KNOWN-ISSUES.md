@@ -24,7 +24,7 @@ whole corpus; none of it is estimated.
 > to drag in the declaration they needed. Removing 188 impossible edges removed that accident too.
 > Only brownian-motion has been re-measured since; the LML row predates the change.
 
-> alpha-rar was re-measured after `LeanSpec` was dropped from the import block (see
+> alpha-rar was re-measured after `Characterization` was dropped from the import block (see
 > `excludedImports`): 789 declarations now, up 5, with the same 5 failures — all of them
 > [issue 1](#1-private-declarations-are-unreachable-5-files-alpha-rar). It is the only corpus that
 > uses `@[specifies]`, so it is the one where withholding that import could have shown up, and

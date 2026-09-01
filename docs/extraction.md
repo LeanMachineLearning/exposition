@@ -4,9 +4,9 @@
 
 Each file under `extracted/` is self-contained (it inlines its transitive dependencies and
 replaces theorem proofs with `sorry`), and its header imports the project's external dependency
-frontier — less `LeanSpec`, whose `@[specifies]` annotations the extraction strips, so nothing in
-the file needs it and the web editor (which has Mathlib and nothing else) is not asked for a
-package it cannot resolve.
+frontier — less `Characterization`, whose `@[specifies]` annotations the extraction strips, so
+nothing in the file needs it and the web editor (which has Mathlib and nothing else) is not asked
+for a package it cannot resolve.
 
 ## Opening one in the web editor
 

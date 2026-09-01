@@ -33,7 +33,7 @@ open Manual
 namespace Referee
 
 open Verso.Output Html
-open LeanDeps
+open MeaningGraph
 open SubVerso.Highlighting (Highlighted)
 
 /- The exposed section opens here rather than directly under the imports so that the
@@ -3505,10 +3505,10 @@ private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Wo
       String.intercalate "\n" (excludedNames.toList.map toString) ++ "\n"
   IO.println s!"Hidden (auto-generated/internal) declarations: {excludedNames.size}"
   -- A name declared in several modules is collected once, attributed to the module the environment
-  -- itself records for it (see `LeanDeps.projectConstants`); the other copies are not shown, which
-  -- is worth a note here rather than a silent gap on those modules' pages. Restricted to exposed
-  -- names: a duplicated declaration duplicates its compiler helpers with it, and those would
-  -- repeat the same fact as noise.
+  -- itself records for it (see `MeaningGraph.projectConstants`); the other copies are not shown,
+  -- which is worth a note here rather than a silent gap on those modules' pages. Restricted to
+  -- exposed names: a duplicated declaration duplicates its compiler helpers with it, and those
+  -- would repeat the same fact as noise.
   let declNames : Std.HashSet Name := decls.foldl (fun acc d => acc.insert d.name) {}
   for (name, modules) in duplicatedProjectConstants env rootPrefix do
     if declNames.contains name then
@@ -3577,9 +3577,10 @@ private def loadCollectedData (path : String) : IO CollectedData := do
   match decodeCollectedData json with
   | .ok data =>
     -- Closures first, integrity second. The closures are recomputed here by the functions
-    -- `Proofs/Deps.lean` reasons about — never trusted from the file — and the checks then guard
-    -- what still crosses the unproved round trip (the direct edges) and the recomputation's own
-    -- wiring: see the `Integrity of the collected data` section in `Collect.lean`.
+    -- `MeaningGraph`'s `Proofs.lean` reasons about — never trusted from the file — and the
+    -- checks then guard what still crosses the unproved round trip (the direct edges) and the
+    -- recomputation's own wiring: see the `Integrity of the collected data` section in
+    -- `Collect.lean`.
     let data := data.withClosures
     if let some report := data.integrityReport then
       throw <| IO.userError s!"{path}: {report}"

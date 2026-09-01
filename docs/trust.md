@@ -103,9 +103,9 @@ Two details worth knowing:
   project, which depends on the package rather than the reverse, or at a further package, whose
   expansion is decided on its own terms.
 - **Compiler-generated helpers are expanded through, not shown**, the same treatment
-  `LeanDeps.expandThroughInternals` gives the project's own declarations. Without it an `_autoParam`
-  — the tactic behind a structure field's default — becomes a node in the picture, and nobody wrote
-  it.
+  `MeaningGraph.expandThroughInternals` gives the project's own declarations. Without it an
+  `_autoParam` — the tactic behind a structure field's default — becomes a node in the picture, and
+  nobody wrote it.
 
 ### Audited packages: `--show-trusted-upstream`
 

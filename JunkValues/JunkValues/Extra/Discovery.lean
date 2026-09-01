@@ -171,7 +171,8 @@ def discoverRules (scope : DiscoveryScope := {}) : MetaM (Array JunkRule) := do
   let mut candidates : Array Name := #[]
   for (name, info) in env.constants do
     -- Only propositions can be rules, and `ConstantInfo.isTheorem` is not reliable across the
-    -- visibility scopes an environment can be read in; the type test is (see `LeanSpec.isProof`).
+    -- visibility scopes an environment can be read in; the type test is (see
+    -- `Characterization.isProof`).
     unless info matches .thmInfo _ | .axiomInfo _ do continue
     unless scope.admits env name do continue
     if looksLikeRule defaults info.type then

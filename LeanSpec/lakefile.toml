@@ -1,8 +1,0 @@
-name = "LeanSpec"
-version = "0.1.0"
-defaultTargets = ["LeanSpec"]
-
-# Deliberately dependency-free: a project that wants to annotate its specifications should not
-# have to take on this repo's build (Verso, SubVerso, MD4Lean, …) to do so. Lean core only.
-[[lean_lib]]
-name = "LeanSpec"

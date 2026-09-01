@@ -7,27 +7,29 @@ package Referee where
 
 require verso from git "https://github.com/leanprover/verso" @ "v4.34.0-rc2"
 
-/-- The `@[specifies]` attribute, as a *separate, dependency-free package* rather than a library of
-this one. A project that wants to annotate its specifications must depend on it, and must not have
-to drag in Verso to do so.
+/-- The `@[specifies]` and `@[characterization]` attributes, in a *separate, dependency-free
+package* rather than a library of this one. A project that wants to annotate its specifications must
+depend on it, and must not have to drag in Verso to do so — which is why it is a repository of its
+own, with its own checks.
 
 This tool depends on it for the other end of the same wire: reading the annotations back out of a
 target project needs the environment extension registered in *this* process, since imported
 extension entries are matched to registered extensions by name and silently dropped otherwise. -/
-require LeanSpec from "LeanSpec"
+require Characterization from git "https://github.com/RemyDegenne/characterization" @ "main"
 
-/-- Declaration-dependency analysis, as a *separate, dependency-free package* rather than a library
-of this one, for the same reason as `LeanSpec`: it is useful on its own to any project that wants to
-know what its declarations rest on, and requiring it must not drag in Verso and the rest of this
-tool's build.
+/-- Declaration-dependency analysis, in a *separate, dependency-free package* rather than a library
+of this one, for the same reason as `Characterization`: it is useful on its own to any project that
+wants to know what its declarations rest on, and requiring it must not drag in Verso and the rest of
+this tool's build.
 
-This tool is one such consumer — `Referee/Collect.lean` delegates every dependency computation to
-it — but it is not a privileged one. -/
-require LeanDeps from "LeanDeps"
+That independence is why it is a repository of its own rather than a subdirectory here, and its own
+tests and proofs went with it. This tool is one such consumer — `Referee/Collect.lean` delegates
+every dependency computation to it — but it is not a privileged one. -/
+require MeaningGraph from git "https://github.com/RemyDegenne/meaning-graph" @ "main"
 
 /-- Junk-value analysis — where a definition rests on the value a total function returns outside the
 domain its name suggests — as a *separate, dependency-free package*, for the same reason as
-`LeanSpec` and `LeanDeps`.
+`Characterization` and `MeaningGraph`.
 
 Its independence is load-bearing in one extra way: the analysis is most useful *while writing*, as a
 linter in the project being developed, and a project cannot take on a linter that drags Verso in
@@ -51,8 +53,8 @@ lean_lib Referee where
   needs := #[websiteAssets]
 
 lean_lib Test where
-  globs := #[`Test, `Test.Audit, `Test.Characterization, `Test.CharacterizationExtra, `Test.Collect, `Test.Deps, `Test.Diff,
-    `Test.Extract, `Test.Highlight, `Test.JunkValues, `Test.JunkValuesExtra, `Test.Provenance, `Test.Spec]
+  globs := #[`Test, `Test.Audit, `Test.Collect, `Test.Diff, `Test.Extract, `Test.Highlight,
+    `Test.JunkValues, `Test.JunkValuesExtra, `Test.Provenance]
 
 /-- Theorems about the library, as opposed to the `#guard` examples in `Test`.
 
@@ -60,7 +62,7 @@ Kept a separate target because the two answer different questions and fail diffe
 regression says one input now behaves differently, a broken proof says a claim the documentation
 makes is no longer true. Run with `lake build Proofs`. -/
 lean_lib Proofs where
-  globs := #[`Proofs, `Proofs.Collect, `Proofs.Deps, `Proofs.Diff, `Proofs.Provenance]
+  globs := #[`Proofs, `Proofs.Collect, `Proofs.Diff, `Proofs.Provenance]
 
 @[default_target]
 lean_exe referee where

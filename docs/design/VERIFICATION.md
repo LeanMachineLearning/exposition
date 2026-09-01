@@ -227,8 +227,9 @@ this built on" sentence assumes.
 
 ### 6. `topologicalClosure` — **total; closed under dependencies; ordering still open**
 
-[`LeanDeps/LeanDeps.lean`](../../LeanDeps/LeanDeps.lean), proofs in
-[`Proofs/Deps.lean`](../../Proofs/Deps.lean).
+Now in the [`MeaningGraph`](https://github.com/RemyDegenne/meaning-graph) repository:
+[`MeaningGraph.lean`](https://github.com/RemyDegenne/meaning-graph/blob/main/MeaningGraph.lean),
+proofs in [`Proofs.lean`](https://github.com/RemyDegenne/meaning-graph/blob/main/Proofs.lean).
 
 This is the pass whose output is *executed*: `Referee/Extract.lean` emits a standalone file's
 declarations in exactly this order, so a wrong answer is a file that does not compile. It is also
@@ -265,8 +266,9 @@ and their members come out in some arbitrary but otherwise dependency-respecting
 that, as written, is not a property that holds of anything, since inside a cycle some dependency
 necessarily follows its dependent.
 
-Alongside it, [`reverseDeps`](../../LeanDeps/LeanDeps.lean) is a plain fold, already total, and its
-specification is a clean iff:
+Alongside it,
+[`reverseDeps`](https://github.com/RemyDegenne/meaning-graph/blob/main/MeaningGraph.lean) is a plain
+fold, already total, and its specification is a clean iff:
 
 ```lean
 theorem mem_reverseDeps (nodes : Array (Name × Array Name)) (d m : Name) :
@@ -345,8 +347,8 @@ entry the ledger had is still there" a statement about `foldRevision` itself.
 
 ## Carrying the proofs across the serialization gap
 
-`transitiveDeps_closed` is a theorem about the **function** `LeanDeps.transitiveDeps`. What the site
-renders is `DeclInfo.dataTransDeps`, loaded from `data.json`. Between them:
+`transitiveDeps_closed` is a theorem about the **function** `MeaningGraph.transitiveDeps`. What the
+site renders is `DeclInfo.dataTransDeps`, loaded from `data.json`. Between them:
 
 ```
 transitiveDeps  →  collect calls it  →  toJson + intern  →  parse + resolve + fromJson?  →  render
@@ -370,8 +372,9 @@ assertions on the *decoded* data, run on every `build-site`.
 Upstream constants are leaves: they carry no recorded edges, so a closure mentioning one is not
 required to contain anything beyond it.
 
-**Measured.** Zero violations on `LeanDeps` (48 declarations) and on `Referee` itself (777), about
-two seconds including the decode. Deleting one name from one closure is caught and reported by name:
+**Measured.** Zero violations on `MeaningGraph` (48 declarations) and on `Referee` itself (777),
+about two seconds including the decode. Deleting one name from one closure is caught and reported
+by name:
 
 ```
 data3.json: collected data failed its own consistency checks:
@@ -384,8 +387,8 @@ that property — a checker that can only pass is worth nothing.
 
 **Why this ranks above another theorem.** It is the only thing here that defends against the failure
 modes proofs cannot reach at all: a truncated write, a bad merge, a version skew, or a future change
-that stops routing a closure through `LeanDeps.transitiveDeps` and quietly detaches every theorem
-above from the data below.
+that stops routing a closure through `MeaningGraph.transitiveDeps` and quietly detaches every
+theorem above from the data below.
 
 
 ## Pinning past bugs

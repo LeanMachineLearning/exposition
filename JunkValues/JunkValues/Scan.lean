@@ -215,7 +215,7 @@ def dedupFindings (findings : Array Finding) : Array Finding := Id.run do
 
 /-- Whether `n` is a name the compiler generated rather than one somebody wrote.
 
-A deliberately small version of the classification `LeanDeps.isInternalName` does properly; this
+A deliberately small version of the classification `MeaningGraph.isInternalName` does properly; this
 package does not depend on that one. What it has to catch is the family of helpers the equation
 compiler attaches to a recursive definition — `_f`, `_sunfold`, `_unsafe_rec`, `match_1` — because
 those are where a recursive definition's *body* actually ends up. -/
@@ -254,8 +254,8 @@ def countdown : ℕ → ℕ
 
 — the value does not mention subtraction *at all*, so the truncation is invisible. So the scan
 follows those helpers, transitively, and reports what it finds **against the declaration the author
-wrote**, which is the only name a reader can act on. This is the same compensation `LeanDeps` makes
-for the same reason.
+wrote**, which is the only name a reader can act on. This is the same compensation `MeaningGraph`
+makes for the same reason.
 
 Both halves are walked by `visit` directly rather than by first entering a telescope, because
 `visit` already opens `forallE` and `lam` — which means a hypothesis of a theorem is scanned with
@@ -264,7 +264,7 @@ would use to judge the same term. -/
 def scanDecl (rs : RuleSet) (cfg : ScanConfig) (name : Name) : MetaM DeclScan := do
   let some info := (← getEnv).find? name | return { decl := name }
   -- Decided from the type, not from `ConstantInfo.thmInfo`: an attribute or an import can present
-  -- a theorem of the current module as something else. Same reason `LeanSpec.isProof` does.
+  -- a theorem of the current module as something else. Same reason `Characterization.isProof` does.
   let isProof ← isProp info.type
   -- The body's walk continues the statement's accumulator rather than starting a fresh one, so that
   -- `maxPerDecl` is a cap on the *declaration* — threading it was also what made `truncated`

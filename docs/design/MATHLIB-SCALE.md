@@ -15,10 +15,11 @@ second round's item 9. The **data phase** is broken by
 exactly the thing the architecture was already being careful about: closure size. `AuditData`
 interns closure names, `extract` caps oversized definition values, the trust analysis refuses to
 expand Mathlib — and none of that reaches the root cause, which is that `collect` materializes
-every declaration's transitive closure and stores all of them. Measured with `LeanDeps` semantics,
-closures are **69.9% of `data.json`** at 28,251 declarations and their share still grows with
-scope: an estimated one **billion** closure entries for the whole library, roughly 300 times the
-direct edges they are derived from. That is Tier C item 5, and it is the precondition for the rest.
+every declaration's transitive closure and stores all of them. Measured with `MeaningGraph`
+semantics, closures are **69.9% of `data.json`** at 28,251 declarations and their share still grows
+with scope: an estimated one **billion** closure entries for the whole library, roughly 300 times
+the direct edges they are derived from. That is Tier C item 5, and it is the precondition for the
+rest.
 
 What memory each phase wants for the whole library, with items 5 and 8 built and their projections
 anchored on measured runs: `collect` about **60–70 GB** (was ~370 GB), `build-site` about
@@ -68,7 +69,7 @@ Workstation: 32 cores, 62 GB RAM. Mathlib at `leanprover/lean4:v4.34.0-rc1`, 6.0
 | Total constants | 571,117 |
 | **Exposed by `shouldExpose`** | **304,210** — 245,927 theorems, 58,283 defs/instances/etc. |
 | Direct edges, `Expr.getUsedConstants` proxy | 3,225,186 (mean out-degree 10.6) |
-| Closure names per declaration, `LeanDeps` semantics | **668** at 28,251 decls, and growing with scope |
+| Closure names per declaration, `MeaningGraph` semantics | **668** at 28,251 decls, and growing with scope |
 | Projected total closure entries at 304,210 | **~1.0 billion** |
 
 A caution that governs every closure number in this document. An early sample computed closures
@@ -77,7 +78,7 @@ regime as `brownian-motion`'s 70 and led this document to declare closures a non
 real closures — read back out of what `collect` itself wrote — have mean **668** at 28,251
 declarations, and their per-declaration count grows with the size of the exposed set (63.7 at 859
 declarations, 668 at 28,251; log-log slope ≈ 0.67, hence ~3,300 projected at 304,210). The proxy
-was off by an order of magnitude *and* blind to the growth, because `LeanDeps` deliberately
+was off by an order of magnitude *and* blind to the growth, because `MeaningGraph` deliberately
 recovers what an elaborated term drops — compiler helpers, `Expr.proj` structures, notation
 expansions, coercion instances — and at Mathlib scope those dominate the closure. Measure with the
 tool's own semantics or not at all.
@@ -327,10 +328,11 @@ against 12.6%** — and the closure side grows superlinearly while the edge side
 estimated billion entries and ~19 GB of the file's ~21 GB at the whole library. `collect` holds all
 of it while serializing, which is where its ~370 GB goes.
 
-The closures are a pure function of the direct edges, computed today by `LeanDeps.transitiveDeps` —
-a function `Proofs/Deps.lean` proves properties of. Store the edges, run the same function at load
-time, and the closures never touch disk or `collect`'s serializer: `data.json` drops to roughly a
-seventh at Mathlib scale (~2.9 GB), and `collect`'s peak to ~60–70 GB, which a workstation has.
+The closures are a pure function of the direct edges, computed today by
+`MeaningGraph.transitiveDeps` — a function that package's `Proofs.lean` proves properties of. Store
+the edges, run the same function at load time, and the closures never touch disk or `collect`'s
+serializer: `data.json` drops to roughly a seventh at Mathlib scale (~2.9 GB), and `collect`'s peak
+to ~60–70 GB, which a workstation has.
 
 Two costs ride along with the current shape and fall with it. `Json.parse` on a multi-gigabyte file
 builds a tree many times the file size — the `intern` pass exists because that tree is already the
@@ -347,7 +349,7 @@ ready-made array.
 
 **Built.** `collect` no longer computes or stores either closure; `CollectedData.withClosures`
 recomputes both from the direct edges at the one load choke point (and on the in-process `all`
-path), using the same `LeanDeps.transitiveDeps` as before. Format version 11 → 12 with
+path), using the same `MeaningGraph.transitiveDeps` as before. Format version 11 → 12 with
 `minReadableDataVersion = 11`: an old file or `--baseline` stays readable — its stored closures are
 ignored in favor of the recomputation — while an older binary handed a version-12 file refuses it
 rather than silently rendering the empty closures it carries.
@@ -689,8 +691,8 @@ slope entirely: two points, far apart, or none.
 
 **Closure sizes** were declared fine — "mean 119 per declaration, the same regime as
 `brownian-motion`" — on the strength of a sample computed with `Expr.getUsedConstants` as a proxy
-for `LeanDeps`. The real mean at 28,251 declarations is 668 and still growing with scope; the proxy
-was off by an order of magnitude precisely because `LeanDeps` exists to recover what
-`Expr.getUsedConstants` drops. A proxy that differs from the measured thing in exactly the
-dimension under study is not a floor, it is a different quantity: measure with the tool's own
-semantics or not at all.
+for `MeaningGraph`. The real mean at 28,251 declarations is 668 and still growing with scope; the
+proxy was off by an order of magnitude precisely because `MeaningGraph` exists to recover what
+`Expr.getUsedConstants` drops. A proxy that differs from the measured thing in exactly the dimension
+under study is not a floor, it is a different quantity: measure with the tool's own semantics or not
+at all.

@@ -249,7 +249,7 @@ def report (rootPrefix : Name) : MetaM Unit := do
 
 Reading annotations back out of a compiled project needs this library linked into the reading
 process and `importModules (loadExts := true)` — the same requirement, for the same reason, as
-[`LeanSpec`](../LeanSpec/).
+[`Characterization`](https://github.com/RemyDegenne/characterization).
 
 ## Tests
 

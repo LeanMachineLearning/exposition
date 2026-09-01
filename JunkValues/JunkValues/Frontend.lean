@@ -176,9 +176,9 @@ initialize addLinter junkValuesLinter
 
 /-- Every declaration a project's author actually wrote, in modules under `rootPrefix`.
 
-A local, deliberately simple version of the classification `LeanDeps.shouldExpose` does properly —
-this package does not depend on that one either. A consumer that already has `LeanDeps` should pass
-its own list to `scanDecls` instead of using this. -/
+A local, deliberately simple version of the classification `MeaningGraph.shouldExpose` does
+properly — this package does not depend on that one either. A consumer that already has
+`MeaningGraph` should pass its own list to `scanDecls` instead of using this. -/
 def projectDecls (env : Environment) (rootPrefix : Name) : Array Name := Id.run do
   let mut out := #[]
   for idx in [0:env.header.modules.size] do
