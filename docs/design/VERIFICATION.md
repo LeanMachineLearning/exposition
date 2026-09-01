@@ -231,7 +231,7 @@ Now in the [`MeaningGraph`](https://github.com/RemyDegenne/meaning-graph) reposi
 [`MeaningGraph.lean`](https://github.com/RemyDegenne/meaning-graph/blob/main/MeaningGraph.lean),
 proofs in [`Proofs.lean`](https://github.com/RemyDegenne/meaning-graph/blob/main/Proofs.lean).
 
-This is the pass whose output is *executed*: `Referee/Extract.lean` emits a standalone file's
+This is the pass whose output is *executed*: `ChallengeGen.Extract` emits a standalone file's
 declarations in exactly this order, so a wrong answer is a file that does not compile. It is also
 where the tool's most-assumed invariant lives.
 
@@ -278,7 +278,8 @@ theorem mem_reverseDeps (nodes : Array (Name × Array Name)) (d m : Name) :
 
 ### 7. `applyEdits`
 
-[`Referee/Extract.lean:300`](../../Referee/Extract.lean#L300).
+Now in the [`challenge-gen`](https://github.com/RemyDegenne/challenge-gen) repository:
+[`ChallengeGen/Extract.lean:307`](https://github.com/RemyDegenne/challenge-gen/blob/main/ChallengeGen/Extract.lean#L307).
 
 Three independent producers — `attributeStripEdits`, `setOptionStripEdits`, `derivingReplacement?` —
 feed one applier, and non-overlap of their edits is an *unstated* assumption of all three. Proving
@@ -296,7 +297,8 @@ precisely the shape of code where an off-by-one lives undetected.
 
 ### 8. `stripEmptyScopes`
 
-[`Referee/Extract.lean:896`](../../Referee/Extract.lean#L896).
+Now in the [`challenge-gen`](https://github.com/RemyDegenne/challenge-gen) repository:
+[`ChallengeGen/Extract.lean:922`](https://github.com/RemyDegenne/challenge-gen/blob/main/ChallengeGen/Extract.lean#L922).
 
 The docstring claims two things: that nesting stays balanced regardless of how deep an empty block
 is, and that a scope is kept iff it transitively contains a `hard` chunk. Both are ordinary

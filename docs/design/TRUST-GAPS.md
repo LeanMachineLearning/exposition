@@ -46,8 +46,10 @@ triviality (§7) are the two proposed toes in this water; the channel is much wi
 is the half an adversary would use.
 
 - **`set_option` in source.** `debug.skipKernelTC` turns the kernel off for a declaration and
-  nothing reads it, though [Referee/Extract.lean](../../Referee/Extract.lean) already parses `set_option`
-  for extraction purposes, so the syntax is in hand. `autoImplicit` is the subtler one: a mistyped
+  nothing reads it, though
+  [`ChallengeGen.Extract`](https://github.com/RemyDegenne/challenge-gen/blob/main/ChallengeGen/Extract.lean)
+  already parses `set_option` for extraction purposes, so the syntax is in hand. `autoImplicit` is
+  the subtler one: a mistyped
   identifier in a statement silently becomes a universally quantified variable, which is exactly how
   a theorem becomes vacuous while reading correctly.
 - **The lakefile.** `leanOptions`, `moreLeanArgs`, custom build facets, `precompileModules`.

@@ -11,7 +11,7 @@ public import VersoManual
 public import VersoManual.Markdown
 public import MeaningGraph
 public import Characterization
-public import Referee.SourceSyntax
+public import ChallengeGen
 
 @[expose] public section
 
@@ -38,6 +38,7 @@ namespace Referee
 
 open Verso.Output Html
 open MeaningGraph
+open ChallengeGen
 
 /-- What the site's search index is built over (`--search`).
 
@@ -157,29 +158,6 @@ structure Cli where
   viable anyway. -/
   perChapter : Bool := false
 deriving Repr
-
-/-- Classification of exposed Lean declarations. -/
-inductive DeclKind where
-  | theorem
-  | definition
-  | opaque
-  | structure
-  | typeclass
-  | inductive
-  | axiom
-  | instance
-deriving Repr, BEq, Inhabited, ToJson, FromJson
-
-/-- Human-readable label for each declaration kind. -/
-def DeclKind.label : DeclKind → String
-  | .theorem => "Theorem"
-  | .definition => "Definition"
-  | .opaque => "Opaque"
-  | .structure => "Structure"
-  | .typeclass => "Type Class"
-  | .inductive => "Inductive"
-  | .axiom => "Axiom"
-  | .instance => "Instance"
 
 /-- The kind label shown to a reader, which is finer-grained than `DeclKind`.
 
@@ -683,7 +661,7 @@ structure DeclInfo where
   direct edges they are derived from were 12.6%. -/
   transDeps : Array Name := #[]
   /-- The transitive closure of `meaningDeps`, topologically ordered, as `transDeps` is of
-  `closureDeps`. Kept separate rather than replacing `transDeps` because `Referee.Extract` seeds each
+  `closureDeps`. Kept separate rather than replacing `transDeps` because `ChallengeGen` seeds each
   standalone file's `keep` set from `transDeps`, and a file whose kept tactic bodies lost the lemmas
   they call would no longer compile.
 
@@ -1306,12 +1284,6 @@ def humanizeWord (s : String) : String :=
           go rest ch.isLower (acc.push ch)
     go s.toList false ""
 
-/-- Computes name Components. -/
-def nameComponents : Name → List String
-  | .anonymous => []
-  | .num p n => nameComponents p ++ [toString n]
-  | .str p s => nameComponents p ++ [s]
-
 /-- Computes module TailComponents. -/
 def moduleTailComponents (rootPrefix moduleName : Name) : List String :=
   let root := nameComponents rootPrefix
@@ -1330,19 +1302,6 @@ def modulePathOf (rootPrefix moduleName : Name) : String :=
   match tail with
   | [] => moduleName.toString
   | _ => String.intercalate "." tail
-
-/-- Maps a declaration name to an identifier safe to use as a filename, URL, and HTML anchor:
-namespace dots become `___`, and the characters forbidden in filenames on some operating systems
-(Windows: `< > : " / \ | ? *`) are replaced by fullwidth Unicode lookalikes that are legal
-everywhere. Notation declarations such as `«term𝓛[_|_;_]»` would otherwise produce a `|` in the
-filename, which is illegal on Windows and rejected by Lean's module-name portability check. -/
-def anchorIdOf (name : Name) : String :=
-  let safeChar : Char → Char := fun c =>
-    match c with
-    | '<' => '＜' | '>' => '＞' | ':' => '：' | '"' => '＂' | '/' => '／'
-    | '\\' => '＼' | '|' => '｜' | '?' => '？' | '*' => '＊'
-    | _ => c
-  (String.intercalate "___" (name.toString.splitOn ".")).map safeChar
 
 /-- Maps a declaration name to a pure-ASCII identifier that is unique across declarations, for use
 as an explicit Verso cross-reference tag.
@@ -1505,11 +1464,6 @@ def readFileIfExists (path : System.FilePath) : IO (Option String) := do
 def ppExprString (env : Environment) (e : Expr) : IO String := do
   let ctx : PPContext := { env := env, opts := {} }
   return toString (← ctx.runMetaM (Meta.ppExpr e))
-
-/-- The namespace `n` and all of its ancestor namespaces, innermost first. -/
-partial def namespaceAncestors : Name → List Name
-  | .anonymous => []
-  | n => n :: namespaceAncestors n.getPrefix
 
 set_option compiler.checkMeta false in
 /-- Builds the same `Block.docstring` value that `{docstring name}` would produce inside
@@ -1974,10 +1928,6 @@ def declKindOf (env : Environment) (info : ConstantInfo) (name : Name) : DeclKin
 def sourcePathForModule (pkg : Lake.Package) (moduleName : Name) : Option System.FilePath :=
   (pkg.findModule? moduleName).map (·.leanFile)
 
-/-- Computes module SourcePath. -/
-def moduleSourcePath (projectDir : System.FilePath) (moduleName : Name) : System.FilePath :=
-  projectDir / s!"{moduleName.toString.replace "." "/"}.lean"
-
 /-- Parses ImportedModule?. -/
 def parseImportedModule? (line : String) : Option Name :=
   let trimmed := (String.trimAscii line).toString
@@ -2141,19 +2091,6 @@ def dropUnsafeDeps (decls : Array DeclInfo) : Array DeclInfo :=
     typeDeps := d.typeDeps.filter isJsonSafeName
     dataDeps := d.dataDeps.filter isJsonSafeName
   }
-
-/-- Helper for runCoreIO. -/
-def runCoreIO {α : Type} (env : Environment) (x : CoreM α) : IO α := do
-  x.toIO'
-    { fileName := "<referee>", fileMap := default, options := {}, currNamespace := .anonymous, openDecls := [] }
-    { env := env, ngen := { namePrefix := `_referee } }
-
-/-- Retrieves declaration source ranges, returning `none` on failure. -/
-def findRanges? (env : Environment) (name : Name) : IO (Option DeclarationRanges) := do
-  try
-    runCoreIO env (findDeclarationRanges? name)
-  catch _ =>
-    pure none
 
 /-- Helper for relativeSourcePath. -/
 def relativeSourcePath (projectDir absPath : System.FilePath) : IO String := do
@@ -2320,7 +2257,7 @@ def loadedPackagesOf (env : Environment) (packages : Array PackageInfo) : Array 
 everything else. Computed from the raw `MeaningGraph` result, before a `DeclInfo` exists to ask.
 
 This is the wider of the two edge choices and exists for one consumer: `transDeps`, which
-`Referee.Extract` seeds each standalone file from. A file whose kept tactic bodies lost the lemmas
+`ChallengeGen` seeds each standalone file from. A file whose kept tactic bodies lost the lemmas
 they call would not compile, so this must stay closed over proofs. Everything that asks what a
 declaration *means* or what a reader must *trust* uses `meaningDepsOf` instead. -/
 def closureDepsOf (kind : DeclKind) (isAlias : Bool) (deps typeDeps : Array Name) : Array Name :=
@@ -2732,6 +2669,24 @@ has to follow a theorem's proof — the `sorry` chain is the one such caller —
 directly. -/
 def closureDeps (decl : DeclInfo) : Array Name :=
   closureDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps
+
+/-- The hand-off to `ChallengeGen`: the four fields the extraction reads, out of the twenty-odd a
+`DeclInfo` carries.
+
+The narrowness is the point. Extraction needs to know what a declaration is called, what kind it
+is, which module to read it from, and what to inline with it; everything else here — signatures,
+docstrings, specification links, trust, provenance — is this tool's business and not a challenge
+generator's, and passing it along would be how `ChallengeGen` acquired Verso.
+
+`transDeps` rather than `deps`: the closure is already taken over `closureDeps` edges, which keep a
+theorem's proof, because a file whose kept tactic blocks lost the lemmas they call would not
+compile. `ChallengeGen` neither computes the closure nor chooses its edges — see the note on
+`closureDepsOf` for why that choice belongs here. -/
+def DeclInfo.toChallengeDecl (decl : DeclInfo) : ChallengeDecl where
+  name := decl.name
+  kind := decl.kind
+  moduleName := decl.moduleName
+  transDeps := decl.transDeps
 
 /-- `meaningDepsOf` for a `DeclInfo`: what the declaration claims and what that claim rests on, with
 every proof dropped.

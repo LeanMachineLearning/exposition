@@ -28,6 +28,7 @@ Run with `lake build Test`.
 
 open Lean Std
 open Referee
+open ChallengeGen
 
 namespace Referee.Test.Audit
 

@@ -60,17 +60,19 @@ smallest thing a reader can check a statement against, optionally linked into th
 
 ## Usable without the rest
 
-Three pieces are separate, dependency-free Lake packages — Lean core only — so a project can take
-any one of them without taking Referee's build (Verso, SubVerso, MD4Lean, …) along with it. Referee
-is a consumer of all three, not their owner.
-[`MeaningGraph`](https://github.com/RemyDegenne/meaning-graph) and
-[`Characterization`](https://github.com/RemyDegenne/characterization)
-have repositories of their own; `JunkValues` is required from this one.
+Four pieces are separate Lake packages, off Referee's own build (Verso, SubVerso, MD4Lean, …), so a
+project can take any one of them without taking the rest. Referee is a consumer of all four, not
+their owner.
+[`MeaningGraph`](https://github.com/RemyDegenne/meaning-graph),
+[`Characterization`](https://github.com/RemyDegenne/characterization) and
+[`ChallengeGen`](https://github.com/RemyDegenne/challenge-gen) have repositories of their own;
+`JunkValues` is required from this one.
 
 | | |
 |---|---|
 | [`MeaningGraph`](https://github.com/RemyDegenne/meaning-graph) | What every declaration rests on: the constants its statement uses, and the ones its statement and proof use — recovering the four things an elaborated term drops (compiler helpers, `Expr.proj` structures, notation expansions, coercion instances) — plus reverse edges and transitive closure in topological order. |
 | [`Characterization`](https://github.com/RemyDegenne/characterization) | `@[specifies]` and `@[characterization]`: which theorems their author offers as the specification of a definition, and which properties pin one down uniquely. |
+| [`ChallengeGen`](https://github.com/RemyDegenne/challenge-gen) | One declaration turned into a file that compiles on its own — dependencies inlined, proofs `sorry`ed, imports cut to the external frontier — in two tiers: verbatim source, which is readable, and environment-rendered, which is robust. Shaped for a challenge generator rather than for this tool; depends on Lean core and `MeaningGraph` only. |
 | [`JunkValues/`](JunkValues/) | `@[junk_value]` and a linter: where a definition rests on the value a total function returns outside its intended domain — *if `f + g` is not integrable then `∫ (f + g) = 0`*. A rule is not a hand-maintained table entry but the theorem that already proves the collapse, so no rule can claim a default the kernel has not checked. Rules for libraries you cannot annotate live in [`Extra/`](JunkValues/JunkValues/Extra/) and are opt-in by import. |
 
 ```lean

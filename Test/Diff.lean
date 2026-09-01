@@ -34,6 +34,7 @@ Each check is a `#guard`, so any regression turns into a build error. Run with `
 
 open Lean Std
 open Referee
+open ChallengeGen
 
 namespace Referee.Test.Diff
 

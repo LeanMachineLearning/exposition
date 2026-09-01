@@ -33,29 +33,17 @@ project; it is not unit-tested here because constructing a synthetic `Environmen
 
 open Lean Std
 open Referee
+open ChallengeGen
 
 namespace Referee.Test
 
 /-! ## Name / string helpers used for hrefs and signatures -/
-
-#guard nameComponents `Foo.bar.baz == ["Foo", "bar", "baz"]
-#guard nameComponents Name.anonymous == ([] : List String)
 
 #guard moduleTailComponents `LML `LML.Foo.Bar == ["Foo", "Bar"]
 #guard moduleTailComponents `LML `LML == ([] : List String)
 
 #guard groupKeyOfModule `LML `LML.Foo.Bar == "Foo"
 #guard modulePathOf `LML `LML.Foo.Bar == "Foo.Bar"
-
-#guard anchorIdOf `Foo.bar.baz == "Foo___bar___baz"
-#guard anchorIdOf `Foo == "Foo"
--- Characters forbidden in filenames on some operating systems (Windows: `< > : " / \ | ? *`) are
--- replaced by fullwidth lookalikes, so notation declarations like `«term𝓛[_|_;_]»` yield portable
--- filenames. The component is `«…»`-escaped by `Name.toString`; we check the `|` is gone and the
--- fullwidth `｜` is present, without pinning the exact escaping.
-#guard !(anchorIdOf (.str (.str .anonymous "N") "a|b")).any (· == '|')
-#guard (anchorIdOf (.str (.str .anonymous "N") "a|b")).any (· == '｜')
-#guard !(anchorIdOf (.str (.str .anonymous "N") "a?*b")).any (fun c => c == '?' || c == '*')
 
 -- `percentEncode`: RFC 3986 unreserved bytes pass through; everything else becomes `%XX` (uppercase,
 -- UTF-8). Used to make the extracted filename safe inside the editor `#url=` link.
@@ -543,7 +531,7 @@ private def pkgs : Array PackageInfo := #[
 /-! ### `closureDepsOf` and `meaningDepsOf`
 
 The two rules for "which edges does this follow". `closureDepsOf` is the wider one and has exactly
-one consumer, `transDeps`, which `Referee.Extract` seeds standalone files from and which therefore
+one consumer, `transDeps`, which `ChallengeGen` seeds standalone files from and which therefore
 must stay closed over proofs. `meaningDepsOf` is what everything the reader is shown follows —
 the graph, the trust analysis, the audit closure, the revision diff.
 

@@ -26,10 +26,20 @@ requires from git with `/ "JunkValues"`.
   for the other end of the same wire — reading the annotations back out of a compiled project
   requires the environment extension to be registered in the reading process. Its own checks live
   with it, so nothing here tests it.
+- [`ChallengeGen`](https://github.com/RemyDegenne/challenge-gen) — standalone-file extraction, in a
+  repository of its own: one declaration turned into a file that compiles alone, with its
+  transitive dependencies
+  inlined and its proofs `sorry`ed, in two tiers (`Extract` copies verbatim source and is readable;
+  `Flat` renders from the environment and is robust). Depends on Lean core and `MeaningGraph`,
+  nothing else — the consumer it is shaped for is a challenge generator, which wants the files and
+  none of the site. It reads exactly four fields per declaration (`ChallengeGen.ChallengeDecl`), and
+  `DeclInfo.toChallengeDecl` is the whole of what this tool hands it. It also owns `anchorIdOf`,
+  which names the files, so that the code writing them and the code linking to them cannot
+  disagree. Its own `#guard`s live with it, so nothing here tests it.
 - `Referee/Collect.lean` — walks the environment and builds one `DeclInfo` per exposed
   declaration (signature, docstring, source snippet, kind), delegating all dependency computation to
   `MeaningGraph` and deciding only which edges Referee follows. There are two such choices:
-  `closureDeps` (type-only for theorems) drives `transDeps`, which `Referee/Extract.lean` seeds each
+  `closureDeps` (type-only for theorems) drives `transDeps`, which `ChallengeGen` seeds each
   standalone file from and which therefore has to stay closed over proofs; `meaningDeps` additionally
   drops the proofs *inside* a definition's value (`MeaningGraph.dataValueConstants`) and drives
   everything the reader is shown — the dependency graph, the upstream-trust analysis, the audit
@@ -62,7 +72,6 @@ requires from git with `/ "JunkValues"`.
   the meaning moved, the text decides *where* — and falls back to comparing text per declaration
   where they do not. Fully unit-tested in `Test/Diff.lean`, which is affordable precisely because it
   is pure.
-- `Referee/Extract.lean` — the standalone `.lean` file extraction (see `KNOWN-ISSUES.md`).
 - `Referee/Highlight.lean` — source-text highlighting. Runs the Lean frontend over a file and
   returns SubVerso `Highlighted` per command, tagged with the names each command defines, plus any
   elaboration errors. Depends on Lean and SubVerso only — it knows nothing about the site. `declCode`
@@ -77,11 +86,11 @@ requires from git with `/ "JunkValues"`.
   gets exactly the site it got before the feature existed — and the same gating, on its own flag,
   covers trust, revisions, semantic hashes and provenance.
 - `Test/` — `#guard`-based unit tests (`lake build Test`), split the same way as the code they
-  cover: `Test/Collect.lean` and `Test/Extract.lean` for this tool, `Test/Diff.lean` and
-  `Test/Provenance.lean` for the two pure comparison passes, `Test/Audit.lean` for the audit
-  payloads, and `Test/Spec.lean` for the `@[specifies]` attribute — the annotations it records, read
-  back out of the environment, with each rejection pinned by `#guard_msgs`, since those messages are
-  the attribute's entire user interface.
+  cover: `Test/Collect.lean` for this tool, `Test/Diff.lean` and `Test/Provenance.lean` for the two
+  pure comparison passes, `Test/Audit.lean` for the audit payloads, `Test/Highlight.lean` for the
+  highlighting, and `Test/JunkValues.lean` / `Test/JunkValuesExtra.lean` for the linter, which has
+  no test target of its own. The other three packages test themselves, in their own
+  repositories.
 
   The pure passes are where the tests earn the most. `Referee/Diff.lean` and
   `Referee/Provenance.lean` are functions from data to data with no environment and no notion of a

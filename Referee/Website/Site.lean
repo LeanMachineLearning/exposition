@@ -18,8 +18,6 @@ public import SubVerso.Module
 public import Referee.Audit
 public import Referee.Collect
 public import Referee.Diff
-public import Referee.Extract
-public import Referee.ExtractFlat
 public import Referee.Highlight
 public import Referee.Provenance
 
@@ -34,6 +32,7 @@ namespace Referee
 
 open Verso.Output Html
 open MeaningGraph
+open ChallengeGen
 open SubVerso.Highlighting (Highlighted)
 
 /- The exposed section opens here rather than directly under the imports so that the
@@ -4846,7 +4845,7 @@ private unsafe def runExtract (cfg : Cli) : IO UInt32 := do
   let imports := importRoots ws cfg.excludeLibs
   let env ← loadEnv projectDir ws imports
   let startMs ← IO.monoMsNow
-  let n ← writeAllExtractions env data.rootPrefix data.decls projectDir
+  let n ← writeAllExtractions env data.rootPrefix (data.decls.map (·.toChallengeDecl)) projectDir
     (System.FilePath.mk out / "html-multi" / "extracted")
   IO.println s!"Wrote {n} standalone extraction files in {(← IO.monoMsNow) - startMs}ms"
   return 0
@@ -4867,7 +4866,7 @@ private unsafe def runExtractFlat (cfg : Cli) : IO UInt32 := do
   let imports := importRoots ws cfg.excludeLibs
   let env ← loadEnv projectDir ws imports
   let startMs ← IO.monoMsNow
-  let n ← Flat.writeAllFlatExtractions env data.rootPrefix data.decls
+  let n ← Flat.writeAllFlatExtractions env data.rootPrefix (data.decls.map (·.toChallengeDecl))
     (System.FilePath.mk out / "html-multi" / "extracted-flat")
   IO.println s!"Wrote {n} flat extraction files in {(← IO.monoMsNow) - startMs}ms"
   return 0
@@ -5063,7 +5062,7 @@ private unsafe def runAll (cfg : Cli) : IO UInt32 := do
   let data := (← collectData cfg projectDir ws rootPrefix env).withClosures
   if let some out := cfg.outputDir then
     let startMs ← IO.monoMsNow
-    let n ← writeAllExtractions env data.rootPrefix data.decls projectDir
+    let n ← writeAllExtractions env data.rootPrefix (data.decls.map (·.toChallengeDecl)) projectDir
       (System.FilePath.mk out / "html-multi" / "extracted")
     IO.println s!"Wrote {n} standalone extraction files in {(← IO.monoMsNow) - startMs}ms"
   buildSiteFrom cfg data

@@ -27,6 +27,20 @@ tests and proofs went with it. This tool is one such consumer — `Referee/Colle
 every dependency computation to it — but it is not a privileged one. -/
 require MeaningGraph from git "https://github.com/RemyDegenne/meaning-graph" @ "main"
 
+/-- Standalone-file extraction: one declaration turned into a file that compiles on its own, its
+dependencies inlined and its proofs `sorry`ed. A *separate, dependency-free package* for the same
+reason as the others, and with a consumer in mind that is not this tool at all — a challenge
+generator, which wants the files and none of the site.
+
+The seam is `ChallengeGen.ChallengeDecl`, four fields wide: `DeclInfo.toChallengeDecl` is the whole
+of what this tool hands over. Everything the extraction needs beyond that it takes from the
+compiled environment itself, which is why it does not need `collect` to have run — only for
+something to say which declarations to extract and what each one's closure is.
+
+That independence is why it is a repository of its own rather than a subdirectory here, and its own
+checks went with it. -/
+require ChallengeGen from git "https://github.com/RemyDegenne/challenge-gen" @ "main"
+
 /-- Junk-value analysis — where a definition rests on the value a total function returns outside the
 domain its name suggests — as a *separate, dependency-free package*, for the same reason as
 `Characterization` and `MeaningGraph`.
@@ -53,8 +67,8 @@ lean_lib Referee where
   needs := #[websiteAssets]
 
 lean_lib Test where
-  globs := #[`Test, `Test.Audit, `Test.Collect, `Test.Diff, `Test.Extract, `Test.Highlight,
-    `Test.JunkValues, `Test.JunkValuesExtra, `Test.Provenance]
+  globs := #[`Test, `Test.Audit, `Test.Collect, `Test.Diff, `Test.Highlight, `Test.JunkValues,
+    `Test.JunkValuesExtra, `Test.Provenance]
 
 /-- Theorems about the library, as opposed to the `#guard` examples in `Test`.
 
