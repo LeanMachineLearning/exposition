@@ -14,6 +14,11 @@ environment produces **data**, and rendering is a pure function of that data.
 | `highlight-extracted` | yes | `extracted-highlighting/*.json` — interactive Lean for each minimal file, **and whether it compiles** |
 | `build-site` | no | the Verso HTML site |
 
+`collect` is also the phase that reads the project root itself: `README.md` for the landing page's
+overview, and `formalization.yaml` — when there is one — for the [Claims](claims.md) page. Both go
+into `data.json`, because `build-site` runs from that file alone and never sees the project
+directory.
+
 `build-site` touches nothing but those files, so it can be re-run as many times as you like —
 e.g. while iterating on page layout or CSS — without re-importing the target project.
 

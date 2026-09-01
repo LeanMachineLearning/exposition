@@ -1,19 +1,19 @@
 # Authoring a library for Referee
 
 Almost everything the site shows is derived: dependencies, closures, `sorry` chains, axioms,
-compile status. Two things are not, and they are worth knowing before you point the tool at a
-project. Both are editorial intent — claims about what matters, which no analysis of the
+compile status. Three things are not, and they are worth knowing before you point the tool at a
+project. All three are editorial intent — claims about what matters, which no analysis of the
 environment can recover.
 
-**The Claims page lists the declarations you wrote with `theorem`, not `lemma`.** It takes the
+**The Theorems page lists the declarations you wrote with `theorem`, not `lemma`.** It takes the
 usual convention at face value — `theorem` for a result worth stating for its own sake, `lemma`
 for a step towards one — because Lean records both as the same kind and nothing else in the
 environment distinguishes them.
 
 So the choice between the two keywords is the one piece of editorial intent the tool cannot infer,
-and the only thing you have to do deliberately to get a useful Claims page. `LeanMachineLearning`
+and the only thing you have to do deliberately to get a useful Theorems page. `LeanMachineLearning`
 states 11 of its 698 declarations as theorems, and they are exactly the point of the library — the
-regret bounds. A project that writes `theorem` everywhere gets a Claims page meaning "all results":
+regret bounds. A project that writes `theorem` everywhere gets a Theorems page meaning "all results":
 still true, just less useful. Nothing else on the site depends on the distinction.
 
 **The specification of a definition is whatever you marked with `@[specifies]`.** A proof can be
@@ -125,3 +125,39 @@ unchanged: a characterized definition counts as specified on the Specifications 
 column with no extra work. Those two pages do not yet separate the characterized from the merely
 specified; `Characterization.characterizations`, and `DeclInfo.characterizedBy` downstream of it,
 expose the distinction for when they do.
+
+## `formalization.yaml`, if you have one
+
+**The Claims page lists the results your `formalization.yaml` declares under `status.main_results`.**
+Not a Referee convention: it is the metadata document the
+[Palomar registry](https://palomar-registry.org/) requires of a submission, and a project that ships
+one for the registry's sake gets the page for nothing. A project without one is never told about it.
+
+The keyword convention above and this file answer the same question at different strengths. `theorem`
+against `lemma` separates results from machinery, which on a library of any size still leaves
+hundreds of results. `main_results` is a handful — the ones the work exists to prove — and it is the
+only place a project can say so.
+
+```yaml
+status:
+  main_results:
+    - declaration: "MyLib.main_theorem"
+      file: MyLib/Main.lean
+      literature_dependencies:
+        - statement: "Kolmogorov's extension theorem"
+          source: "Kallenberg 2021, Thm 8.23"
+```
+
+`declaration` is the only field the page cannot do without; an entry with none is dropped. Name it
+exactly as the library exports it — `collect` warns when a declared result matches nothing, which is
+almost always a rename the file did not follow, and the page reports the same discrepancy to a
+reader.
+
+Worth filling in `literature_dependencies` if any of it applies to you. A result that assumes a
+theorem from the literature leaves behind no `sorry` and no extra axiom, so it is invisible to every
+other page on the site — that field is the only way it reaches a reader. Likewise `status.scope`,
+which the page shows verbatim: it is where the weakened hypothesis or the omitted case goes, and no
+list of theorem names can show either.
+
+See [claims](claims.md) for what the page does with the file, and for the deliberate limits of the
+YAML reader.

@@ -1,6 +1,6 @@
-# Claims and audit state
+# Theorems and audit state
 
-The Claims page carries both, because they were never two questions. It lists what the library
+The Theorems page carries both, because they were never two questions. It lists what the library
 states with `theorem` — see [Authoring](authoring.md) for why that keyword is the signal — and
 against each one what the *reader* has made of it. Every other page on the site is derived from the
 compiled library; this half of this one is not.

@@ -4,7 +4,7 @@
 
 | | needs `lake env`? | |
 |---|---|---|
-| `collect` | yes | Import the project and write `data.json`. See [the pipeline](pipeline.md) |
+| `collect` | yes | Import the project and write `data.json`, plus what the project root holds: `README.md`, and `formalization.yaml` if present. See [the pipeline](pipeline.md) |
 | `provenance` | no (needs git) | Fold this revision into the ledger. See [provenance](provenance.md) |
 | `extract` | yes | Write the standalone minimal `.lean` file per declaration |
 | `extract-flat` | yes | The [fallback extraction](extraction.md): robust, unreadable |

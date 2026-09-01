@@ -12,6 +12,7 @@ public import VersoManual.Markdown
 public import MeaningGraph
 public import Characterization
 public import ChallengeGen
+public import Referee.Formalization
 
 @[expose] public section
 
@@ -1046,8 +1047,12 @@ decode error when handed a JSON file written by an older `collect`.
   version-11 file still decodes — its stored closures are simply ignored in favor of the recomputed
   ones, which is why `minReadableDataVersion` stays at 11. The bump exists for the other direction:
   an older binary handed a version-12 file must refuse it rather than silently render the empty
-  closures it carries. -/
-def collectedDataVersion : Nat := 12
+  closures it carries.
+- 13: adds `CollectedData.formalization?`, the project's own `formalization.yaml` — the first input
+  that is neither the compiled environment nor derived from it. Absent for every project that has no
+  such file, which is why `minReadableDataVersion` stays at 11: an older file decodes with the field
+  at its `none` default, which is exactly right for a project that had none -/
+def collectedDataVersion : Nat := 13
 
 /-- The oldest data-format version the current binary can read. Version 11 remains readable because
 the only change in 12 is that closures are no longer stored, and this binary recomputes them from
@@ -1065,6 +1070,15 @@ structure CollectedData where
   moduleOrder : Array (Name × Nat)
   moduleDocs : Array (Name × Array (Block Manual))
   readmeText : Option String
+  /-- The project's `formalization.yaml`, when it has one: the Palomar registry's metadata document,
+  read for the results the project itself puts forward as the point of it.
+
+  The one field here that is not derived from the compiled environment. It is collected rather than
+  read at render time for the same reason `readmeText` is — `build-site` runs from `data.json` alone
+  and never sees the project directory — and it is an `Option` rather than a default-empty record so
+  that "the project has no such file" and "the file declares no main results" stay distinguishable:
+  the first means the Claims page does not apply, the second that it has nothing to say. -/
+  formalization? : Option Formalization := none
   /-- The workspace's packages and their dependency edges, the graph `--trust` closes over. -/
   packages : Array PackageInfo := #[]
   /-- The packages with code actually loaded in the imported environment. See `loadedPackagesOf`:
@@ -1459,6 +1473,22 @@ def readFileIfExists (path : System.FilePath) : IO (Option String) := do
   if ← path.pathExists then
     return some (← IO.FS.readFile path)
   return none
+
+/-- Reads the project's `formalization.yaml`, when it has one.
+
+A parse failure is a warning and not an error. The file sits beside the library rather than inside
+it, and refusing to build the site because one field of it is malformed would trade the whole report
+for one page of it — so the site is built without a Claims page and the reason goes to the console,
+where the author is the person who can act on it. -/
+def readFormalization (projectDir : System.FilePath) : IO (Option Formalization) := do
+  let some raw ← readFileIfExists (projectDir / "formalization.yaml")
+    | return none
+  match Formalization.parse raw with
+  | .ok form => return some form
+  | .error message =>
+    IO.eprintln s!"warning: formalization.yaml could not be read ({message}); the site will have \
+      no Claims page"
+    return none
 
 /-- Pretty-prints ExprString. -/
 def ppExprString (env : Environment) (e : Expr) : IO String := do

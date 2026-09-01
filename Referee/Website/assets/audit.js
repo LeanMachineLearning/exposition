@@ -220,7 +220,7 @@ document.addEventListener('DOMContentLoaded', function () {
             ? `<button type="button" id="audit-accept-closure">Accept this and everything its
                  statement rests on (${closure.length})</button>`
             : ''}
-          <a class="audit-link" href="claims/">Claims and progress →</a>
+          <a class="audit-link" href="theorems/">Theorems and progress →</a>
         </div>
         <p class="audit-queue" id="audit-queue"></p>
       </div>`;
@@ -691,7 +691,7 @@ document.addEventListener('DOMContentLoaded', function () {
       lines.push('This records one reader\'s judgements. Nothing in it is checked or authenticated:');
       lines.push('an accepted declaration is one a human said says what its name claims.', '');
 
-      lines.push(`## Claims (${claims.length})`, '');
+      lines.push(`## Theorems (${claims.length})`, '');
       claims.forEach(i => {
         const c = coverage(i);
         const mark = isCovered(i) ? 'x' : ' ';

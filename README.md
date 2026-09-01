@@ -21,8 +21,11 @@ declaration is unreadable at any zoom and answers no question a reader has.
 
 On top of that are the pages a referee needs and ordinary documentation does not have:
 
-- **Claims** — everything stated with `theorem`, separated from the machinery, each row carrying
-  what you have made of it (see **[audit state](docs/audit.md)** below). **Browse** — every
+- **Theorems** — everything stated with `theorem`, separated from the machinery, each row carrying
+  what you have made of it (see **[audit state](docs/audit.md)** below). **[Claims](docs/claims.md)**
+  — the same rows, but only the results the project's own `formalization.yaml` puts forward, for a
+  project that ships the [Palomar registry](https://palomar-registry.org/)'s metadata: the one list
+  here that is asserted rather than measured. **Browse** — every
   declaration in one sortable, filterable table. **Sorries and assumptions** — `sorry` chains,
   extra axioms and unaudited upstream packages, reported as findings only: the page counts what is
   missing and never how much is done.
@@ -40,7 +43,7 @@ On top of that are the pages a referee needs and ordinary documentation does not
   theorems really say so. Those get a section of their own above the specification, leading with the
   relation, because "the unique such object up to `=`" and "up to a.e. equality" are different
   claims and a page that says only "characterized" has told the reader the less useful half.
-- **[Audit state](docs/audit.md)** — what *you* have read, on the Claims page itself rather than on
+- **[Audit state](docs/audit.md)** — what *you* have read, on the Theorems page itself rather than on
   one of its own. A declaration is *accepted* when you judge that it says what its name claims, and
   *covered* when everything its statement rests on is accepted too — so the page can report what a
   checkbox cannot: a claim accepted while resting on definitions nobody has looked at. Reading queues
@@ -128,7 +131,8 @@ flag.
 | [Running in CI](docs/ci.md) | The job shape, and the state that has to survive between runs |
 | [Authoring](docs/authoring.md) | The two things the tool cannot infer: `theorem` vs `lemma`, and `@[specifies]` |
 | [Upstream trust](docs/trust.md) | `--trust`, what counts as a trust dependency, and what the analysis does and does not claim |
-| [Claims and audit state](docs/audit.md) | Verdicts, coverage, reading queues, export — and the three limits |
+| [Theorems and audit state](docs/audit.md) | Verdicts, coverage, reading queues, export — and the three limits |
+| [Claims](docs/claims.md) | The Claims page: `formalization.yaml`'s main results, and what the site will not take from the file |
 | [Comparing revisions](docs/revisions.md) | `--baseline`, the classification, and what the comparison is made on |
 | [Semantic hashes](docs/semantic-hashes.md) | `--hashes`: structural hashes instead of pretty-printed text |
 | [Provenance](docs/provenance.md) | `--provenance`: when meaning last changed, and the revision selector |

@@ -1120,6 +1120,13 @@ private structure SiteContext where
   characterizations is rendered without this, for the reason given above: a project that has never
   heard of the attribute must not be told about it on every page. -/
   usesChars : Bool := false
+  /-- The project's `formalization.yaml`, when it has one.
+
+  Gated exactly as `usesSpecs` and `diff?` are: a project without the file acquires no Claims page,
+  no nav entry and no mention of the registry anywhere. Unlike every other field here it is not
+  derived from the environment at all — see `claimedResults?`, which is the gate the pages actually
+  consult, and `Referee.Formalization` for what is read out of the file. -/
+  formalization? : Option Formalization := none
   /-- Whether the collected data carries semantic hashes, i.e. whether `collect --hashes` was given.
 
   Gates everything that compares one *meaning* against another across time: the staleness check on
@@ -2555,7 +2562,7 @@ The one page on this site whose content is not derived from the library alone. T
 referee does is work, and work that cannot be recorded has to be redone — and the number that
 matters is not how many declarations someone has ticked off but how many claims are covered
 *including everything their statements rest on*, which no checkbox can say by itself. -/
-private def mkClaimsPart (decls : Array DeclInfo) (groups : Array GroupInfo) (ctx : SiteContext)
+private def mkTheoremsPart (decls : Array DeclInfo) (groups : Array GroupInfo) (ctx : SiteContext)
     : Part Manual :=
   let claims := claimsOf decls
   -- Chapters in the site's own order, which is the import graph's, and within one the claims that
@@ -2571,12 +2578,12 @@ private def mkClaimsPart (decls : Array DeclInfo) (groups : Array GroupInfo) (ct
         headingLevel := some 3
       }) #[list]
   {
-    title := #[.text "What This Library Claims"]
-    titleString := "What This Library Claims"
+    title := #[.text "The Theorems This Library States"]
+    titleString := "The Theorems This Library States"
     metadata := some {
-      file := some "claims"
-      shortTitle := some "Claims"
-      tag := some (.provided "claims")
+      file := some "theorems"
+      shortTitle := some "Theorems"
+      tag := some (.provided "theorems")
       number := false
     }
     content := #[
@@ -2636,6 +2643,158 @@ private def mkClaimsPart (decls : Array DeclInfo) (groups : Array GroupInfo) (ct
           the artifact that actually travels."
       ]
     ]
+    subParts := #[]
+  }
+
+/-! ## The project's own claims
+
+Everything above this point is derived from the compiled library. `formalization.yaml` is not: it is
+a document the author wrote, and the Claims page reads it for the one thing no analysis of the
+environment can supply — which of the library's results the project puts forward as the point of it.
+See `Referee.Formalization` for the parser and for what it does not implement. -/
+
+/-- The `formalization.yaml`, when it declares at least one main result.
+
+The gate on every part of the Claims page, and it is two conditions rather than one. A project with
+no such file has not made the claim this page reports, so there is nothing to show; a project whose
+file declares no `status.main_results` — the schema calls the field optional — has made the rest of
+the declaration and not that one, and a page reading "this project names no main results" would be
+nagging about a field rather than reporting on a library. Both cases get no page, which is how
+`usesSpecs` gates the Specifications page and for the same reason. -/
+private def claimedResults? (ctx : SiteContext) : Option Formalization :=
+  match ctx.formalization? with
+  | some form => if form.mainResults.isEmpty then none else some form
+  | none => none
+
+/-- Each declared main result paired with the declaration it names, where the library has one.
+
+Entries that match nothing are kept rather than dropped. A `formalization.yaml` naming a result the
+library does not export is exactly the discrepancy a referee is here to find — most often a rename
+the metadata did not follow — and a page that listed one fewer claim than the file declares would
+hide it behind a number that looked fine. -/
+private def resolvedMainResults (form : Formalization) (ctx : SiteContext) :
+    Array (MainResult × Option DeclInfo) :=
+  form.mainResults.map fun result => (result, ctx.declByName.get? result.declaration.toName)
+
+/-- Builds the Claims page: what the project's own `formalization.yaml` puts forward as its main
+results.
+
+The rows are the ones the Theorems page uses, deliberately and exactly: the same link, the same
+closure count, the same `sorry` flag, the same audit state under the same key. A claim is one
+declaration whether it is reached from the file's curated list or from the library's own, and a
+reader who has recorded work on it must see that work in both places. What differs is only which
+declarations are on the page and in what order — here, the file's order, because a curated list is
+an argument about what matters and its order is part of the argument.
+
+What it does *not* take from the file is anything the library already answers. `main_results` also
+carries a `sorry_count` and an `axioms` list per result; those are the project's account of facts
+this site computes from the environment, and rendering the account beside the measurement would
+invite a reader to compare two numbers that are not measured the same way — the file's counts
+exclude Comparator challenge modules, this site's do not. The row shows the measurement. The two
+fields the environment genuinely cannot supply, `literature_dependencies` and the file's own
+statement of scope, are below the list.
+
+Deliberately no audit apparatus: the excerpt payload turns off the export/import/report block (see
+`AuditData.excerpt`), which belongs to the page carrying every claim rather than to a page carrying
+the handful the author chose. -/
+private def mkClaimsPart (form : Formalization) (decls : Array DeclInfo) (ctx : SiteContext)
+    : Part Manual := Id.run do
+  let resolved := resolvedMainResults form ctx
+  let matched := resolved.filterMap (·.2)
+  let listed := matched.filter (ctx.declPageHrefs.contains ·.name)
+  let missing := resolved.filterMap fun (result, decl?) =>
+    if decl?.isSome then none else some result
+  let mut blocks : Array (Block Manual) := #[
+    .para #[
+      .text "These are the results the project puts forward as its own, read from the ",
+      .code "status.main_results", .text " list of its ", .code "formalization.yaml", .text " — \
+        the metadata document the ",
+      .link #[.text "Palomar registry"] "https://palomar-registry.org/",
+      .text " requires of a submission."
+    ],
+    .para #[
+      .bold #[.text "The one list here the library cannot check. "],
+      .text "Every other page is derived from the compiled environment. This one is a sentence the \
+        author wrote, and the site takes it at face value. What each result ",
+      .emph #[.text "rests on"],
+      .text " is still measured the way it is measured everywhere — the count beneath each row and \
+        the ", .code "sorry", .text " flag on it are this site's numbers, not the file's — but \
+        whether these are the results that matter is the project's claim and nobody else's."
+    ],
+    .para #[
+      .text "The derived list is next door. ",
+      .link #[.text "The theorems this library states"] "theorems/",
+      .text " is everything written with the ", .code "theorem", .text " keyword, ranked by how \
+        much machinery it rests on. Where the two lists disagree — a headline result stated as a ",
+      .code "lemma", .text ", or a theorem the file passes over — the disagreement is information \
+        about the project rather than a fault in either page."
+    ]
+  ]
+  blocks := blocks.push <| .para #[
+    .text s!"{form.mainResults.size} \
+      {if form.mainResults.size == 1 then "result is" else "results are"} declared, in the order \
+      the file gives them rather than in any order derived here."
+  ]
+  if let some list := mkClaimListBlock listed ctx then
+    blocks := blocks.push list
+    blocks := blocks.push <|
+      .other (Block.auditData (mkAuditData decls ctx (featured? := some (listed.map (·.name))))) #[]
+  if !missing.isEmpty then
+    blocks := blocks.push <| .para #[
+      .bold #[.text s!"{missing.size} of them {if missing.size == 1 then "names a declaration this \
+        library does not have" else "name declarations this library does not have"}. "],
+      .text "A rename the metadata did not follow, a result not written yet, or a declaration this \
+        site does not expose — under all three the file and the library disagree about what exists, \
+        which is worth knowing before trusting either. The file's own account of where each lives \
+        is the only clue the site can offer."
+    ]
+    blocks := blocks.push <| .ul <| missing.map fun result =>
+      Verso.Doc.ListItem.mk #[.para (#[.code result.declaration] ++
+        (if result.file.isEmpty then #[.text " — no file given"]
+         else #[.text " — declared in ", .code result.file]))]
+  let assumed := resolved.filter fun (result, _) => !result.literatureDependencies.isEmpty
+  if !assumed.isEmpty then
+    blocks := blocks.push <| .para #[
+      .bold #[.text "Assumed, not proved. "],
+      .text "A result that takes a theorem from the literature is proved ",
+      .emph #[.text "modulo"],
+      .text " that theorem, and no analysis of the compiled library can say so: the assumption \
+        lives in the author's prose rather than in the term, so it leaves behind no ",
+      .code "sorry",
+      .text " and no extra axiom. These are the ones the file declares. Everything the ",
+      .link #[.text "sorries and assumptions"] "sorries/",
+      .text " page reports is separate from them, and neither list bounds the other."
+    ]
+    blocks := blocks.push <| .ul <| assumed.map fun (result, _) =>
+      Verso.Doc.ListItem.mk #[
+        .para #[.code result.declaration],
+        .ul <| result.literatureDependencies.map fun dep =>
+          Verso.Doc.ListItem.mk #[.para (#[.text dep.statement] ++
+            (if dep.source.isEmpty then #[] else #[.text " — ", .emph #[.text dep.source]]))]
+      ]
+  if !form.scope.isEmpty then
+    blocks := blocks.push <| .para #[
+      .bold #[.text "What the project says it does and does not cover. "],
+      .text "Its ", .code "status.scope", .text ", verbatim — the place a formalization declares \
+        the weakened hypothesis or the omitted case that a list of theorem names cannot show."
+    ]
+    -- One paragraph per line rather than one for the whole thing. An author who wrote the field as
+    -- a `|` block chose those line breaks, and a project that states its omissions one per line is
+    -- the common case; a `>-` block arrives here as a single line and is unaffected either way.
+    blocks := blocks.push <| .blockquote <|
+      (form.scope.splitOn "\n").toArray.filterMap fun line =>
+        let line := (String.trimAscii line).toString
+        if line.isEmpty then none else some (.para #[.text line])
+  return {
+    title := #[.text "What This Project Claims"]
+    titleString := "What This Project Claims"
+    metadata := some {
+      file := some "claims"
+      shortTitle := some "Claims"
+      tag := some (.provided "claims")
+      number := false
+    }
+    content := blocks
     subParts := #[]
   }
 
@@ -2977,7 +3136,7 @@ private def mkSpecificationsPart (decls : Array DeclInfo) (ctx : SiteContext) : 
 
 /-- Builds the Browse page: every declaration in one sortable, filterable table.
 
-The uncurated entry point. Claims and Trust are curated views for readers who know what they are
+The uncurated entry point. Theorems and Trust are curated views for readers who know what they are
 after; this is for the reader who does not, and it is the only page that answers questions cutting
 across the module hierarchy — which theorems rest on the least machinery, what is in a chapter that
 is not a lemma, what is `sorry`-free below some closure size. -/
@@ -3358,7 +3517,7 @@ private def mkLandingBlocks (rootPrefix : Name) (decls : Array DeclInfo) (ctx : 
     blocks := blocks.push <|
       .other (Block.auditData (mkAuditData decls ctx (featured? := some (topClaims.map (·.name)))))
         #[]
-  blocks := blocks.push <| .para #[.link #[.text "See all claims"] "claims/", .text "."]
+  blocks := blocks.push <| .para #[.link #[.text "See all theorems"] "theorems/", .text "."]
   return blocks
 
 /-- Builds the root site part with chapter pages and utility sections. -/
@@ -3378,7 +3537,7 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
       shortTitle := some title
       number := false
     }
-    -- Claims, then what the project says it is, then how it is built: the three questions in the
+    -- Theorems, then what the project says it is, then how it is built: the three questions in the
     -- order a reader asks them. The README used to sit *below* the module listing, which put a
     -- page of chapter contents between "here is what this proves" and the author's own account of
     -- it. The module graph then leads the listing it is a picture of, rather than standing on a
@@ -3400,7 +3559,10 @@ private def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo
     subParts := (if !withUtility then #[]
         else (if ctx.diff?.isNone && ctx.provenance?.isNone then #[]
           else #[mkChangesPart ctx.diff? decls ctx])
-        ++ #[mkClaimsPart decls groups ctx]
+        ++ (match claimedResults? ctx with
+            | some form => #[mkClaimsPart form decls ctx]
+            | none => #[])
+        ++ #[mkTheoremsPart decls groups ctx]
         ++ (if ctx.usesSpecs then #[mkSpecificationsPart decls ctx] else #[])
         ++ #[mkBrowsePart decls ctx, mkAssumptionsPart decls ctx])
       ++ (groupParts?.getD (groups.map fun group => mkGroupPart group ctx))
@@ -3547,12 +3709,27 @@ private def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Wo
   let moduleNames := moduleIndexMap decls |>.toArray.map Prod.fst
   let moduleDocs := moduleNames.map fun name => (name, moduleDocBlocks env name)
   let readmeText ← readFileIfExists (projectDir / "README.md")
+  let formalization? ← readFormalization projectDir
+  if let some form := formalization? then
+    -- The check worth making here rather than at render time: the author is standing in their own
+    -- project, and a main result naming a declaration that does not exist is nearly always a rename
+    -- the metadata did not follow. The Claims page reports it too, but a warning reaches the person
+    -- who can fix it.
+    let known := decls.foldl (init := ({} : Std.HashSet Name)) fun acc decl => acc.insert decl.name
+    let missing := form.mainResults.filter fun result => !known.contains result.declaration.toName
+    IO.println s!"formalization.yaml: {form.mainResults.size} main results declared, \
+      {form.mainResults.size - missing.size} matching an exposed declaration"
+    if !missing.isEmpty then
+      IO.eprintln s!"warning: formalization.yaml names {missing.size} main \
+        {if missing.size == 1 then "result" else "results"} this project does not expose: \
+        {String.intercalate ", " (missing.toList.take 5 |>.map (·.declaration))}"
   return {
     rootPrefix
     decls
     moduleOrder := order.toArray
     moduleDocs
     readmeText
+    formalization?
     packages
     loadedPackages
     externalDecls
@@ -4202,7 +4379,9 @@ private def orderedPagePaths (groups : Array GroupInfo) (ctx : SiteContext) : Ar
   let mut out := #["index.html"]
   if ctx.diff?.isSome || ctx.provenance?.isSome then
     out := out.push "changes/index.html"
-  out := out.push "claims/index.html"
+  if (claimedResults? ctx).isSome then
+    out := out.push "claims/index.html"
+  out := out.push "theorems/index.html"
   if ctx.usesSpecs then
     out := out.push "specifications/index.html"
   out := out ++ #["browse/index.html", "sorries/index.html"]
@@ -4742,6 +4921,7 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     -- report it.
     usesSpecs := data.decls.any (!·.specifies.isEmpty) || data.decls.any (!·.characterizedBy.isEmpty)
     usesChars := data.decls.any (!·.characterizedBy.isEmpty)
+    formalization? := data.formalization?
     -- `all`, not `any`: a partially hashed build would check some verdicts and silently skip
     -- others, and a staleness list that is quietly incomplete is worse than one that is absent.
     usesMeanings := !data.decls.isEmpty && data.decls.all (·.proofIrrelHash?.isSome)

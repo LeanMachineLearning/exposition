@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!toc) return;
   /* Pages promoted out of the table of contents into a small nav at the top of the sidebar.
      Each link's href is taken from the table-of-contents entry it replaces rather than hardcoded:
-     the sidebar renders on pages at every depth, so a fixed relative path like 'claims/' resolves
+     the sidebar renders on pages at every depth, so a fixed relative path like 'theorems/' resolves
      *underneath* whatever page the reader is on. Deriving it also means a slug with no entry is
      simply not shown — removing a page can no longer leave a dead link here, which is exactly how
      a "Graph" link outlived the graph page. */
@@ -13,9 +13,13 @@ document.addEventListener('DOMContentLoaded', () => {
        question is what their earlier reading no longer covers. The derive-from-the-entry rule
        above is what makes listing it here safe for a site that has neither. */
     { slug: 'changes', label: 'Changes' },
-    /* Also the audit page: the library's claims and what the reader has made of them are one
-       list, and were two pages saying half of it each. */
+    /* Only built for a project with a `formalization.yaml` that declares main results; same rule
+       again. First of the three because it is the shortest and the most opinionated: what the
+       project says it proves, before everything it happens to state. */
     { slug: 'claims', label: 'Claims' },
+    /* Also the audit page: the library's theorems and what the reader has made of them are one
+       list, and were two pages saying half of it each. */
+    { slug: 'theorems', label: 'Theorems' },
     /* Only built for a project that uses `@[specifies]`; same rule again. */
     { slug: 'specifications', label: 'Specifications' },
     { slug: 'browse', label: 'Browse' },

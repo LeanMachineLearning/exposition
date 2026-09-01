@@ -61,7 +61,12 @@ requires from git with `/ "JunkValues"`.
   more here than elsewhere because the file is append-only: a fold that records a change where none
   happened writes that into the record for good. The git reading (`blame`, `log`, `describe`) is
   the only part that shells out, and it is one `git blame` per *file* rather than per declaration.
-- `Referee/Audit.lean` — the payloads the claims page, the landing page's excerpt of it and the
+- `Referee/Formalization.lean` — the reader for a project's `formalization.yaml`, which is the only
+  input to this tool that is not the compiled library. A YAML parser for the subset that document
+  uses, and the handful of fields the Claims page renders. Pure, and the file here that most needs
+  `Test/Formalization.lean`: every way a subset parser fails is silent. See
+  [claims](claims.md).
+- `Referee/Audit.lean` — the payloads the theorems page, the landing page's excerpt of it and the
   per-declaration control hand to `assets/audit.js`, plus `dataFingerprint`, the stamp an exported
   audit file carries so it can be matched against the build it was made against. The verdicts,
   coverage, queue, import and export are all the browser's; this is only the data they run on.
