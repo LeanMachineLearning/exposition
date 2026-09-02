@@ -152,6 +152,16 @@ guess. Two consequences worth being explicit about:
 - **For a reader.** The page inherits the project's discipline. Where the two keywords are used
   interchangeably it degrades to "all results" — still true, just less informative.
 
+**Amendment (2026-09), for the landing page only.** P3 still decides what the Theorems page is and
+what the Claims page reads out of `formalization.yaml`. What it no longer decides is the *landing*
+page, which used to open with the ten results resting on the most machinery, the re-reading a
+revision had caused, and how many definitions carried a specification. Each of those has a page that
+presents it better, and repeating the most-read of them made the landing page the longest on the
+site rather than the shortest. It now opens with two sentences of counts — declarations split by
+keyword, then the upstream packages — and hands the reader to the pages. The claim in the rejected
+list below, that counts on the landing page are the wrong metric, was wrong about one thing: a
+reader arriving cold does want to know how big this is before being told what it asserts.
+
 The evidence for preferring this over a derived rule is sharp. An earlier version defined claims as
 the leaves of the reverse-dependency graph — "nothing else uses it". That is wrong in both
 directions: a headline theorem reused by one corollary stops counting, while a lemma proved during
@@ -250,7 +260,7 @@ compile status stops being an out-of-band shell script and becomes a field in th
 
 | page | purpose |
 |---|---|
-| **Landing** | The library's claims (P3), its assumptions, trust summary, entry search. Not a table of contents. |
+| **Landing** | What the library holds and what it rests on, then the README and the module graph. Two counts, not a table of contents, and no longer a copy of the Theorems page — see the amendment under P3. |
 | **Browse** | One filterable, sortable table of every declaration: kind, module, trust badges, audit-surface size (P6). The workhorse. |
 | **Declaration** | Statement, docstring, source link; **minimal file inline, highlighted and hoverable** (P2); statement-closure outline (P4); trust chain (P5); local dependency DAG (P8); proof body, folded. |
 | **Module / chapter** | Module doc comment plus its declarations, as an index — the current hierarchy, demoted to one view among several. |
@@ -378,5 +388,5 @@ Stated plainly, so the decisions are visible rather than implied:
 - the whole-repository graph page, in any layout (P8) — deleted, not restyled;
 - the minimal file as an off-site link, and as plain `<pre>` text (P2);
 - front-end code authored in Lean string literals (P1);
-- landing-page metrics that are counts rather than claims (P3);
+- ~~landing-page metrics that are counts rather than claims (P3)~~ — reversed, for the landing page only; see the amendment under P3;
 - runtime CDN dependencies (P10).

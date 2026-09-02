@@ -375,29 +375,12 @@ private def mkClaimsPart (form : Formalization) (decls : Array DeclInfo) (ctx : 
         the metadata document the ",
       .link #[.text "Palomar registry"] "https://palomar-registry.org/",
       .text " requires of a submission."
-    ],
-    .para #[
-      .bold #[.text "The one list here the library cannot check. "],
-      .text "Every other page is derived from the compiled environment. This one is a sentence the \
-        author wrote, and the site takes it at face value. What each result ",
-      .emph #[.text "rests on"],
-      .text " is still measured the way it is measured everywhere — the count beneath each row and \
-        the ", .code "sorry", .text " flag on it are this site's numbers, not the file's — but \
-        whether these are the results that matter is the project's claim and nobody else's."
-    ],
-    .para #[
-      .text "The derived list is next door. ",
-      .link #[.text "The theorems this library states"] "theorems/",
-      .text " is everything written with the ", .code "theorem", .text " keyword, ranked by how \
-        much machinery it rests on. Where the two lists disagree — a headline result stated as a ",
-      .code "lemma", .text ", or a theorem the file passes over — the disagreement is information \
-        about the project rather than a fault in either page."
     ]
   ]
   blocks := blocks.push <| .para #[
     .text s!"{form.mainResults.size} \
       {if form.mainResults.size == 1 then "result is" else "results are"} declared, in the order \
-      the file gives them rather than in any order derived here."
+      the file gives them."
   ]
   if let some list := mkClaimListBlock listed ctx then
     blocks := blocks.push list
@@ -892,8 +875,8 @@ private def mkModuleGraphBlocks (groups : Array GroupInfo) (ctx : SiteContext) :
   let intro : Array (Block Manual) := #[
     .other (Block.sectionHeading "Modules") #[],
     .para #[.text s!"How the project's {modules.size} modules depend on one another. Colour marks \
-      the chapter, so the blocks of colour are the chapter structure and the edges between them \
-      are where it is crossed."],
+      the folder, so the blocks of colour are the folder structure and the edges between them are \
+      where it is crossed."],
     .para #[.text "An edge means some declaration in the lower module uses something declared in \
       the upper one. Edges implied by a longer path are not drawn."]
   ]
@@ -941,13 +924,30 @@ private def mkPackageGraphData (decls : Array DeclInfo) (ctx : SiteContext) : Gr
       href := ""
       doc := summary }
   let shownSet : Std.HashSet Name := shown.foldl (·.insert ·) {}
-  let edges := shown.foldl (init := #[]) fun acc name =>
+  let declared := shown.foldl (init := #[]) fun acc name =>
     match byName.get? name with
     | none => acc
     | some pkg => acc ++ pkg.deps.filterMap fun dep =>
         if shownSet.contains dep then
           some { source := dep.toString, target := name.toString }
         else none
+  -- Lake cannot express a dependency on the toolchain, so nothing in the workspace ever names
+  -- `Lean` and the node arrived here through `trustClosure` — which adds it unconditionally —
+  -- with no edge to reach it by. It sat beside the picture rather than under it.
+  --
+  -- Every package rests on the toolchain, so the honest edge is to all of them; drawn, that is one
+  -- edge per package and it buries the structure the graph is for. What is drawn instead is the
+  -- edge to each package nothing *else shown* sits above, which is the same relation reduced: a
+  -- package with a dependency in the picture reaches the toolchain through it. The test is against
+  -- what is shown rather than against what Lake declares, so a package whose own dependencies this
+  -- project never reaches — `importGraph`, whose `Cli` is not here — bottoms out too.
+  let hasShownDep : Std.HashSet String :=
+    declared.foldl (fun acc (e : GraphEdge) => acc.insert e.target) {}
+  let toolchain := shown.filter fun name => (byName.get? name).any (·.isToolchain)
+  let edges := declared ++ toolchain.flatMap fun tc =>
+    shown.filterMap fun name =>
+      if name == tc || hasShownDep.contains name.toString then none
+      else some { source := tc.toString, target := name.toString }
   { nodes, edges, unit := "package" }
 
 /-- The upstream-trust section of the sorries page: the package graph, the finding, and what to do
@@ -1081,107 +1081,67 @@ private def mkAssumptionsPart (decls : Array DeclInfo) (ctx : SiteContext) : Par
     subParts := #[]
   }
 
-/-- The landing summary: the question the whole site exists to answer, then the numbers that answer
-it, then what every page carries.
+/-- The landing summary: what is in this repository, and what sits under it.
 
-Replaces a declaration-count dashboard. A reader arriving cold cannot act on "1677 declarations,
-12 chapters"; they can act on "here is what it claims, here is how much of it is proved, here is
-what you would additionally have to accept".
+Two paragraphs, both of them counts. This replaced a longer opening that led with the question
+"what would it take to believe this library?" and answered it with the ten results resting on the
+most machinery, the re-reading a revision had caused, and how many definitions carried a
+specification. Every one of those has a page that presents it better — Theorems, Changes,
+Specifications — and repeating the most-read of them here made the landing page the longest on the
+site rather than the shortest.
 
-The middle paragraph is one sentence built from four counts, and each clause is dropped when it has
-nothing to say — a project with no `sorry`, no upstream dependency or no `@[specifies]` annotation
-should read as a shorter sentence rather than a padded one. -/
+What is left is the part no page title can give: how big the library is and what shape it is, then
+how much sits underneath it. The `theorem`/`lemma`/`definition` split is the author's own — the
+same one the sidebar's visibility toggles and every module listing use — so the three numbers are
+read off the keywords rather than derived. -/
 private def mkLandingBlocks (rootPrefix : Name) (decls : Array DeclInfo) (ctx : SiteContext) :
     Array (Block Manual) :=
   Id.run do
-  let claims := claimsOf decls
+  let (defs, lemmas, thms) := countGroups decls
   let sorried := decls.filter (·.dependsOnSorry)
-  let topClaims := (claims.qsort fun a b => closureSize a ctx > closureSize b ctx).take 10
   let mut blocks : Array (Block Manual) := #[]
-  blocks := blocks.push <| .para #[
-    .bold #[.text "What would it take to believe this library?"]
-  ]
-  -- Sentence one: what it claims and how much of it is proved.
-  let proved : Array (Inline Manual) :=
-    if sorried.isEmpty then
-      #[.text s!" and proves all {decls.size} of its declarations with no "] ++
-        #[.code "sorry", .text " anywhere"]
-    else
-      #[.text s!" and proves {decls.size - sorried.size} of its {decls.size} declarations; \
-        {sorried.size} still {if sorried.size == 1 then "rests" else "rest"} on a "] ++
-        #[.code "sorry"]
-  let claimed : Array (Inline Manual) := #[
+  -- The theorem count is exactly what the Theorems page lists — `declGroupOfFields` splits on the
+  -- same condition `DeclInfo.isClaim` does — so the number is a link rather than a coincidence.
+  -- The other two have no page of their own and stay plain.
+  blocks := blocks.push <| .para <| #[
     .code rootPrefix.toString,
-    .text s!" states {claims.size} \
-      {if claims.size == 1 then "result" else "results"} as \
-      {if claims.size == 1 then "a theorem" else "theorems"}"
-  ]
-  blocks := blocks.push <| .para (claimed ++ proved ++ #[.text "."])
-  -- Sentence two: what believing that additionally costs. Both halves are optional.
+    .text s!" has {decls.size} {if decls.size == 1 then "declaration" else "declarations"}: ",
+    .link #[.text s!"{thms} {if thms == 1 then "theorem" else "theorems"}"] "theorems/",
+    .text s!", {lemmas} {if lemmas == 1 then "lemma" else "lemmas"} and \
+      {defs} {if defs == 1 then "definition" else "definitions"}."
+  ] ++ (
+    -- Whether the library is *proved* is one clause here and a page of its own; a count of what is
+    -- missing belongs beside the count of what there is.
+    if sorried.isEmpty then
+      #[.text " All of them are proved with no ", .code "sorry", .text " anywhere."]
+    else
+      #[.text s!" {sorried.size} of them {if sorried.size == 1 then "rests" else "rest"} on a "] ++
+        #[.code "sorry", .text " — ", .link #[.text "which, and why"] "sorries/", .text "."])
+  -- Only where the project ships the file and it declares something: `claimedResults?` is the same
+  -- gate the Claims page itself is built behind, so this sentence cannot promise a page that does
+  -- not exist. It sits here, between what the library holds and what it rests on, because it says
+  -- which of the first is worth the second.
+  if let some form := claimedResults? ctx then
+    blocks := blocks.push <| .para #[
+      .text "Its authors say which results the project is for, in a ",
+      .code "formalization.yaml", .text s!": {form.mainResults.size} main \
+        {if form.mainResults.size == 1 then "result" else "results"}, listed on ",
+      .link #[.text "Claims"] "claims/", .text "."
+    ]
+  -- The toolchain is filtered out: `Init` and `Std` are not a dependency anyone chose, and counting
+  -- them would put a floor of three under every project's number.
   let upstream := reachedPackages decls ctx |>.filter fun name =>
     !(ctx.packages.any fun pkg => pkg.name == name && pkg.isToolchain)
   let unaudited := upstream.filter (!ctx.trusted.contains ·)
-  let definitions := decls.filter (·.isDefinitionLike)
-  let specified := definitions.filter (!·.specifiedBy.isEmpty)
-  let mut cost : Array (Array (Inline Manual)) := #[]
   if !upstream.isEmpty then
-    cost := cost.push #[
+    blocks := blocks.push <| .para <| #[
+      .text "It rests on ",
       .link #[.text s!"{upstream.size} upstream \
-        {if upstream.size == 1 then "package" else "packages"}"] "sorries/",
-      .text s!", of which {unaudited.size} \
-        {if unaudited.size == 1 then "is unaudited" else "are unaudited"}"
-    ]
-  if ctx.usesSpecs then
-    cost := cost.push #[
-      .link #[.text s!"{definitions.size} \
-        {if definitions.size == 1 then "definition" else "definitions"}"] "specifications/",
-      .text s!", of which {specified.size} \
-        {if specified.size == 1 then "says" else "say"} what {if specified.size == 1 then "it means"
-          else "they mean"}"
-    ]
-  if !cost.isEmpty then
-    blocks := blocks.push <| .para <|
-      #[.text "Believing them means also accepting "] ++
-        joinInlines cost.toList #[.text ", and "] ++ #[.text "."]
-  blocks := blocks.push <| .para #[
-    .text "Every declaration here carries what it claims, what it rests on, and a single \
-      self-contained Lean file holding everything you would have to read to check it."
-  ]
-  -- For a reader coming back to a revised library this is the only sentence on the page they need,
-  -- so it goes above the claims listing rather than below it.
-  if let some report := ctx.diff? then
-    let reaudit := report.needingReaudit
-    -- Dated where the ledger knows the date, exactly as the Changes page and the per-declaration
-    -- banners are: a reader meeting a bare sha on the landing page cannot tell whether the work
-    -- behind it is a day's or a year's.
-    let against := baselineName report ctx
-    blocks := blocks.push <| .para <|
-      if reaudit.isEmpty then
-        #[.bold #[.text s!"Nothing needs re-reading since {against}. "],
-          .link #[.text "Changes"] "changes/",
-          .text " says what did move, including the proofs the kernel has already rechecked."]
-      else
-        #[.bold #[.text "Read this before you read anything else. "],
-          .text s!"{reaudit.size} \
-            {if reaudit.size == 1 then "declaration needs" else "declarations need"} reading again \
-            since {against} — ",
-          .link #[.text "what changed and why"] "changes/", .text "."]
-  blocks := blocks.push <| .para #[
-    .bold #[.text "The results, largest first by how much machinery they rest on."]
-  ]
-  -- The same rows as the claims page, live: docstring, coverage, verdict and the button that starts
-  -- a reading queue. A static list here would have been a second way of presenting the one thing
-  -- this site is most often used to look at, and a reader arriving with work already recorded would
-  -- have had to go somewhere else to see any of it.
-  --
-  -- No chapter folds: this is a ranking across all of them. The payload is an excerpt, so what ships
-  -- is these ten claims and their closures rather than the library — see `mkAuditData`.
-  if let some list := mkClaimListBlock topClaims ctx then
-    blocks := blocks.push list
-    blocks := blocks.push <|
-      .other (Block.auditData (mkAuditData decls ctx (featured? := some (topClaims.map (·.name)))))
-        #[]
-  blocks := blocks.push <| .para #[.link #[.text "See all theorems"] "theorems/", .text "."]
+        {if upstream.size == 1 then "package" else "packages"}"] "sorries/"
+    ] ++ (
+      if unaudited.isEmpty then #[.text ", all of them audited."]
+      else #[.text s!", of which {unaudited.size} \
+        {if unaudited.size == 1 then "is" else "are"} unaudited."])
   return blocks
 
 /-- Builds the root site part with chapter pages and utility sections. -/

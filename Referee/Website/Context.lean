@@ -37,7 +37,7 @@ formatting helpers the loaders and the pages share.
 -/
 
 /-- Counts declarations in each visibility group, as `(definitions, lemmas, theorems)`. -/
-private def countGroups (decls : Array DeclInfo) : Nat × Nat × Nat :=
+def countGroups (decls : Array DeclInfo) : Nat × Nat × Nat :=
   decls.foldl (fun (defs, lemmas, thms) decl =>
     match declGroupOfFields decl.kind.label decl.isLemma decl.isInstanceDecl with
     | "definition" => (defs + 1, lemmas, thms)
