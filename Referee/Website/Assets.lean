@@ -93,6 +93,14 @@ private def browseJsFile : JsFile where
   -- it has to run second.
   after := #["audit.js"]
 
+/-- The statement-anatomy block's two views and its hovers; see `Block.anatomy`. Waits for the
+document like the rest, so it needs no ordering: tippy and `marked`, which it uses when they are
+present, are loaded in `<head>` by Verso and are in place by then. -/
+private def anatomyJsFile : JsFile where
+  filename := "anatomy.js"
+  contents := JS.mk (include_str "assets/anatomy.js")
+  sourceMap? := none
+
 /-- The upstream constants table, as a script setting one global.
 
 Emitted once as a file rather than inlined into each page's graph JSON, for the reason recorded on
@@ -162,7 +170,7 @@ def renderConfig (externals : Array ExternalDeclInfo) (trusted : Std.HashSet Nam
     extraCssFiles := {refereeCssFile}
     extraJsFiles := {d3JsFile, upstreamJsFile externals trusted showTrusted, graphJsFile,
       tocJsFile, auditJsFile,
-      revisionsJsFile, browseJsFile}
+      revisionsJsFile, browseJsFile, anatomyJsFile}
     -- Inline and in `<head>`, so the stored theme is applied before the first paint. Loading this
     -- as a file would let the light theme flash before the script ran.
     extraHead := #[Html.tag "script" #[] (.text false themeBootJs)]

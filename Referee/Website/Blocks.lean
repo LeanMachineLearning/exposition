@@ -253,6 +253,175 @@ block_extension Block.specList (_payload : SpecListData) where
       }}
     pure {{<ul class="spec-list">{{rows}}</ul>}}
 
+/-- Backtick spans of a docstring sentence as `<code>`, the rest as text. A gloss is one sentence
+lifted out of a docstring, and docstrings write names in backticks. -/
+private def glossHtml (gloss : String) : Html :=
+  let rendered := (gloss.splitOn "`").toArray.zipIdx.map fun (part, i) =>
+    if i % 2 == 1 then {{<code>{{part}}</code>}} else Html.text true part
+  {{<span class="anatomy-gloss">{{rendered}}</span>}}
+
+/-- The sentence after a row in the expanded view: one line about its head constant, linked to the
+constant's page where the project declares it. The constant is not named — the binder's type on the
+same line already shows it — and the compact view shows none of this, offering the whole docstring
+on hover instead. Empty when there is no sentence, or when the page has already shown it.
+
+`block` is for the conclusion, which is a multi-line code block: its sentence goes underneath,
+without the inline separator. -/
+private def anatomyAboutHtml (head href gloss : String) (block : Bool := false) : Html :=
+  if gloss.isEmpty then .empty
+  else
+    let cls := if block then "anatomy-about anatomy-about--block" else "anatomy-about"
+    let body : Html :=
+      if href.isEmpty then glossHtml gloss
+      else {{<a class="anatomy-about-link" href={{href}}>{{glossHtml gloss}}</a>}}
+    {{<span class={{cls}} title={{head}}>{{body}}</span>}}
+
+/-- `h : T`, or just `T` for an anonymous binder. -/
+private def anatomyBinderText (name type : String) : String :=
+  if name.isEmpty then type else s!"{name} : {type}"
+
+/-- A binder as a hover target when the page has a tip for its head constant — `anatomy.js` attaches
+the tooltip by the `data-tip` name — and as plain code otherwise. The fallback for a type with no
+pieces; `anatomyCodeHtml` is the usual case. -/
+private def anatomyTermHtml (text head : String) : Html :=
+  if head.isEmpty then {{<code>{{text}}</code>}}
+  else {{<span class="anatomy-term" data-tip={{head}}><code>{{text}}</code></span>}}
+
+/-- A type as code with a hover on every constant the page has a tip for: `IsAlgEnvSeq`,
+`ucbAlgorithm` and `stationaryEnv` in one hypothesis are three hovers, as they are in highlighted
+code. `lead` is the binder's name and colon. Without pieces, the one hover on the head constant. -/
+private def anatomyCodeHtml (lead : String) (text head : String) (pieces : Array AnatomyPiece) :
+    Html :=
+  if pieces.isEmpty then anatomyTermHtml (lead ++ text) head
+  else
+    let parts := pieces.map fun p =>
+      if p.head.isEmpty then Html.text true p.text
+      else {{<span class="anatomy-term" data-tip={{p.head}}>{{p.text}}</span>}}
+    {{<code>{{lead}}{{parts}}</code>}}
+
+private def anatomyInstanceHtml (row : AnatomyInstanceRow) : Html :=
+  {{<span class="anatomy-inst">
+      {{anatomyCodeHtml (if row.name.isEmpty then "" else s!"{row.name} : ") row.type row.head row.pieces}}
+      {{anatomyAboutHtml row.head row.href row.gloss}}
+    </span>}}
+
+/-- A row of `Block.anatomy`. `showImplicit` is on for hypotheses only: an implicit hypothesis is
+unusual and worth a flag, while an implicit object is how nearly every Mathlib-style statement binds
+its variables, and a pill on every row would say nothing about what is proved. -/
+private def anatomyRowHtml (row : AnatomyRow) (showImplicit : Bool) : Html :=
+  let flag : Html :=
+    if row.implicit && showImplicit then
+      {{<span class="anatomy-flag"
+          title="Not written where the theorem is used: Lean infers it from the other arguments.">
+        "implicit"</span>}}
+    else .empty
+  let instances : Html :=
+    if row.instances.isEmpty then .empty
+    else {{<span class="anatomy-with">{{row.instances.map anatomyInstanceHtml}}</span>}}
+  {{<li class="anatomy-row">
+      {{anatomyCodeHtml (if row.name.isEmpty then "" else s!"{row.name} : ") row.type row.head row.pieces}}{{flag}}
+      {{anatomyAboutHtml row.head row.href row.gloss}}
+      {{instances}}
+    </li>}}
+
+private def anatomyPartHtml (label : String) (body : Html) : Html :=
+  {{<div class="anatomy-part">
+      <div class="anatomy-label">{{label}}</div>
+      <div class="anatomy-body">{{body}}</div>
+    </div>}}
+
+/-- One hover's content, kept out of sight until `anatomy.js` needs it: the constant with its
+signature, its docstring as written — rendered as Markdown on the client, as Verso renders the
+docstrings in its own hovers — and a link to its page where there is one. -/
+private def anatomyTipHtml (tip : AnatomyTip) : Html :=
+  let sig : Html :=
+    if tip.signature.isEmpty then {{<code class="anatomy-tip-sig">{{tip.head}}</code>}}
+    else {{<code class="anatomy-tip-sig">{{s!"{tip.head} : {tip.signature}"}}</code>}}
+  let doc : Html :=
+    if tip.doc.isEmpty then .empty else {{<pre class="anatomy-tip-doc">{{tip.doc}}</pre>}}
+  let link : Html :=
+    if tip.href.isEmpty then .empty
+    else {{<a class="anatomy-tip-link" href={{tip.href}}>"Go to its page"</a>}}
+  {{<div data-tip-for={{tip.head}}>{{sig}}{{doc}}{{link}}</div>}}
+
+/- The statement taken apart (`Block.anatomy`): the types, the other objects it is about with the
+structure assumed on each, then the hypotheses, then the claim.
+
+Four labelled parts rather than one list — types first, since everything else is stated in terms
+of them — because these are what a reader new to Lean cannot tell apart in the binder telescope:
+`[MeasurableSpace Ω]` is not an assumption about the world in the way `hμ : μ univ = 1` is, and
+neither is the theorem's subject in the way `Ω` is. The typeclass assumptions sit with the object
+they constrain — `Ω, with MeasurableSpace Ω` — which is how a mathematician would say it.
+
+Two views of the one markup, switched by a button and by CSS alone. Compact, the default, keeps each
+object on one line and explains nothing inline; every constant the page knows about is a hover
+target instead, showing its signature and whole docstring the way Verso's highlighted code does.
+Expanded puts each assumption on its own line with a one-sentence gloss. The tooltip contents sit
+once per constant in a hidden block at the end, and `anatomy.js` does the rest.
+
+(A plain comment, not a docstring: `block_extension` does not take one.) -/
+block_extension Block.anatomy (_payload : AnatomyData) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI _goB _id data _ => do
+    let .ok (payload : AnatomyData) := FromJson.fromJson? data
+      | Verso.reportError s!"Could not decode statement anatomy from {data.compress}"
+        pure .empty
+    let types : Html :=
+      if payload.types.isEmpty then .empty
+      else anatomyPartHtml "Types"
+        {{<ul class="anatomy-list">{{payload.types.map (anatomyRowHtml · false)}}</ul>}}
+    let given : Html :=
+      if payload.objects.isEmpty && payload.loose.isEmpty then .empty
+      else
+        let loose : Html :=
+          if payload.loose.isEmpty then .empty
+          else {{<li class="anatomy-row anatomy-row--loose">
+                  <span class="anatomy-with">{{payload.loose.map anatomyInstanceHtml}}</span>
+                </li>}}
+        anatomyPartHtml "Given"
+          {{<ul class="anatomy-list">{{payload.objects.map (anatomyRowHtml · false)}}{{loose}}</ul>}}
+    let assuming : Html :=
+      if payload.hypotheses.isEmpty then .empty
+      else anatomyPartHtml "Assuming"
+        {{<ul class="anatomy-list">{{payload.hypotheses.map (anatomyRowHtml · true)}}</ul>}}
+    let conclusion := payload.conclusion
+    let conclusionHtml : Html :=
+      {{<div>
+          <pre class="anatomy-conclusion">{{anatomyCodeHtml "" conclusion.type conclusion.head conclusion.pieces}}</pre>
+          {{anatomyAboutHtml conclusion.head conclusion.href conclusion.gloss (block := true)}}
+        </div>}}
+    -- A theorem ends with its claim. A definition ends with what it produces: the result type, then
+    -- the body — a structure's fields, each with its own docstring on hover, or a definition's value.
+    let lastParts : Html :=
+      if payload.isProp then anatomyPartHtml "Then" conclusionHtml
+      else
+        let body : Html :=
+          if !payload.fields.isEmpty then
+            anatomyPartHtml "Fields"
+              {{<ul class="anatomy-list">{{payload.fields.map (anatomyRowHtml · false)}}</ul>}}
+          else if !payload.body.isEmpty then
+            anatomyPartHtml "Body"
+              {{<pre class="anatomy-conclusion">{{anatomyCodeHtml "" payload.body "" payload.bodyPieces}}</pre>}}
+          else .empty
+        .seq #[anatomyPartHtml "Result" conclusionHtml, body]
+    let heading := if payload.isProp then "The statement, in parts" else "The definition, in parts"
+    let tips : Html :=
+      if payload.tips.isEmpty then .empty
+      else {{<div class="anatomy-tips" hidden="hidden">{{payload.tips.map anatomyTipHtml}}</div>}}
+    pure {{
+      <div class="anatomy-wrap">
+        <p class="anatomy-heading">
+          <strong>{{heading}}</strong>
+          <button type="button" class="anatomy-toggle site-utility-button" hidden="hidden"
+              aria-pressed="false">"Expand"</button>
+        </p>
+        <div class="anatomy">{{types}}{{given}}{{assuming}}{{lastParts}}</div>
+        {{tips}}
+      </div>
+    }}
+
 /- A characterization listing: the claim that a property does not merely hold of a definition but
 *determines* it, up to a stated relation (`Block.charList`).
 

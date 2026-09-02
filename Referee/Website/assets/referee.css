@@ -1676,3 +1676,199 @@ body.hide-theorems [data-decl-group="theorem"] {
   letter-spacing: .02em;
   font-style: italic;
 }
+
+/* ------------------------------------------------------ statement anatomy --- */
+
+/* The statement taken apart: a label column, then the types, the other objects, the hypotheses and
+   the claim. Two views of one markup. Compact, the default, keeps each object on one line with the
+   structure assumed on it after a "with" and explains nothing inline: every constant the page knows
+   about is a hover target instead (`anatomy.js`; tooltips as on Verso's highlighted code). Expanded
+   puts each assumption on its own line with a sentence about it. */
+.anatomy-heading {
+  align-items: baseline;
+  display: flex;
+  gap: .8rem;
+  justify-content: space-between;
+}
+
+.anatomy-toggle { flex: 0 0 auto; }
+
+.anatomy {
+  display: grid;
+  gap: .35rem 1rem;
+  grid-template-columns: max-content minmax(0, 1fr);
+  margin: .3rem 0 1.1rem;
+}
+
+.anatomy--expanded { gap: .55rem 1rem; }
+
+.anatomy-part { display: contents; }
+
+.anatomy-label {
+  color: var(--site-ink-3);
+  font-family: var(--verso-structure-font-family);
+  font-size: .74rem;
+  letter-spacing: .05em;
+  padding-top: .25rem;
+  text-transform: uppercase;
+}
+
+.anatomy-body { min-width: 0; }
+
+.anatomy-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.anatomy-row + .anatomy-row { margin-top: .2rem; }
+.anatomy--expanded .anatomy-row + .anatomy-row { margin-top: .4rem; }
+
+.anatomy-row code,
+.anatomy-inst code {
+  font-size: .88rem;
+  overflow-wrap: anywhere;
+}
+
+/* Hover targets. A dotted underline is the one cue that there is something to hover, and it is
+   quiet enough not to read as a link. */
+.anatomy-term {
+  cursor: help;
+  text-decoration: underline dotted var(--site-border-strong);
+  text-decoration-thickness: 1px;
+  text-underline-offset: .2em;
+}
+
+/* Compact: the structure on an object follows it on the same line. */
+.anatomy-with::before {
+  color: var(--site-ink-3);
+  content: " with ";
+  font-size: .8rem;
+}
+
+.anatomy-row--loose > .anatomy-with::before { content: "also "; }
+
+.anatomy-inst + .anatomy-inst::before { content: ", "; }
+
+.anatomy-about { display: none; }
+
+/* Expanded: one line per assumption, each with its sentence. */
+.anatomy--expanded .anatomy-with {
+  display: block;
+  margin: .15rem 0 0 1.1rem;
+}
+
+.anatomy--expanded .anatomy-with::before { content: none; }
+
+.anatomy--expanded .anatomy-inst { display: block; }
+.anatomy--expanded .anatomy-inst + .anatomy-inst { margin-top: .15rem; }
+
+.anatomy--expanded .anatomy-inst::before,
+.anatomy--expanded .anatomy-inst + .anatomy-inst::before {
+  color: var(--site-ink-3);
+  content: "with ";
+  font-size: .8rem;
+}
+
+.anatomy--expanded .anatomy-row--loose > .anatomy-with { margin-left: 0; }
+.anatomy--expanded .anatomy-row--loose .anatomy-inst::before,
+.anatomy--expanded .anatomy-row--loose .anatomy-inst + .anatomy-inst::before { content: "and "; }
+
+.anatomy-flag {
+  background: var(--site-surface-3);
+  border-radius: 999px;
+  color: var(--site-ink-3);
+  font-family: var(--verso-structure-font-family);
+  font-size: .68rem;
+  margin-left: .45rem;
+  padding: .05rem .45rem;
+  vertical-align: middle;
+}
+
+/* The sentence after a binder in the expanded view, set off by a dash, so a row reads as one
+   sentence: `ν : Kernel (Fin K) ℝ — a kernel from a measurable space α to …`. */
+.anatomy--expanded .anatomy-about {
+  color: var(--site-ink-3);
+  display: inline;
+  font-size: .82rem;
+  line-height: 1.4;
+}
+
+.anatomy--expanded .anatomy-about::before { content: " — "; }
+
+.anatomy-about code { font-size: .78rem; }
+
+/* A sentence about one of the project's own definitions is the link to its page: quiet, so that a
+   row of them does not read as a row of buttons. */
+.anatomy-about-link {
+  color: inherit;
+  text-decoration: underline dotted;
+  text-underline-offset: .15em;
+}
+
+.anatomy-about-link:hover { color: var(--site-ink-2); }
+
+/* The conclusion is a multi-line block, so its sentence sits underneath instead. */
+.anatomy--expanded .anatomy-about--block {
+  display: block;
+  margin: .2rem 0 0 .2rem;
+}
+
+.anatomy--expanded .anatomy-about--block::before { content: none; }
+
+/* Wrapped rather than scrolled: the claim is the one line a reader must not have to scroll to
+   finish. */
+.decl-card pre.anatomy-conclusion {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.decl-card pre.anatomy-conclusion code { font-size: inherit; }
+
+/* The hover itself. A tippy theme of its own, drawn from the site's tokens, so it reads the same
+   in both colour schemes; tippy's default box is dark on dark here. */
+.tippy-box[data-theme~='anatomy'] {
+  background: var(--site-surface);
+  border: 1px solid var(--site-border-strong);
+  border-radius: var(--site-radius-sm);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .18);
+  color: var(--site-ink);
+}
+
+.tippy-box[data-theme~='anatomy'] > .tippy-content { padding: .55rem .75rem; }
+.tippy-box[data-theme~='anatomy'] > .tippy-arrow { color: var(--site-surface); }
+
+.anatomy-tipbox {
+  font-size: .85rem;
+  line-height: 1.45;
+  max-width: 34rem;
+  padding: .15rem .1rem;
+  text-align: left;
+}
+
+.anatomy-tipbox .anatomy-tip-sig {
+  display: block;
+  font-size: .82rem;
+  margin-bottom: .45rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.anatomy-tipbox .anatomy-tip-doc { font-family: var(--verso-text-font-family, sans-serif); }
+.anatomy-tipbox .anatomy-tip-doc p { margin: .3rem 0; }
+.anatomy-tipbox .anatomy-tip-doc > :first-child { margin-top: 0; }
+.anatomy-tipbox .anatomy-tip-doc > :last-child { margin-bottom: 0; }
+.anatomy-tipbox .anatomy-tip-doc code { font-size: .8rem; }
+.anatomy-tipbox .anatomy-tip-doc pre { overflow-x: auto; }
+
+.anatomy-tipbox a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.anatomy-tipbox .anatomy-tip-link {
+  display: block;
+  font-size: .8rem;
+  margin-top: .5rem;
+}

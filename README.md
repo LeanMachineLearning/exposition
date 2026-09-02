@@ -14,9 +14,11 @@ by Matthew Ballard. It renders through [Verso](https://github.com/leanprover/ver
 ## What it builds
 
 A multi-page HTML site, grouped by module with chapter order derived from the import graph. Every
-declaration gets a card with its docstring, its source-first statement and its proof, then what it
-rests on: the constants its statement mentions, everything in its closure, and a dependency graph
-laid out in rows by depth. There is deliberately no whole-project graph: one picture of every
+declaration gets a card with its docstring, its source-first statement — taken apart into the
+objects it is about, the structure and hypotheses it assumes, and what it claims or, for a
+definition, its result type and body, each unfamiliar notion explained on hover — and its proof,
+then what it rests on: the constants its statement mentions, everything in its closure, and a
+dependency graph laid out in rows by depth. There is deliberately no whole-project graph: one picture of every
 declaration is unreadable at any zoom and answers no question a reader has.
 
 On top of that are the pages a referee needs and ordinary documentation does not have:

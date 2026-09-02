@@ -271,6 +271,283 @@ structure SpecListData where
   entries : Array SpecRow
 deriving Repr, ToJson, FromJson, Inhabited
 
+/-! ## The statement, taken apart
+
+A theorem's type is one telescope of binders, and to a reader who cannot yet parse a Mathlib-style
+statement it is a wall in which the objects, the structure assumed on them, the hypotheses and the
+claim all look alike. `StatementAnatomy` is that telescope split by the role each binder plays,
+computed at `collect` time inside the binder's own context so that every type prints with the
+author's variable names. The grouping that turns it into a reading order — each object with the
+typeclass assumptions made on it — is `StatementAnatomy.grouped`, kept pure so it can be tested. -/
+
+/-- The role one binder of a statement plays for a reader. -/
+inductive BinderRole where
+  /-- An object the statement is about: a type, a function, an element, a measure. -/
+  | object
+  /-- Structure assumed on one of those objects: an instance binder such as `[MeasurableSpace Ω]`
+  or `[IsProbabilityMeasure μ]`, or any binder whose type is a class — `{mΩ : MeasurableSpace Ω}`
+  is structure on `Ω` however the author chose to bind it. -/
+  | typeclass
+  /-- A proposition assumed: any other binder whose type is a `Prop`. -/
+  | hypothesis
+deriving Repr, BEq, ToJson, FromJson, Inhabited
+
+/-- One piece of a pretty-printed type: a run of text, and the constant it names when the pretty
+printer says the run is a constant token. What lets every constant in a binder's type carry its own
+hover, the way each token of highlighted code does. -/
+structure TypePiece where
+  text : String := ""
+  const : Name := .anonymous
+deriving Repr, BEq, ToJson, FromJson, Inhabited
+
+/-- Merges runs of plain text, so a type has as few pieces as it has constants. -/
+def coalescePieces (pieces : Array TypePiece) : Array TypePiece :=
+  pieces.foldl (init := #[]) fun acc p =>
+    if p.text.isEmpty then acc
+    else match acc.back? with
+    | some last =>
+      if last.const.isAnonymous && p.const.isAnonymous then
+        acc.pop.push { last with text := last.text ++ p.text }
+      else acc.push p
+    | none => acc.push p
+
+/-- Cuts the pieces to `limit` characters in all, ending with the ellipsis `clipTo` uses. A piece
+cut in the middle loses its constant: half a name is not a hover target. -/
+def clipPieces (limit : Nat) (pieces : Array TypePiece) : Array TypePiece := Id.run do
+  let mut out : Array TypePiece := #[]
+  let mut used := 0
+  for p in pieces do
+    let len := p.text.length
+    if used + len ≤ limit then
+      out := out.push p
+      used := used + len
+    else
+      return out.push { text := (p.text.take (limit - used)).toString ++ "…" }
+  return out
+
+/-- One binder of a statement's telescope, with what a reader needs in order to place it. -/
+structure StatementBinder where
+  /-- The binder's name as the author wrote it; empty for an anonymous one (`P → Q`, `[inst : …]`). -/
+  name : String := ""
+  role : BinderRole := .object
+  /-- Whether the object is itself a type — `Ω : Type u_1`, `p : Prop` — rather than an element, a
+  function or a measure. Types are listed first: everything else in the statement lives in one. -/
+  isType : Bool := false
+  /-- `{x}` or `⦃x⦄`: not written where the theorem is used, but inferred from the other arguments. -/
+  implicit : Bool := false
+  /-- The binder's type, pretty-printed in the context of the binders before it. -/
+  type : String := ""
+  /-- The same text split at its constants, for a hover on each; see `TypePiece`. -/
+  pieces : Array TypePiece := #[]
+  /-- The head constant of that type when it has one, looking through leading `∀`s: the class of a
+  typeclass binder, the predicate or relation of a hypothesis. What a gloss can be looked up for. -/
+  head : Name := .anonymous
+  /-- The earlier binders this one's type mentions, as indices into the telescope, in order of first
+  occurrence. What attaches `[MeasurableSpace Ω]` to `Ω`. -/
+  mentions : Array Nat := #[]
+deriving Repr, BEq, ToJson, FromJson, Inhabited
+
+/-- One field of a structure or class, for the parts view of its page: the body of a structure is
+its fields, and a field's own docstring is what a reader wants on hover. -/
+structure StatementField where
+  name : String := ""
+  /-- The field's type, in the context of the parameters and the fields before it. -/
+  type : String := ""
+  /-- The same text split at its constants; see `TypePiece`. -/
+  pieces : Array TypePiece := #[]
+  /-- The head constant of that type, for a hover when the field has no docstring of its own. -/
+  head : Name := .anonymous
+  /-- The field's docstring, as written on it. -/
+  doc : String := ""
+deriving Repr, BEq, ToJson, FromJson, Inhabited
+
+/-- A statement split into its binders and its conclusion — or a definition into its parameters, its
+result type and its body. `isProp` says which reading applies: a theorem's conclusion is a claim, a
+definition's is the type of what it produces. -/
+structure StatementAnatomy where
+  binders : Array StatementBinder := #[]
+  /-- The conclusion — a theorem's claim, or a definition's result type — pretty-printed in the
+  context of every binder. -/
+  conclusion : String := ""
+  /-- The conclusion's head constant when it has one, looking through leading `∀`s. -/
+  conclusionHead : Name := .anonymous
+  /-- The conclusion split at its constants; see `TypePiece`. -/
+  conclusionPieces : Array TypePiece := #[]
+  /-- Whether the conclusion is a proposition. False for a definition, whose conclusion is the type
+  of its value, and whose `body` or `fields` then say what that value is. -/
+  isProp : Bool := true
+  /-- A definition's value, in the context of its parameters. Empty for a theorem — its proof is not
+  part of what it says — and for anything else without one worth showing. -/
+  body : String := ""
+  /-- The body split at its constants; see `TypePiece`. -/
+  bodyPieces : Array TypePiece := #[]
+  /-- A structure's or class's fields, in the context of its parameters. -/
+  fields : Array StatementField := #[]
+deriving Repr, BEq, ToJson, FromJson, Inhabited
+
+/-- An object of a statement together with the typeclass assumptions attached to it. -/
+structure AnatomyObject where
+  /-- Its index in the telescope. -/
+  index : Nat
+  binder : StatementBinder
+  instances : Array StatementBinder := #[]
+deriving Repr, BEq, Inhabited
+
+/-- `StatementAnatomy.grouped`: the reading order of a statement. -/
+structure AnatomyGroups where
+  /-- The objects that are types, in telescope order, each with the structure assumed on it. -/
+  types : Array AnatomyObject := #[]
+  /-- Every other object, in telescope order, each with the structure assumed on it. -/
+  objects : Array AnatomyObject := #[]
+  /-- Typeclass binders attached to no object: their types mention none, or only hypotheses. -/
+  loose : Array StatementBinder := #[]
+  hypotheses : Array StatementBinder := #[]
+deriving Repr, BEq, Inhabited
+
+/-- Groups a statement's binders for reading: each object with the typeclass assumptions on it, then
+the hypotheses.
+
+A typeclass binder attaches to the *last-introduced* object its type mentions. `[MeasurableSpace Ω]`
+mentions only `Ω`; `[Module R M]` mentions `R` and `M` and goes under `M`, the thing it is structure
+on, rather than under the ring it is structure over. One mentioning no object at all —
+`[DecidableEq ℕ]`, or `[Fact p]` for a hypothesis `p` — is kept rather than dropped, since it is
+still assumed. -/
+def StatementAnatomy.grouped (a : StatementAnatomy) : AnatomyGroups := Id.run do
+  let mut groups : AnatomyGroups := {}
+  -- Telescope index ↦ where the object went — `true` for `types`, `false` for `objects` — and its
+  -- position there.
+  let mut rowOf : Std.HashMap Nat (Bool × Nat) := {}
+  for i in [:a.binders.size] do
+    let b := a.binders[i]!
+    match b.role with
+    | .object =>
+      if b.isType then
+        rowOf := rowOf.insert i (true, groups.types.size)
+        groups := { groups with types := groups.types.push { index := i, binder := b } }
+      else
+        rowOf := rowOf.insert i (false, groups.objects.size)
+        groups := { groups with objects := groups.objects.push { index := i, binder := b } }
+    | .hypothesis =>
+      groups := { groups with hypotheses := groups.hypotheses.push b }
+    | .typeclass =>
+      let target? := b.mentions.foldl (init := (none : Option Nat)) fun acc j =>
+        if rowOf.contains j then some (max (acc.getD j) j) else acc
+      match target?.bind (fun j => rowOf.get? j) with
+      | some (true, row) =>
+        groups := { groups with types := groups.types.modify row fun o =>
+          { o with instances := o.instances.push b } }
+      | some (false, row) =>
+        groups := { groups with objects := groups.objects.modify row fun o =>
+          { o with instances := o.instances.push b } }
+      | none =>
+        groups := { groups with loose := groups.loose.push b }
+  return groups
+
+/-- One piece of a type as `Block.anatomy` renders it: text, and the tip it is a hover for. -/
+structure AnatomyPiece where
+  text : String := ""
+  /-- The `AnatomyTip.head` this piece opens on hover, or empty for plain text. -/
+  head : String := ""
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- One typeclass assumption of `Block.anatomy`, with what the site could find out about its class. -/
+structure AnatomyInstanceRow where
+  name : String := ""
+  type : String := ""
+  /-- `type` split at its constants, each a hover of its own; empty falls back to `type`. -/
+  pieces : Array AnatomyPiece := #[]
+  /-- The class, shown only when there is a gloss or a link to hang it on. -/
+  head : String := ""
+  /-- The class's page, when the project declares it. -/
+  href : String := ""
+  /-- One sentence about the class, from its docstring. -/
+  gloss : String := ""
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- One object or hypothesis of `Block.anatomy`, or its conclusion. -/
+structure AnatomyRow where
+  name : String := ""
+  type : String := ""
+  /-- `type` split at its constants, each a hover of its own; empty falls back to `type`. -/
+  pieces : Array AnatomyPiece := #[]
+  implicit : Bool := false
+  head : String := ""
+  href : String := ""
+  gloss : String := ""
+  /-- For an object: the typeclass assumptions attached to it. -/
+  instances : Array AnatomyInstanceRow := #[]
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- What a hover on a row of `Block.anatomy` shows for its head constant: the constant, its
+signature, its whole docstring, and its page when the project declares it. One per head constant
+per page — rows point at it by name — so a class assumed on five objects ships its docstring once. -/
+structure AnatomyTip where
+  head : String := ""
+  signature : String := ""
+  doc : String := ""
+  href : String := ""
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- The payload of `Block.anatomy`: `StatementAnatomy.grouped` with the glosses and tips resolved. -/
+structure AnatomyData where
+  types : Array AnatomyRow := #[]
+  objects : Array AnatomyRow := #[]
+  loose : Array AnatomyInstanceRow := #[]
+  hypotheses : Array AnatomyRow := #[]
+  /-- The claim, or a definition's result type; `isProp` says which. -/
+  conclusion : AnatomyRow := {}
+  isProp : Bool := true
+  /-- A definition's value, shown under its result type. -/
+  body : String := ""
+  /-- `body` split at its constants; empty falls back to `body`. -/
+  bodyPieces : Array AnatomyPiece := #[]
+  /-- A structure's fields, shown under its result type; each row's hover is the field's docstring. -/
+  fields : Array AnatomyRow := #[]
+  tips : Array AnatomyTip := #[]
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- The gloss for `head`, or nothing if this page has already shown one for it. -/
+def glossOnce (seen : Std.HashSet String) (head gloss : String) :
+    String × Std.HashSet String :=
+  if head.isEmpty || gloss.isEmpty then (gloss, seen)
+  else if seen.contains head then ("", seen)
+  else (gloss, seen.insert head)
+
+/-- `glossOnce` over a list of rows and the instances nested in each, in reading order. -/
+def dedupeRows (seen : Std.HashSet String) (rows : Array AnatomyRow) :
+    Array AnatomyRow × Std.HashSet String := Id.run do
+  let mut seen := seen
+  let mut out : Array AnatomyRow := #[]
+  for row in rows do
+    let (gloss, seen') := glossOnce seen row.head row.gloss
+    seen := seen'
+    let mut instances : Array AnatomyInstanceRow := #[]
+    for inst in row.instances do
+      let (g, s) := glossOnce seen inst.head inst.gloss
+      seen := s
+      instances := instances.push { inst with gloss := g }
+    out := out.push { row with gloss, instances }
+  return (out, seen)
+
+/-- Keeps the first gloss for each head constant, in reading order, and blanks the rest. Under the
+first of five measurable spaces "a space equipped with a σ-algebra" is an explanation; under all five
+it is noise. Links survive repeats, being one word each. -/
+def AnatomyData.dedupeGlosses (data : AnatomyData) : AnatomyData := Id.run do
+  let (types, seen₁) := dedupeRows {} data.types
+  let (objects, seen₂) := dedupeRows seen₁ data.objects
+  let mut seen := seen₂
+  let mut loose : Array AnatomyInstanceRow := #[]
+  for inst in data.loose do
+    let (g, s) := glossOnce seen inst.head inst.gloss
+    seen := s
+    loose := loose.push { inst with gloss := g }
+  let (hypotheses, seen₃) := dedupeRows seen data.hypotheses
+  let (g, seen₄) := glossOnce seen₃ data.conclusion.head data.conclusion.gloss
+  let (fields, _) := dedupeRows seen₄ data.fields
+  return { data with
+    types, objects, loose, hypotheses, fields
+    conclusion := { data.conclusion with gloss := g } }
+
 /-- One of the three declarations a characterization is made of, as rendered: the predicate, a
 theorem that the definition satisfies it, or a theorem that nothing else does.
 
@@ -668,6 +945,9 @@ structure DeclInfo where
 
   Derived on load exactly as `transDeps` is; see there. -/
   dataTransDeps : Array Name := #[]
+  /-- The statement taken apart by binder role — see `StatementAnatomy` — for a declaration whose
+  conclusion is a proposition, and `none` for everything else. -/
+  anatomy? : Option StatementAnatomy := none
   docstringBlock? : Option (Block Manual) := none
 deriving Repr, ToJson, FromJson
 
@@ -1051,8 +1331,11 @@ decode error when handed a JSON file written by an older `collect`.
 - 13: adds `CollectedData.formalization?`, the project's own `formalization.yaml` — the first input
   that is neither the compiled environment nor derived from it. Absent for every project that has no
   such file, which is why `minReadableDataVersion` stays at 11: an older file decodes with the field
-  at its `none` default, which is exactly right for a project that had none -/
-def collectedDataVersion : Nat := 13
+  at its `none` default, which is exactly right for a project that had none
+- 14: adds `DeclInfo.anatomy?`, the statement split by binder role for the card's "in parts" view.
+  Optional for the same reason, so `minReadableDataVersion` stays at 11; an older file renders
+  without the section -/
+def collectedDataVersion : Nat := 14
 
 /-- The oldest data-format version the current binary can read. Version 11 remains readable because
 the only change in 12 is that closures are no longer stored, and this binary recomputes them from
@@ -2322,6 +2605,28 @@ def clipTo (n : Nat) (s : String) : String :=
   let s := (String.trimAscii s).toString
   if s.length ≤ n then s else (s.take n).trimAscii.toString ++ "…"
 
+/-- The first sentence of a docstring, for a one-line gloss: its first paragraph that is not a
+heading, whitespace collapsed, cut after the first sentence and clipped to `limit`. A period inside
+an abbreviation — `e.g.`, `a.k.a.` — does not end a sentence, which is what the last word before a
+candidate cut is checked for. -/
+def docGloss (doc : String) (limit : Nat := 200) : String :=
+  let para := (doc.splitOn "\n\n").find? fun p =>
+    let t := (String.trimAscii p).toString
+    !t.isEmpty && !t.startsWith "#"
+  let words := ((para.getD "").replace "\n" " ").splitOn " " |>.filter (!·.isEmpty)
+  let text := " ".intercalate words
+  clipTo limit (firstSentence (text.splitOn ". "))
+where
+  /-- Joins the pieces `splitOn ". "` produced back up to the first one whose last word is not an
+  abbreviation, and closes it with the period the split removed. -/
+  firstSentence : List String → String
+    | [] => ""
+    | [last] => last
+    | piece :: rest =>
+      let lastWord := (piece.splitOn " ").getLast?.getD ""
+      if lastWord.any (· == '.') then piece ++ ". " ++ firstSentence rest
+      else piece ++ "."
+
 /-- What an upstream constant says beyond its type: a definition's value, or a structure's fields
 one per line. Empty for a theorem (its type is its statement, and its proof is not something a
 reader of this site is being asked to read) and for anything else.
@@ -2349,6 +2654,179 @@ def externalValueString (env : Environment) (info : ConstantInfo) : IO String :=
       return clipTo maxExternalValue (String.intercalate "\n" lines.toList)
     | _ => return ""
   | _ => return ""
+
+/-- The most characters one binder type in a `StatementAnatomy` keeps; the conclusion gets twice
+this and a definition's body `maxAnatomyBody`. The card shows the full source directly below, so
+the anatomy only has to be legible. -/
+def maxAnatomyType : Nat := 800
+
+/-- The most characters of a definition's value the parts view shows. The source is one fold away,
+and `Expr` is a DAG where printed syntax is a tree, so a value can print far larger than it reads. -/
+def maxAnatomyBody : Nat := 2500
+
+/-- Whether a run of text inside a notation stands for the notation's constant — `∫`, `∂`, `≤`,
+`∑` — rather than being the punctuation around its arguments: `(`, `), `, `:`. -/
+def isNotationText (s : String) : Bool :=
+  s.toList.any fun c => !(c.isWhitespace || "(),:;[]{}".contains c)
+
+/-- The pieces of tagged pretty-printer output — see `ppPieces`.
+
+A tag whose term is a constant and whose content is bare text is that constant's name. One whose
+content has structure is a *notation* for the constant — `a ≤ b` is tagged `LE.le` as a whole,
+`∫ x, f x ∂μ` is tagged `MeasureTheory.integral` — so its arguments are descended into for their own
+constants, and the runs of text that are the notation itself, `outer` here, stand for the constant,
+which is what gives `∫` a hover. Any other tag is looked through.
+
+`partial` because the recursion is through the `Array` inside `TaggedText`, and threading `outer`
+through it is more than the structural-recursion checker follows. -/
+partial def taggedPieces (outer : Name) : Lean.Widget.CodeWithInfos → Array TypePiece
+  | .text s => #[{ text := s, const := if isNotationText s then outer else .anonymous }]
+  | .append parts => parts.flatMap (taggedPieces outer)
+  | .tag info inner =>
+    -- Two shapes of term info: the delaborator's own, which carries a hover location and a
+    -- docstring override, and the plain one. Both know the term.
+    let expr? : Option Expr :=
+      match info.info.val.info with
+      | Elab.Info.ofTermInfo ti => some ti.expr
+      | Elab.Info.ofDelabTermInfo di => some di.expr
+      | _ => none
+    match expr?.map Expr.consumeMData, inner with
+    | some (.const n _), .text s => #[{ text := s, const := n }]
+    | some (.const n _), _ => taggedPieces n inner
+    | _, _ => taggedPieces .anonymous inner
+
+/-- Pretty-prints `e` as text and as `TypePiece`s: the same text, split so that every token the
+pretty printer knows to be a constant is its own piece and names it. Function heads are tagged only
+under `pp.tagAppFns`, which `statementAnatomyOf` switches on. -/
+def ppPieces (e : Expr) (limit : Nat) : MetaM (String × Array TypePiece) := do
+  let tagged ← Lean.Widget.ppExprTagged e
+  return (clipTo limit tagged.stripTags,
+    clipPieces limit (coalescePieces (taggedPieces .anonymous tagged)))
+
+/-- A structure's fields as `StatementField`s, in the context `params` — the structure's own
+parameters as free variables, so that field types print with the same names as the parameters
+above them. Field docstrings live on the projections, `S.field`. -/
+def structureFieldsOf (structName : Name) (params : Array Expr) : MetaM (Array StatementField) := do
+  let env ← getEnv
+  let some (.inductInfo val) := env.find? structName | return #[]
+  let [ctor] := val.ctors | return #[]
+  let some ctorInfo := env.find? ctor | return #[]
+  if params.size != val.numParams then return #[]
+  let ctorType ← instantiateForall ctorInfo.type params
+  forallTelescope ctorType (cleanupAnnotations := true) fun fs _ => do
+    let mut out : Array StatementField := #[]
+    for f in fs do
+      let decl ← f.fvarId!.getDecl
+      let type := decl.type.consumeMData
+      let fieldName := decl.userName.eraseMacroScopes
+      let doc := (← findDocString? env (structName ++ fieldName)).getD ""
+      let (typeStr, pieces) ← ppPieces type maxAnatomyType
+      out := out.push {
+        name := fieldName.toString
+        type := typeStr
+        pieces
+        head := (type.getForallBody.getAppFn.constName?).getD .anonymous
+        doc := clipTo 3000 doc }
+    return out
+
+/-- A definition's value with its parameters substituted, as the thing to show under its result
+type. For a recursive definition the stored value is what the equation compiler produced —
+`brecOn`, `WellFounded.fix` — which nobody wrote and nobody can read, so the right-hand side of its
+unfolding equation is shown instead, which has the `match` the author wrote. -/
+def definitionBodyOf (name : Name) (val : DefinitionVal) (params : Array Expr) : MetaM Expr := do
+  let unfolded? ← try getUnfoldEqnFor? name catch _ => pure none
+  match unfolded? with
+  | some eqn =>
+    let eqType ← instantiateForall (← inferType (.const eqn (val.levelParams.map mkLevelParam))) params
+    match eqType.eq? with
+    | some (_, _, rhs) => return rhs
+    | none => return val.value.beta params
+  | none => return val.value.beta params
+
+/-- A declaration taken apart by binder role (`StatementAnatomy`): for a theorem its assumptions and
+its claim, for a definition its parameters, its result type and its body — a structure's fields, or
+a definition's value. `none` when anything about it fails to print.
+
+The telescope is *not* reduced: a theorem stated as `IsFoo x` where `IsFoo` unfolds to a `∀` is shown
+with the shape the author gave it, which is the one the code block has. Binder types are printed
+inside the telescope so they carry the author's names, with the declaration's own namespaces open
+so that scoped notation prints, as `mkDocstringBlock?` does. The body is the elaborated value with
+the parameters substituted rather than the source text, so that it prints in the same context and
+vocabulary as everything above it; the source is in the folded code block underneath. -/
+def statementAnatomyOf (env : Environment) (name : Name) (info : ConstantInfo) :
+    IO (Option StatementAnatomy) := do
+  -- `pp.tagAppFns`: without it the pretty printer tags a constant only where it is an argument,
+  -- and the one constant a reader most wants to hover — the predicate at the head of a hypothesis —
+  -- would be the one without a hover.
+  let coreCtx : Core.Context := {
+    fileName := "<referee>", fileMap := default
+    options := Options.empty.setBool `pp.tagAppFns true }
+  let openDecls := (namespaceAncestors name.getPrefix).map (OpenDecl.simple · [])
+  let act : MetaM (Option StatementAnatomy) :=
+    forallTelescope info.type (cleanupAnnotations := true) fun xs body => do
+      let conclusionIsProp ← try isProp body catch _ => pure false
+      let mut indexOf : Std.HashMap FVarId Nat := {}
+      let mut binders : Array StatementBinder := #[]
+      for x in xs do
+        let decl ← x.fvarId!.getDecl
+        let type := decl.type.consumeMData
+        let isHyp ← try isProp type catch _ => pure false
+        -- By the type, not only by the brackets: Mathlib-style statements bind measurable-space
+        -- structure as `{mΩ : MeasurableSpace Ω}` so that it can be named, and to a reader that is
+        -- the same assumption as `[MeasurableSpace Ω]`.
+        let isClass ← try (·.isSome) <$> isClass? type catch _ => pure false
+        let role : BinderRole :=
+          match decl.binderInfo with
+          | .instImplicit => .typeclass
+          | _ => if isClass then .typeclass else if isHyp then .hypothesis else .object
+        let implicit :=
+          match decl.binderInfo with
+          | .implicit | .strictImplicit => true
+          | _ => false
+        let mentions := (collectFVars {} type).fvarIds.filterMap fun fv => indexOf.get? fv
+        let (typeStr, pieces) ← ppPieces type maxAnatomyType
+        binders := binders.push {
+          name := if decl.userName.hasMacroScopes then "" else decl.userName.toString
+          role
+          isType := type.isSort
+          implicit
+          type := typeStr
+          pieces
+          head := (type.getForallBody.getAppFn.constName?).getD .anonymous
+          mentions
+        }
+        indexOf := indexOf.insert x.fvarId! (binders.size - 1)
+      -- What a definition produces, beyond its type. A theorem's proof is not shown, not being part
+      -- of what the theorem says; an `opaque`'s value is hidden on purpose; and an inductive type
+      -- with several constructors is described by its source, which the card keeps open.
+      let mut bodyStr := ""
+      let mut bodyPieces : Array TypePiece := #[]
+      let mut fields : Array StatementField := #[]
+      if !conclusionIsProp then
+        match info with
+        | .defnInfo val =>
+          let (s, ps) ← ppPieces (← definitionBodyOf name val xs) maxAnatomyBody
+          bodyStr := s
+          bodyPieces := ps
+        | .inductInfo _ =>
+          if isStructure env name then
+            fields ← structureFieldsOf name xs
+        | _ => pure ()
+      let (conclusion, conclusionPieces) ← ppPieces body (2 * maxAnatomyType)
+      return some {
+        binders
+        conclusion
+        conclusionHead := (body.getForallBody.getAppFn.constName?).getD .anonymous
+        conclusionPieces
+        isProp := conclusionIsProp
+        body := bodyStr
+        bodyPieces
+        fields
+      }
+  try
+    (act.run' {}).toIO' { coreCtx with currNamespace := name.getPrefix, openDecls } { env := env }
+  catch _ =>
+    pure none
 
 /-- The most constants one upstream package may contribute before it is left unexpanded.
 
@@ -2601,6 +3079,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
         pure (commandKeywordAt? cmds src.line)
     let kind := declKindOf env info name
     let expandedSignature ← ppExprString env info.type
+    let anatomy? ← statementAnatomyOf env name info
     -- Parsed syntax when the range lands in a command, the source text otherwise.
     let isLemma := (kind == .theorem &&
         match cmd? with
@@ -2641,6 +3120,7 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       kind := kind
       displaySignature := displaySignature
       expandedSignature := expandedSignature
+      anatomy? := anatomy?
       docBlocks := docBlocks
       docText? := doc?
       proofText? := proofText?

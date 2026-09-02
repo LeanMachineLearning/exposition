@@ -783,4 +783,89 @@ Shapes that could be mistaken for a reference, or that the encoder must leave al
 #guard (resolve #[] (Json.mkObj [(internKey, Json.num 7)])).compress
   == (Json.mkObj [(internKey, Json.num 7)]).compress
 
+/-! ## Statement anatomy: grouping and glosses
+
+`statementAnatomyOf` needs an environment and is exercised end to end. What is checked here is the
+pure half: how binders group for reading, and how a docstring becomes a one-line gloss. -/
+
+private def anatomyΩ : StatementAnatomy := {
+  binders := #[
+    { name := "Ω", type := "Type u_1", isType := true },                                      -- 0
+    { role := .typeclass, type := "MeasurableSpace Ω", head := `MeasurableSpace,
+      mentions := #[0] },                                                                     -- 1
+    { name := "μ", type := "Measure Ω", mentions := #[0] },                                  -- 2
+    { role := .typeclass, type := "IsProbabilityMeasure μ", mentions := #[2] },              -- 3
+    { role := .typeclass, type := "DecidableEq ℕ" },                                         -- 4
+    { name := "hμ", role := .hypothesis, type := "μ Set.univ = 1", mentions := #[2] },       -- 5
+    { role := .typeclass, type := "Fact (μ Set.univ = 1)", mentions := #[5] },               -- 6
+    { name := "R", type := "Type u_2", isType := true },                                     -- 7
+    { name := "M", type := "Type u_3", isType := true },                                     -- 8
+    { role := .typeclass, type := "Module R M", mentions := #[7, 8] },                       -- 9
+    { role := .typeclass, type := "Foo M R", mentions := #[8, 7] }                           -- 10
+  ]
+  conclusion := "True" }
+
+-- Types and other objects in telescope order; hypotheses and typeclass binders are neither.
+#guard anatomyΩ.grouped.types.map (·.index) == #[0, 7, 8]
+#guard anatomyΩ.grouped.objects.map (·.index) == #[2]
+-- Each typeclass binder goes under the object it mentions, type or not.
+#guard anatomyΩ.grouped.types.map (·.instances.map (·.type))
+  == #[#["MeasurableSpace Ω"], #[], #["Module R M", "Foo M R"]]
+#guard anatomyΩ.grouped.objects.map (·.instances.map (·.type)) == #[#["IsProbabilityMeasure μ"]]
+-- Under the *last-introduced* object it mentions, whatever the order of mention: `Foo M R` still
+-- goes under `M`.
+#guard (anatomyΩ.grouped.types.getD 2 default).binder.name == "M"
+-- Mentioning nothing, or only a hypothesis, keeps the binder as loose rather than dropping it.
+#guard anatomyΩ.grouped.loose.map (·.type) == #["DecidableEq ℕ", "Fact (μ Set.univ = 1)"]
+#guard anatomyΩ.grouped.hypotheses.map (·.name) == #["hμ"]
+#guard (StatementAnatomy.grouped {}).objects.isEmpty
+
+-- Inside a notation, the operator's own text stands for its constant; the punctuation does not.
+#guard isNotationText " ≤ " && isNotationText "∫ (" && isNotationText " ∂"
+#guard !isNotationText "), " && !isNotationText " (" && !isNotationText " : "
+
+-- Plain-text runs merge; a constant keeps its own piece; a cut piece loses its constant.
+#guard coalescePieces #[{ text := "∀ " }, { text := "(a : " }, { text := "Fin", const := `Fin },
+    { text := " K), " }, { text := "" }, { text := "P", const := `P }]
+  == #[{ text := "∀ (a : " }, { text := "Fin", const := `Fin }, { text := " K), " },
+       { text := "P", const := `P }]
+#guard clipPieces 6 #[{ text := "abc" }, { text := "Measurable", const := `Measurable }]
+  == #[{ text := "abc" }, { text := "Mea…" }]
+#guard clipPieces 20 #[{ text := "abc" }, { text := "Measurable", const := `Measurable }]
+  == #[{ text := "abc" }, { text := "Measurable", const := `Measurable }]
+
+-- The gloss is the first sentence of the first paragraph, whitespace collapsed.
+#guard docGloss "First sentence. Second sentence." == "First sentence."
+#guard docGloss "A measure `μ` is a probability measure if `μ univ = 1`.\n\nMore below."
+  == "A measure `μ` is a probability measure if `μ univ = 1`."
+#guard docGloss "Spread\nover two\n  lines" == "Spread over two lines"
+-- A leading heading is skipped in favour of the first paragraph of text.
+#guard docGloss "# Heading\n\nBody text here" == "Body text here"
+#guard docGloss "" == ""
+-- Clipped, with the ellipsis `clipTo` uses.
+#guard docGloss "abcdefghij" (limit := 5) == "abcde…"
+-- A period inside an abbreviation does not end the sentence.
+#guard docGloss "See e.g. the lemma. More." == "See e.g. the lemma."
+#guard docGloss "A meet (a.k.a. infimum) exists. More." == "A meet (a.k.a. infimum) exists."
+
+private def glossedTwice : AnatomyData := {
+  types := #[
+    { name := "Ω", type := "Type", instances := #[
+      { type := "MeasurableSpace Ω", head := "MeasurableSpace", gloss := "A σ-algebra." }] }]
+  objects := #[
+    { name := "μ", type := "Measure Ω", instances := #[
+      { type := "MeasurableSpace Ω", head := "MeasurableSpace", gloss := "A σ-algebra." }] }]
+  hypotheses := #[{ name := "hf", type := "Measurable f", head := "Measurable", gloss := "Preimages." }]
+  conclusion := { type := "Measurable g", head := "Measurable", gloss := "Preimages.", href := "x/" }
+  fields := #[{ name := "f", type := "Measurable g", head := "Measurable", gloss := "Preimages." }] }
+
+-- A gloss appears once per page, at its first occurrence in reading order — types before the other
+-- objects — and a link survives repeats.
+#guard glossedTwice.dedupeGlosses.types.map (·.instances.map (·.gloss)) == #[#["A σ-algebra."]]
+#guard glossedTwice.dedupeGlosses.objects.map (·.instances.map (·.gloss)) == #[#[""]]
+#guard glossedTwice.dedupeGlosses.hypotheses.map (·.gloss) == #["Preimages."]
+#guard glossedTwice.dedupeGlosses.conclusion.gloss == ""
+#guard glossedTwice.dedupeGlosses.conclusion.href == "x/"
+#guard glossedTwice.dedupeGlosses.fields.map (·.gloss) == #[""]
+
 end Referee.Test

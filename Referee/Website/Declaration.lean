@@ -31,6 +31,163 @@ questions arrive: what does it say, what does it rest on, has it moved, what hav
 The rest of this file is the sections.
 -/
 
+/-! ## The statement, in parts
+
+The card shows the statement as the author wrote it, and directly under it the same statement taken
+apart: the objects it is about with the structure assumed on each, the hypotheses, and the claim.
+The split itself is `DeclInfo.anatomy?`, computed at collect time; what the site adds is a gloss for
+each head constant — one sentence from its docstring, and a link where the project declares it. -/
+
+/-- Types whose notation already says everything an inline sentence could: `ℝ`, `ℝ≥0`, `ℝ≥0∞`, `ℂ`,
+`ℚ`. Their docstrings describe a construction — "equivalence classes of Cauchy sequences of rational
+numbers" — which is the one thing a reader of a statement about real numbers does not need printed
+under every row. They keep their hover. Unchecked name literals, because this tool does not import
+Mathlib. -/
+private def everydayTypes : Array Name := #[`Real, `NNReal, `ENNReal, `EReal, `Complex, `Rat]
+
+/-- The most characters of a docstring a hover shows: whole docstrings, with a bound against the
+occasional essay. -/
+private def maxTipDoc : Nat := 3000
+
+/-- What the site knows about a head constant — its signature, its docstring, and its page when the
+project declares it — paired with whether the expanded view should also print a sentence about it
+inline under the row.
+
+The two channels have different costs, so they get different rules. A hover is on demand, so every
+constant the site knows anything about gets one, toolchain included: `Unit`, `Nat` and `Fin` have
+short docstrings a newcomer wants, and one on `≤` is harmless. The inline sentence is printed
+whether or not anyone wanted it, so it is withheld for toolchain constants — `Eq`, `LE.le` and `Not`
+are not what a reader is stuck on — and for the `everydayTypes`. `none` only for an anonymous head
+or a constant the site has no record of. -/
+private def anatomyTipOf (head : Name) (ctx : SiteContext) : Option (AnatomyTip × Bool) :=
+  if head.isAnonymous then none
+  else match ctx.declByName.get? head with
+  | some d => some ({
+      head := head.toString
+      signature := clipText 400 d.expandedSignature
+      doc := clipText maxTipDoc (d.docText?.getD "")
+      href := ctx.declPageHrefs.getD head "" }, true)
+  | none =>
+    match ctx.externalDecls.get? head with
+    | some ext =>
+      let toolchain := ctx.packages.any fun pkg => pkg.name == ext.package && pkg.isToolchain
+      some ({
+        head := head.toString
+        signature := clipText 400 ext.signature
+        doc := clipText maxTipDoc ext.doc }, !toolchain && !everydayTypes.contains head)
+    | none => none
+
+/-- The inline sentence for a row, when its constant is one the expanded view speaks about. -/
+private def anatomyGlossOf : Option (AnatomyTip × Bool) → String
+  | some (tip, true) => docGloss tip.doc
+  | _ => ""
+
+/-- The tips a page needs, one per head constant, in first-use order. -/
+private structure TipAcc where
+  tips : Array AnatomyTip := #[]
+  seen : Std.HashSet String := {}
+
+private def TipAcc.add (acc : TipAcc) : Option AnatomyTip → TipAcc
+  | none => acc
+  | some tip =>
+    if acc.seen.contains tip.head then acc
+    else { tips := acc.tips.push tip, seen := acc.seen.insert tip.head }
+
+/-- The pieces of a type as the page renders them: each constant the site has a tip for becomes a
+hover, and its tip is recorded once. -/
+private def anatomyPiecesOf (pieces : Array TypePiece) (ctx : SiteContext) (acc : TipAcc) :
+    Array AnatomyPiece × TipAcc :=
+  pieces.foldl (init := (#[], acc)) fun (out, acc) p =>
+    let tip? := (anatomyTipOf p.const ctx).map (·.1)
+    (out.push { text := p.text, head := (tip?.map (·.head)).getD "" }, acc.add tip?)
+
+private def anatomyInstanceRowOf (b : StatementBinder) (ctx : SiteContext) (acc : TipAcc) :
+    AnatomyInstanceRow × TipAcc :=
+  let about? := anatomyTipOf b.head ctx
+  let tip? := about?.map (·.1)
+  let (pieces, acc) := anatomyPiecesOf b.pieces ctx (acc.add tip?)
+  ({ name := b.name, type := b.type, pieces
+     head := (tip?.map (·.head)).getD ""
+     href := (tip?.map (·.href)).getD ""
+     gloss := anatomyGlossOf about? },
+   acc)
+
+private def anatomyRowOf (b : StatementBinder) (ctx : SiteContext) (acc : TipAcc)
+    (instances : Array AnatomyInstanceRow := #[]) : AnatomyRow × TipAcc :=
+  let about? := anatomyTipOf b.head ctx
+  let tip? := about?.map (·.1)
+  let (pieces, acc) := anatomyPiecesOf b.pieces ctx (acc.add tip?)
+  ({ name := b.name, type := b.type, pieces, implicit := b.implicit
+     head := (tip?.map (·.head)).getD ""
+     href := (tip?.map (·.href)).getD ""
+     gloss := anatomyGlossOf about?
+     instances },
+   acc)
+
+/-- The rows for a list of objects, each with its instances, threading the tips through. -/
+private def anatomyRowsOf (objects : Array AnatomyObject) (ctx : SiteContext) (acc : TipAcc) :
+    Array AnatomyRow × TipAcc := Id.run do
+  let mut acc := acc
+  let mut rows : Array AnatomyRow := #[]
+  for o in objects do
+    let mut instances : Array AnatomyInstanceRow := #[]
+    for inst in o.instances do
+      let (row, acc') := anatomyInstanceRowOf inst ctx acc
+      acc := acc'
+      instances := instances.push row
+    let (row, acc') := anatomyRowOf o.binder ctx acc instances
+    acc := acc'
+    rows := rows.push row
+  return (rows, acc)
+
+/-- The statement taken apart, for a declaration that has one and that binds anything. A closed
+statement has nothing to take apart that the code block does not already show. -/
+private def mkAnatomyBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
+  match decl.anatomy? with
+  | none => #[]
+  | some anatomy =>
+    if anatomy.binders.isEmpty && anatomy.body.isEmpty && anatomy.fields.isEmpty then #[]
+    else Id.run do
+    let groups := anatomy.grouped
+    let (types, acc₁) := anatomyRowsOf groups.types ctx {}
+    let (objects, acc₂) := anatomyRowsOf groups.objects ctx acc₁
+    let mut acc := acc₂
+    let mut loose : Array AnatomyInstanceRow := #[]
+    for inst in groups.loose do
+      let (row, acc') := anatomyInstanceRowOf inst ctx acc
+      acc := acc'
+      loose := loose.push row
+    let mut hypotheses : Array AnatomyRow := #[]
+    for h in groups.hypotheses do
+      let (row, acc') := anatomyRowOf h ctx acc
+      acc := acc'
+      hypotheses := hypotheses.push row
+    let (conclusion, acc₃) := anatomyRowOf
+      { type := anatomy.conclusion, head := anatomy.conclusionHead,
+        pieces := anatomy.conclusionPieces } ctx acc
+    let (bodyPieces, acc₄) := anatomyPiecesOf anatomy.bodyPieces ctx acc₃
+    acc := acc₄
+    -- A field's hover is its own docstring, keyed by the projection's name so that two structures
+    -- on one page cannot share it; only a field without one falls back to its type's head constant.
+    let mut fields : Array AnatomyRow := #[]
+    for f in anatomy.fields do
+      let about? : Option (AnatomyTip × Bool) :=
+        if f.doc.isEmpty then anatomyTipOf f.head ctx
+        else some ({ head := s!"{decl.name}.{f.name}", signature := f.type, doc := f.doc }, true)
+      let tip? := about?.map (·.1)
+      let (pieces, acc') := anatomyPiecesOf f.pieces ctx (acc.add tip?)
+      acc := acc'
+      fields := fields.push {
+        name := f.name
+        type := f.type
+        pieces
+        head := (tip?.map (·.head)).getD ""
+        gloss := anatomyGlossOf about? }
+    let data : AnatomyData :=
+      { types, objects, loose, hypotheses, conclusion, isProp := anatomy.isProp
+        body := anatomy.body, bodyPieces, fields, tips := acc.tips }
+    return #[.other (Block.anatomy data.dedupeGlosses) #[]]
+
 /-- Renders one declaration card with docs, statement, links, and dependencies.
 
 Rendered on the declaration's own page and nowhere else: module pages, the claims page and the
@@ -48,7 +205,6 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
       blocks := blocks.push (.para #[.emph #[.text "No docstring."]])
     if let some docstringBlock := decl.docstringBlock? then
       blocks := blocks.push docstringBlock
-    blocks := blocks.push (.para #[.bold #[.text "Code"]])
     -- Definitions show their body: the value *is* the content. Theorems show only the statement —
     -- the proof has its own section below, and repeating it here made the card twice as long for
     -- no gain. The highlighted rendering covers the whole command, so it is only used where the
@@ -63,11 +219,23 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
       match decl.kind with
       | .definition | .structure | .typeclass | .inductive => true
       | _ => false
-    blocks := blocks.push <|
+    let codeBlock : Block Manual :=
       if showsBody then
         leanCodeBlock ((ctx.declHighlights.get? decl.name).map (Highlight.declCode decl.name))
           decl.displaySignature
       else .code decl.displaySignature
+    -- The declaration taken apart comes first, and the source text folds away under it like the
+    -- proof — but only where the parts above already show everything the source says: a theorem's
+    -- statement, or a definition's result type and body. An inductive type with several
+    -- constructors has neither, and there the code stays open under its label.
+    let anatomy := mkAnatomyBlocks decl ctx
+    let covered := decl.anatomy?.any fun a => a.isProp || !a.body.isEmpty || !a.fields.isEmpty
+    blocks := blocks ++ anatomy
+    if !anatomy.isEmpty && covered then
+      blocks := blocks.push <| .other (Block.details { summary := "Code" }) #[codeBlock]
+    else
+      blocks := blocks.push (.para #[.bold #[.text "Code"]])
+      blocks := blocks.push codeBlock
     -- The proof, then the links. Nothing about the declaration's dependencies: "Type uses" and
     -- "Body uses" are both drawn in the graph directly below, and a second rendering of the same
     -- fact in the place a reader looks for what the declaration *says* is worse than none. "Used by"
