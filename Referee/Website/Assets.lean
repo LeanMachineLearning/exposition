@@ -94,11 +94,19 @@ private def browseJsFile : JsFile where
   after := #["audit.js"]
 
 /-- The statement-anatomy block's two views and its hovers; see `Block.anatomy`. Waits for the
-document like the rest, so it needs no ordering: tippy and `marked`, which it uses when they are
-present, are loaded in `<head>` by Verso and are in place by then. -/
+document like the rest, so it needs no ordering: tippy and `marked`, which it uses, are loaded in
+`<head>` and are in place by then. -/
 private def anatomyJsFile : JsFile where
   filename := "anatomy.js"
   contents := JS.mk (include_str "assets/anatomy.js")
+  sourceMap? := none
+
+/-- `marked`, the Markdown renderer Verso vendors for the docstrings in its hovers, as a file of this
+site: the anatomy's hovers render docstrings with it. Verso itself fetched it from a CDN for the
+pretty-printed signature block, which no longer appears; this keeps the site self-contained (P10). -/
+private def markedJsFile : JsFile where
+  filename := "marked.umd.min.js"
+  contents := JS.mk Verso.Code.Highlighted.WebAssets.marked
   sourceMap? := none
 
 /-- The upstream constants table, as a script setting one global.
@@ -167,10 +175,15 @@ def renderConfig (externals : Array ExternalDeclInfo) (trusted : Std.HashSet Nam
     -- those, immediately below them. The sidebar carries the same navigation on every page.
     rootTocDepth := some 0
     sectionTocDepth := some 0
-    extraCssFiles := {refereeCssFile}
+    extraCssFiles := {refereeCssFile, tippyCss}
+    -- Verso's own tooltip assets, `popperJs` and `tippyJs`, are registered here rather than left
+    -- to arrive with a highlighted block: the anatomy's hovers need them on every declaration
+    -- page, and since the pretty-printed signature block went, a page built without the
+    -- highlighting phases has no highlighted block to bring them. The same values Verso registers,
+    -- so a page that does have highlighted code gets them once.
     extraJsFiles := {d3JsFile, upstreamJsFile externals trusted showTrusted, graphJsFile,
       tocJsFile, auditJsFile,
-      revisionsJsFile, browseJsFile, anatomyJsFile}
+      revisionsJsFile, browseJsFile, popperJs, tippyJs, markedJsFile, anatomyJsFile}
     -- Inline and in `<head>`, so the stored theme is applied before the first paint. Loading this
     -- as a file would let the light theme flash before the script ran.
     extraHead := #[Html.tag "script" #[] (.text false themeBootJs)]

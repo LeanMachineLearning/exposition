@@ -145,49 +145,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const container = toc.querySelector('.first') || toc;
   const beforeNode = container.querySelector('.split-tocs');
 
-  const visibilityToggles = [
-    { group: 'definitions', cssClass: 'hide-definitions', label: 'Definitions' },
-    { group: 'lemmas', cssClass: 'hide-lemmas', label: 'Lemmas' },
-    { group: 'theorems', cssClass: 'hide-theorems', label: 'Theorems' }
-  ];
-
+  /* The sidebar used to carry three "Hide Definitions / Lemmas / Theorems" toggles here. They
+     filtered declaration listings by kind, which on a declaration page — most of the site — is
+     nothing at all, so they were three buttons that did nothing on most pages. Browse has the
+     same filter where it is useful. */
   const utilityNav = toc.querySelector('.site-utility-nav');
-
-  for (const toggle of visibilityToggles) {
-    const key = `referee:${toggle.cssClass}`;
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'site-utility-button';
-
-    const applyHide = hide => {
-      document.body.classList.toggle(toggle.cssClass, hide);
-      button.textContent = hide ? `Show ${toggle.label}` : `Hide ${toggle.label}`;
-      button.setAttribute('aria-pressed', hide ? 'true' : 'false');
-    };
-
-    let hide = false;
-    try {
-      hide = window.localStorage.getItem(key) === 'true';
-    } catch (_err) {
-      hide = false;
-    }
-    applyHide(hide);
-
-    button.addEventListener('click', () => {
-      hide = !document.body.classList.contains(toggle.cssClass);
-      try {
-        window.localStorage.setItem(key, String(hide));
-      } catch (_err) {
-      }
-      applyHide(hide);
-    });
-
-    if (utilityNav) {
-      utilityNav.appendChild(button);
-    } else {
-      container.insertBefore(button, beforeNode || null);
-    }
-  }
 
   /* Light/dark control. "Auto" follows the operating system; an explicit choice overrides it in
      both directions, which matters because a reader on a dark desktop may still want the light

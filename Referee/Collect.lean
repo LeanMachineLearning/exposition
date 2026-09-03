@@ -2314,19 +2314,21 @@ def groupIndexMap (mods : Array ModuleInfo) : Std.HashMap String (Array ModuleIn
     (fun acc modInfo => acc.insert modInfo.groupKey ((acc.getD modInfo.groupKey #[]).push modInfo))
     {}
 
-/-- Builds a prefilled GitHub issue URL for declaration review. -/
-def issueUrlOf (repoUrl? : Option String) (decl : Name) (moduleName : Name) (source? : Option SourceInfo) (dependsOnSorry : Bool) : Option String :=
+/-- Builds a prefilled GitHub issue URL for declaration review: the declaration's full name in the
+title, and its name and source location in the body. The module is not repeated — the source path
+is the module — and whether the declaration is proved is left to the author's tracker, since it
+changes and the issue does not. -/
+def issueUrlOf (repoUrl? : Option String) (decl : Name) (source? : Option SourceInfo) :
+    Option String :=
   repoUrl?.map fun repoUrl =>
-    let title := s!"Review: {decl.getString!}"
+    let title := s!"Referee review: {decl}"
     let sourceLine :=
       match source? with
       | some src => s!"**Source:** {src.relPath}:{src.line}"
       | none => "**Source:** unavailable"
     let body := String.intercalate "%0A" [
       s!"**Declaration:** `{decl}`",
-      s!"**Module:** `{moduleName}`",
       sourceLine,
-      s!"**Status:** {if dependsOnSorry then "sorry" else "proved"}",
       "",
       "---",
       "",

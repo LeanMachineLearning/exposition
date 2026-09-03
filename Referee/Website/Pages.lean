@@ -1092,8 +1092,8 @@ site rather than the shortest.
 
 What is left is the part no page title can give: how big the library is and what shape it is, then
 how much sits underneath it. The `theorem`/`lemma`/`definition` split is the author's own — the
-same one the sidebar's visibility toggles and every module listing use — so the three numbers are
-read off the keywords rather than derived. -/
+same one the Browse filter and every module listing use — so the three numbers are read off the
+keywords rather than derived. -/
 private def mkLandingBlocks (rootPrefix : Name) (decls : Array DeclInfo) (ctx : SiteContext) :
     Array (Block Manual) :=
   Id.run do

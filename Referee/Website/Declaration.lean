@@ -196,15 +196,16 @@ it used to, and once the module pages stopped showing cards it pointed at the pa
 on. -/
 private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
   Id.run do
-    let issueUrl := issueUrlOf ctx.repoUrl? decl.name decl.moduleName decl.source? decl.dependsOnSorry
+    let issueUrl := issueUrlOf ctx.repoUrl? decl.name decl.source?
     let sourceUrl := sourceUrlOf ctx.repoUrl? decl.source? ctx.sourceRef
     let mut blocks : Array (Block Manual) := #[]
     blocks := blocks ++ decl.docBlocks
     let hasDoc := !decl.docBlocks.isEmpty
     if !hasDoc then
       blocks := blocks.push (.para #[.emph #[.text "No docstring."]])
-    if let some docstringBlock := decl.docstringBlock? then
-      blocks := blocks.push docstringBlock
+    -- The pretty-printed signature Verso renders (`decl.docstringBlock?`) is no longer shown: the
+    -- statement in parts below says everything it said, with the same hovers on every constant,
+    -- and repeating the statement twice above the code was the length the card could least afford.
     -- Definitions show their body: the value *is* the content. Theorems show only the statement —
     -- the proof has its own section below, and repeating it here made the card twice as long for
     -- no gain. The highlighted rendering covers the whole command, so it is only used where the

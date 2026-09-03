@@ -561,16 +561,6 @@ main li code { font-size: .92em; }
   margin-top: .15rem;
 }
 
-/* The sidebar's visibility controls filter declaration *listings* — module contents, the claims
-   and trust pages, and a declaration's dependency closures. They deliberately do not touch the
-   card on a declaration's own page (which carries `data-card-group`, not `data-decl-group`):
-   hiding the very thing you navigated to would be a strange thing for a filter to do. */
-body.hide-definitions [data-decl-group="definition"],
-body.hide-lemmas [data-decl-group="lemma"],
-body.hide-theorems [data-decl-group="theorem"] {
-  display: none;
-}
-
 /* With `rootTocDepth`/`sectionTocDepth` at 0 Verso still emits the wrapper for its automatic
    sub-page list, so the empty element is hidden rather than left to contribute stray margins.
    `:has` covers the case where it ever emits whitespace inside. On the landing page the list also
@@ -1684,18 +1674,19 @@ body.hide-theorems [data-decl-group="theorem"] {
    structure assumed on it after a "with" and explains nothing inline: every constant the page knows
    about is a hover target instead (`anatomy.js`; tooltips as on Verso's highlighted code). Expanded
    puts each assumption on its own line with a sentence about it. */
+/* No title: the parts are the first thing under the docstring and need no announcing. The row
+   holds only the view switch, kept to the right and out of the reading line. */
 .anatomy-heading {
-  align-items: baseline;
   display: flex;
-  gap: .8rem;
-  justify-content: space-between;
+  justify-content: flex-end;
+  margin: 0 0 -.4rem;
 }
 
 .anatomy-toggle { flex: 0 0 auto; }
 
 .anatomy {
   display: grid;
-  gap: .35rem 1rem;
+  gap: .3rem 1rem;
   grid-template-columns: max-content minmax(0, 1fr);
   margin: .3rem 0 1.1rem;
 }
@@ -1721,7 +1712,15 @@ body.hide-theorems [data-decl-group="theorem"] {
   padding: 0;
 }
 
-.anatomy-row + .anatomy-row { margin-top: .2rem; }
+/* Set tighter than prose: these are rows of a table, read down a column, not sentences. On the row
+   itself, and with two classes, because the site's general list-item rule would otherwise hand
+   every row prose line height and a half-line margin. */
+.anatomy .anatomy-row {
+  line-height: 1.5;
+  margin: 0;
+}
+
+.anatomy .anatomy-row + .anatomy-row { margin-top: .25rem; }
 .anatomy--expanded .anatomy-row + .anatomy-row { margin-top: .4rem; }
 
 .anatomy-row code,
@@ -1847,12 +1846,14 @@ body.hide-theorems [data-decl-group="theorem"] {
   text-align: left;
 }
 
+/* Flowed, not pre-formatted: a long signature arrives with the pretty-printer's staircase
+   indentation, which in a tooltip is height for nothing. */
 .anatomy-tipbox .anatomy-tip-sig {
   display: block;
   font-size: .82rem;
   margin-bottom: .45rem;
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  white-space: normal;
 }
 
 .anatomy-tipbox .anatomy-tip-doc { font-family: var(--verso-text-font-family, sans-serif); }

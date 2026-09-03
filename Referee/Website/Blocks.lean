@@ -118,8 +118,8 @@ def mkSourceParagraph (label : String) (url? : Option String) : Array (Block Man
   | some url => #[.para #[.bold #[.text "Source: "], .link #[.text label] url]]
   | none => #[]
 
-/-- The visibility group a declaration belongs to, matching the "Hide Definitions" /
-"Hide Lemmas" / "Hide Theorems" toggles and the `data-decl-group` attribute on its card. -/
+/-- The kind group a declaration belongs to — theorem, lemma or definition — as the landing
+counts, the Browse filter and the `data-decl-group` attribute on listing rows use it. -/
 def declGroupOfFields (kindLabel : String) (isLemma isInstanceDecl : Bool) : String :=
   let isMainTheorem := kindLabel == "Theorem" && !isLemma && !isInstanceDecl
   if isMainTheorem then "theorem"
@@ -175,10 +175,10 @@ block_extension Block.declCard (_payload : DeclCardData) where
 
 /- A list of declarations, one per row.
 
-Each row carries `data-decl-group`, which is what the sidebar's "Hide Definitions / Lemmas /
-Theorems" controls act on. Those controls used to reach only declaration *cards*; once module
-pages became listings with a single card per page, they had almost nothing left to hide. Filtering
-the listings is what they were for.
+Each row carries `data-decl-group`, its kind group. The sidebar's "Hide Definitions / Lemmas /
+Theorems" toggles used to act on it; they are gone, since on a declaration page they had nothing to
+hide, and Browse filters by kind where filtering is wanted. The attribute stays as a hook for
+styling and scripts.
 
 (A plain comment, not a docstring: `block_extension` does not take one.) -/
 block_extension Block.declIndex (_payload : DeclIndexData) where
@@ -406,14 +406,12 @@ block_extension Block.anatomy (_payload : AnatomyData) where
               {{<pre class="anatomy-conclusion">{{anatomyCodeHtml "" payload.body "" payload.bodyPieces}}</pre>}}
           else .empty
         .seq #[anatomyPartHtml "Result" conclusionHtml, body]
-    let heading := if payload.isProp then "The statement, in parts" else "The definition, in parts"
     let tips : Html :=
       if payload.tips.isEmpty then .empty
       else {{<div class="anatomy-tips" hidden="hidden">{{payload.tips.map anatomyTipHtml}}</div>}}
     pure {{
       <div class="anatomy-wrap">
         <p class="anatomy-heading">
-          <strong>{{heading}}</strong>
           <button type="button" class="anatomy-toggle site-utility-button" hidden="hidden"
               aria-pressed="false">"Expand"</button>
         </p>
