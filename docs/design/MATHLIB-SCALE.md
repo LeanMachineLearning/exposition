@@ -449,8 +449,8 @@ and it converged to three residuals, disclosed in the section comment in `Site.l
 
 ## The second round — what building the first exposed
 
-*None of this is built.* Items 1–8 came from measuring the phases from outside; these came from
-implementing them. Each names the evidence the code path itself produced. They are ranked, and
+*Item 9 is now built; the rest of this is not.* Items 1–8 came from measuring the phases from
+outside; these came from implementing them. Each names the evidence the code path itself produced. They are ranked, and
 item 9 is unlike the rest: it carries the correction to this document's own site projection, and
 with it possibly the difference between a site that can be hosted and one that cannot.
 
@@ -488,6 +488,100 @@ Estimated site at the whole library: ~120–180 GB → **~10–15 GB**. The hone
 listings become client-rendered, so the no-JS story degrades from "everything readable" to
 "closure lists need JavaScript". The audit control set that precedent, but it is a choice to make
 deliberately, not a detail.
+
+#### What was built, and what the build corrected
+
+The second half is done — generalized past what this section asked for — and the first is not.
+Two of the three copies are gone: the "rests on" listing left with `AuditControlData.closure`, and
+the graph's node payload is now interned against a per-chapter table (`thinGraphNodes`,
+`declTableJs`). Edges went with it: they were never counted here, and they turned out to be the
+largest single item left once the nodes were thin.
+
+Two of this section's numbers were wrong, both in the same direction, and the mechanism is worth
+recording because it is the one this document keeps getting caught by.
+
+* **~250 B per graph node was ~768 B.** Measured over 8,321 nodes on the `LeanMachineLearning`
+  site. The estimate counted a node's identity and forgot what rides with it: **54%** of the node
+  payload was the `signature` and `doc` shown under a clicked node, clipped at 2400 and 1200
+  characters. Those are per *declaration*, not per drawing, which is what made them table material
+  — the same argument `upstreamJsFile` had already made for upstream constants, one layer down.
+* **Interning the names was worth much more than "~4 B of index plus a table".** Because the
+  fields that dominate are not the name, a project node went from ~768 B to an id and a flag.
+
+Measured on that site, with `--trust mathlib` so the upstream band is the size a configured site
+actually draws: the per-page `graph-data` fell **6.61 MB → 0.52 MB (92%)** across 1,188
+declaration pages, ~62 B per closure member against the ~450 B this section costed two copies at.
+Rendering is unchanged: every one of 30,992 nodes hydrates back to the field values the previous
+build wrote, and every edge set expands to the same pairs.
+
+Re-measured at this section's own scale, on a fresh `Mathlib.Analysis` run (28,381 declarations,
+29,219 pages, no `--trust`, which is the honest default for a shard):
+
+| | before | after | |
+|---|---|---|---|
+| `graph-data` | 2.74 GB | **1.07 GB** | −61% |
+| declaration pages | 3.34 GB | **1.67 GB** | −50% |
+| whole site | 3.88 GB | **2.23 GB** | −43% |
+| per declaration page | 123.4 kB | **61.7 kB** | |
+
+plus 19 MB of chapter tables across 42 chapters, fetched once each rather than per page. Rendering
+is unchanged here too: on 1,500 sampled pages, 335,307 nodes hydrate to the same field values and
+every edge set expands to the same pairs.
+
+#### The node budget is not the lever this section thought it was
+
+What is **not** built is the first half, the node budget — and the `Mathlib.Analysis` run says it
+should stay unbuilt for now, which contradicts the ranking above. Two things this section did not
+anticipate:
+
+* **A shard's project closures are small.** Project nodes per page came out at mean **48**, median
+  38, p90 101, max 345 — not the ~3,300 projected. `shouldExpose` keys on the root prefix, so on
+  `--root Mathlib.Analysis` most of what a declaration rests on is `Order`, `Topology` and
+  `Algebra`, which are *upstream*, not project nodes. A budget over project nodes would almost
+  never bind. The 3,300 figure belongs to a whole-library site, where it would.
+* **The upstream band is now the payload.** Of what remains, **88%** is upstream band nodes and
+  only 3.6% is project nodes; edge indices are 8%. On a shard the band is not an artifact of
+  forgetting `--trust` — the rest of Mathlib genuinely is upstream, and it is drawn.
+
+So the next item was not a budget but the same interning applied one layer out — **now built**.
+Every field an upstream node carried is a function of the constant or of its package: `moduleName`
+and the package were *already* in `upstream.js`, `groupKey` repeats the package, `kind` and `status`
+follow from whether the package is trusted, `upstreamRank` is `packageRanks` per package, and
+`label` is the constant's last component. `upstreamJsFile` gained `label` and a `RefereePackages`
+table — ten packages against tens of thousands of constants — and a band node is now an id, as a
+project node is.
+
+The one case it has to refuse is the trusted-`pinned` one: `withUpstreamNodes` draws a pinned
+constant whatever its package's trust, while `upstreamJsFile` ships only what the current flags can
+draw, so `thinGraphNodes` thins a band node only when that constant is in the table. On the
+`Mathlib.Analysis` run no node needed the exemption; the guard is there for
+`--show-trusted-upstream` builds and characterization views.
+
+#### Where item 9 landed
+
+Both halves of the interning, measured on the same `Mathlib.Analysis` data (28,381 declarations,
+29,219 pages, no `--trust`):
+
+| | HEAD | project nodes | + upstream nodes |
+|---|---|---|---|
+| `graph-data` | 2.74 GB | 1.07 GB | **0.25 GB** |
+| declaration pages | 3.34 GB | 1.67 GB | **0.85 GB** |
+| whole site | 3.88 GB | 2.23 GB | **1.41 GB** |
+| per declaration page | 123.4 kB | 61.7 kB | **31.5 kB** |
+
+**`graph-data` −91%, declaration pages −75%, the site −64%**, against 19 MB of chapter tables and a
+2.7 MB `upstream.js`, each fetched once rather than per page. Rendering is unchanged throughout: on
+2,000 sampled pages, 444,987 nodes — 96,076 project and 348,911 upstream — hydrate to exactly the
+field values the previous build wrote, and every edge set expands to the same pairs.
+
+What this does *not* fix is legibility. A page here still draws 807 nodes across 117 rows, which is
+no more readable than the 3,300 this section warned about; it is merely no longer expensive. The
+node budget remains unbuilt and is now purely a question about what a reader can use, with no size
+argument left to carry it.
+
+The no-JS cost above was paid in full and should be read as settled, not pending: a project node
+in `graph-data` is now an id, and the closure it belongs to is legible only after `graph.js` has
+filled it in from the chapter table.
 
 ### 10. Shard what every page load fetches
 

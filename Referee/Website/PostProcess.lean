@@ -1,6 +1,8 @@
 module
 
 public import Referee.Website.Blocks
+-- For `declTableJs`, the other half of `thinGraphNodes`.
+public import Referee.Website.Graph
 -- For `--search`, which rebuilds the index Verso emitted using the same builder Verso builds it
 -- with, rather than hand-writing elasticlunr's on-disk shape.
 public import VersoSearch
@@ -434,6 +436,52 @@ def applySearchMode (mode : SearchMode) (out : System.FilePath) : IO Unit := do
     else
       IO.println s!"Rebuilt the search index over {titles.size} titles: \
         {old / 1048576} MB to {new / 1048576} MB"
+
+/-! ## Writing the chapter tables
+
+The other side of `thinGraphNodes`: the declaration pages reference one of these per chapter their
+graphs reach, and this writes them. See the section note in `Referee/Website/Graph.lean` for why the
+tables exist and why they are scoped to a chapter.
+
+Written after Verso has rendered, like everything else in this file, but for a different reason:
+not because it is a property of the whole output directory, but because it is the one part of the
+page's data that no page owns. -/
+
+/-- Every project declaration a page in `group` can draw: the chapter's own declarations and
+everything in their statement closures.
+
+The closure is what a declaration page's graph draws, and it crosses chapters, so a chapter's table
+is not the chapter's declarations. `dataTransDeps` is the same set `mkAuditControlBlocks` and the
+page's own graph follow, so a node drawn on one of these pages is in here by construction. -/
+def declTableMembers (group : GroupInfo) (ctx : SiteContext) : Array DeclInfo :=
+  let own := group.modules.flatMap (·.decls)
+  let names := own.foldl (init := ({} : Std.HashSet Name)) fun acc decl =>
+    decl.dataTransDeps.foldl (·.insert ·) (acc.insert decl.name)
+  names.toArray.qsort Name.lt |>.filterMap ctx.declByName.get?
+
+/-- Writes one declaration table per chapter into the rendered site.
+
+Returns the number of tables written and their total size, for the same reason the other passes
+here report theirs: these are bytes the pages no longer carry, and a build that quietly stopped
+writing them would otherwise show up only as a site full of blank nodes. -/
+def writeDeclTables (dir : System.FilePath) (groups : Array GroupInfo) (ctx : SiteContext) :
+    IO (Nat × Nat) := do
+  if !(← dir.pathExists) then
+    return (0, 0)
+  let mut written := 0
+  let mut bytes := 0
+  for group in groups do
+    let members := declTableMembers group ctx
+    if members.isEmpty then
+      continue
+    let path := dir / declTablePath group.key
+    if let some parent := path.parent then
+      IO.FS.createDirAll parent
+    let js := declTableJs members ctx.declPageHrefs
+    IO.FS.writeFile path js
+    written := written + 1
+    bytes := bytes + js.length
+  return (written, bytes)
 
 end
 

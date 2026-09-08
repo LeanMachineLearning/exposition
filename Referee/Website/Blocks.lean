@@ -673,9 +673,18 @@ block_extension Block.graph (_payload : GraphData) where
     let .ok (payload : GraphData) := FromJson.fromJson? data
       | Verso.reportError s!"Could not decode graph data from {data.compress}"
         pure .empty
+    -- Before the payload, so the table is set by the time anything reads a node. Ordinary
+    -- `<script src>` tags rather than `defer`/`async` ones for the same reason: they run in
+    -- document order during parsing, which is before `graph.js` draws on `DOMContentLoaded`.
+    --
+    -- Site-root-relative, which every page's `<base href>` makes correct at every depth, and
+    -- untouched by `hoistInlineAssets`, which only ever looks at attribute-less blocks.
+    let tables := payload.tables.map fun path =>
+      Html.tag "script" #[("src", path)] .empty
     pure {{
       <div id="graph-root"></div>
-      {{Html.tag "script" #[("id", "graph-data"), ("type", "application/json")] (.text false (ToJson.toJson payload).compress)}}
+      {{tables}}
+      {{Html.tag "script" #[("id", "graph-data"), ("type", "application/json")] (.text false (compactJson (ToJson.toJson payload)).compress)}}
     }}
 
 /-- The parts of a rendered change shared by the Changes page and the per-declaration banner: the

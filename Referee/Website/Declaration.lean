@@ -1150,7 +1150,11 @@ def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
         package left unaudited — so the graph is this declaration alone. That is the answer, not a \
         missing picture."
     ])
-  blocks := blocks.push (.other (Block.graph graphData) #[])
+  -- Thinned here and not where the graph is built: everything above reads the nodes' fields —
+  -- the lone-node test, the characterization views, the transitive reduction — and a node stripped
+  -- any earlier would have to be filled back in to answer them. This is the last hand it passes
+  -- through.
+  blocks := blocks.push (.other (Block.graph (thinGraphNodes graphData ctx)) #[])
   blocks := blocks ++ mkAuditBlocks decl ctx
   -- Last, because they answer a different and later question. Everything above says what this
   -- declaration costs to accept; these say what it means. The characterization comes first of the

@@ -198,7 +198,7 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     match cfg.outputDir with
     | some out => ["--output", out]
     | none => []
-  let config := renderConfig data.externalDecls ctx.trusted cfg.showTrustedUpstream
+  let config := renderConfig data.externalDecls ctx.trusted cfg.showTrustedUpstream ctx.packageRanks
   if cfg.perChapter then
     if cfg.searchMode == .full then
       IO.eprintln "--per-chapter requires --search names (or none): merging the full-text \
@@ -224,6 +224,14 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     -- the pages: it is referenced by `<script src>` and so was never inline to begin with, but the
     -- ordering makes that independent of how Verso chooses to emit it.
     applySearchMode cfg.searchMode (cfg.outputDir.getD ".")
+  -- Outside the branch, because both kinds of build render the same pages and those pages reference
+  -- these files. Before hoisting only for tidiness in the log: hoisting never looks at them, since
+  -- they arrive as `<script src>` rather than as inline blocks.
+  let (tables, tableBytes) ←
+    writeDeclTables ((cfg.outputDir.getD ".") / "html-multi") groups ctx
+  if tables > 0 then
+    IO.println s!"Wrote {tables} chapter declaration tables ({tableBytes / 1048576} MB), \
+      which the graphs' nodes are filled in from"
   if cfg.hoistAssets then
     let (hoisted, freed, files) ←
       hoistInlineAssetsIn ((cfg.outputDir.getD ".") / "html-multi")

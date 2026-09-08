@@ -737,6 +737,8 @@ structure GraphView where
   unexpandedNote : String := ""
   nodes : Array GraphNode
   edges : Array GraphEdge
+  /-- `edges` interned against `nodes`; see `GraphData.edgeIx`. -/
+  edgeIx : Array Nat := #[]
 deriving Repr, ToJson, FromJson
 
 /-- Data container for GraphData. -/
@@ -758,7 +760,43 @@ structure GraphData where
   definition's, which is why the first view is left in place rather than folded into this array —
   the payload rides in every page and the common case must not pay for the rare one. -/
   views : Array GraphView := #[]
+  /-- Chapter slugs whose declaration tables this graph's project nodes are looked up in; see
+  `thinGraphNodes`. The page loads one `<script src>` per entry, and a node carrying only an `id`
+  is meaningless without them, so this is emitted even though nothing draws it. -/
+  tables : Array String := #[]
+  /-- `edges`, interned: each consecutive pair is a source and a target index into `nodes`.
+
+  An edge written out is two full declaration names — around 90 bytes for what a pair of small
+  integers says, and there are more edges than nodes on any graph worth drawing. Interned, the same
+  edge is about 6. Flat rather than an array of pairs because a JSON array of two-element arrays
+  spends two brackets and a comma per edge on saying "pair" again.
+
+  `edges` holds whatever could not be interned — an edge whose endpoint the graph never listed as a
+  node, which `transitiveReduce` already tolerates — so the two are read together and neither is
+  authoritative alone. -/
+  edgeIx : Array Nat := #[]
 deriving Repr, ToJson, FromJson
+
+/-- Drops the fields whose value carries no information, recursively.
+
+Lean's derived `ToJson` writes every field, default or not, so a thinned node still spelled out
+`"label":"","kind":"","status":""` and so on — around 120 bytes of nothing per node, which is most
+of what thinning it saved. Every default in `GraphData`, `GraphNode`, `GraphEdge` and `GraphView` is
+the empty string, `false`, `0` or the empty array, so dropping exactly those is what `FromJson` puts
+back, and the round trip is unchanged.
+
+`graph.js` reads these fields through `||` — an absent field and an empty one have always been the
+same thing to it — so nothing on the other side has to know which of the two it got. -/
+partial def compactJson : Json → Json
+  | .obj fields =>
+    let kept := fields.foldl (init := ([] : List (String × Json))) fun acc k v =>
+      let v := compactJson v
+      let empty :=
+        v == Json.str "" || v == Json.bool false || v == Json.num 0 || v == Json.arr #[]
+      if empty then acc else (k, v) :: acc
+    Json.mkObj kept.reverse
+  | .arr items => .arr (items.map compactJson)
+  | j => j
 
 /-- One end of a specification link, as written with the `@[specifies]` attribute of the
 `Characterization` package: the declaration at the other end and the author's note on why the
@@ -2360,6 +2398,17 @@ def repoFileUrlOf (repoUrl? : Option String) (relPath : String) (ref : String :=
 def groupHrefOf (groupKey : String) : String :=
   s!"chapter-{slugify groupKey}/"
 
+/-- Where a chapter's declaration table is written, site-root-relative.
+
+Named here, beside the other path rules, because three places have to agree on it and none of them
+can see the others: the pages reference it (`Block.graph`), the build writes it (`writeDeclTables`),
+and neither is in a position to notice if the other changes. Under `-verso-data/` with the hoisted
+assets, since it is the same kind of thing — one file the whole site shares rather than bytes
+repeated per page — and not content-addressed, because the page has to name it before it is
+written. -/
+def declTablePath (groupKey : String) : String :=
+  s!"-verso-data/referee-decls-{slugify groupKey}.js"
+
 /-- Computes module HrefOf. -/
 def moduleHrefOf (modulePath : String) : String :=
   s!"module-{slugify modulePath}/"
@@ -2395,6 +2444,36 @@ that aren't valid surface syntax and so don't parse back to the original name. -
 def isJsonSafeName (n : Name) : Bool :=
   n.toString.toName == n
 
+/-- Replaces every constant in a statement's anatomy that would not survive the JSON round trip
+with `.anonymous`, which is already the anatomy's word for "no constant here".
+
+The anatomy carries `Name`s in five places, and unlike `deps` they are not a set to filter: each one
+sits beside the text it annotates, so dropping the entry would lose the text with it. Blanking the
+name keeps the row and loses only its hover, which is what the reader would have got anyway — the
+names this catches are hygienic internals like
+`Asymptotics.wrapped._@.Mathlib.Analysis.Asymptotics.Defs.126441222._hygCtx._hyg.2`, which name no
+page and no docstring, and which `anatomyTipOf` already declines to say anything about.
+
+Without this, `collect` writes a `data.json` that `build-site` cannot read back: `Name`'s JSON codec
+is `toString` then `toName`, and a hygiene marker is not valid surface syntax, so the parse fails
+and takes the whole file with it — the whole run, for one name. Found by running against
+`Mathlib.Analysis`, whose 28,381 declarations yielded 29 occurrences of 28 distinct such names, all
+of them a `wrapped` helper from an `Asymptotics`-style definition. Rare enough that no project small
+enough to be a test fixture produces one, which is why `dropUnsafeDeps` was never extended here when
+the anatomy was added, and fatal enough that one is sufficient. -/
+def anatomySafeNames (a : StatementAnatomy) : StatementAnatomy :=
+  let safe (n : Name) : Name := if isJsonSafeName n then n else .anonymous
+  let piece (p : TypePiece) : TypePiece := { p with const := safe p.const }
+  let binder (b : StatementBinder) : StatementBinder :=
+    { b with head := safe b.head, pieces := b.pieces.map piece }
+  { a with
+    binders := a.binders.map binder
+    conclusionHead := safe a.conclusionHead
+    conclusionPieces := a.conclusionPieces.map piece
+    bodyPieces := a.bodyPieces.map piece
+    fields := a.fields.map fun f =>
+      { f with head := safe f.head, pieces := f.pieces.map piece } }
+
 /-- Drops names that don't round-trip through JSON (see `isJsonSafeName`) from `deps`/`typeDeps`,
 so that serializing `decls` for the `collect` subcommand can't fail. Safe to do unconditionally:
 every consumer of `deps`/`typeDeps` (graph edges, the closure listings, the extraction closure)
@@ -2406,6 +2485,7 @@ def dropUnsafeDeps (decls : Array DeclInfo) : Array DeclInfo :=
     deps := d.deps.filter isJsonSafeName
     typeDeps := d.typeDeps.filter isJsonSafeName
     dataDeps := d.dataDeps.filter isJsonSafeName
+    anatomy? := d.anatomy?.map anatomySafeNames
   }
 
 /-- Helper for relativeSourcePath. -/

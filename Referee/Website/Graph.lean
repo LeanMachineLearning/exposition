@@ -30,6 +30,40 @@ Mathlib rather than a number. `transitiveReduce` removes the edges implied by ot
 closure that is most of them, and the picture is unreadable without it.
 -/
 
+/-- One project declaration as a graph node.
+
+Factored out of `mkGraphData` because the chapter tables are built from it too (`declTableEntry`):
+what `thinGraphNodes` takes out of a node and what the table puts back have to be the same
+fields computed the same way, and the only way to guarantee that is to have one place that
+computes them. -/
+def declNode (decl : DeclInfo) (declHrefs : Std.HashMap Name String)
+    (focus? : Option Name := none) : GraphNode := {
+  id := decl.name.toString
+  label := decl.name.getString!
+  -- `displayKind`, as every other node-like listing on the site uses: `kind.label` is the raw
+  -- `theorem` Lean records, so a lemma's own graph node contradicted the card above it.
+  kind := decl.displayKind
+  status := if decl.dependsOnSorry then "sorry" else "proved"
+  groupKey := decl.groupKey
+  moduleName := decl.modulePath
+  -- Root-relative, with no `../` prefix: Verso emits a `<base href>` on every page pointing at
+  -- the site root, so every relative href on the page — including these, which reach the DOM
+  -- through JSON rather than through Verso's link handling — resolves from the root already.
+  href := declHrefs.getD decl.name (pathForPart decl.groupKey decl.modulePath decl.name)
+  focus := focus? == some decl.name
+  -- The summary `graph.js` shows under a clicked node while it fetches that node's real card, and
+  -- keeps when it cannot — from a site opened over `file://`, where a page cannot fetch its
+  -- siblings. Clipped, because it rides along in every node of every graph and a handful of
+  -- declarations carry very long statements. Not at 600, though: that cut 88 of `AlphaRAR`'s 2503
+  -- project nodes mid-statement, and a statement truncated before its conclusion is worse than no
+  -- preview at all — it shows a theorem's hypotheses and hides what they imply. A limit has to
+  -- fall somewhere, but it should fall past the point where the summary still answers the
+  -- question it exists for.
+  signature := clipText 2400 decl.displaySignature
+  doc := clipText 1200 (decl.docText?.getD "")
+  meaning := meaningKeyOf decl
+}
+
 /-- Builds graph nodes/edges for `decls`, with edges only between declarations that are
 themselves in `decls`. Each edge points from a dependency (the "parent") to the declaration
 that depends on it (the "child"), so the arrow direction follows the order in which the
@@ -40,32 +74,7 @@ def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String)
     (depsOf : DeclInfo → Array Name) (focus? : Option Name := none)
     (projectName : String := "") : GraphData :=
   let names : Std.HashSet Name := decls.foldl (fun acc d => acc.insert d.name) {}
-  let nodes := decls.map fun decl => {
-    id := decl.name.toString
-    label := decl.name.getString!
-    -- `displayKind`, as every other node-like listing on the site uses: `kind.label` is the raw
-    -- `theorem` Lean records, so a lemma's own graph node contradicted the card above it.
-    kind := decl.displayKind
-    status := if decl.dependsOnSorry then "sorry" else "proved"
-    groupKey := decl.groupKey
-    moduleName := decl.modulePath
-    -- Root-relative, with no `../` prefix: Verso emits a `<base href>` on every page pointing at
-    -- the site root, so every relative href on the page — including these, which reach the DOM
-    -- through JSON rather than through Verso's link handling — resolves from the root already.
-    href := declHrefs.getD decl.name (pathForPart decl.groupKey decl.modulePath decl.name)
-    focus := focus? == some decl.name
-    -- The summary `graph.js` shows under a clicked node while it fetches that node's real card, and
-    -- keeps when it cannot — from a site opened over `file://`, where a page cannot fetch its
-    -- siblings. Clipped, because it rides along in every node of every graph and a handful of
-    -- declarations carry very long statements. Not at 600, though: that cut 88 of `AlphaRAR`'s 2503
-    -- project nodes mid-statement, and a statement truncated before its conclusion is worse than no
-    -- preview at all — it shows a theorem's hypotheses and hides what they imply. A limit has to
-    -- fall somewhere, but it should fall past the point where the summary still answers the
-    -- question it exists for.
-    signature := clipText 2400 decl.displaySignature
-    doc := clipText 1200 (decl.docText?.getD "")
-    meaning := meaningKeyOf decl
-  }
+  let nodes := decls.map (declNode · declHrefs focus?)
   let edges := decls.foldl (fun acc decl =>
     acc ++ (depsOf decl).filterMap (fun dep =>
       if names.contains dep then
@@ -286,6 +295,129 @@ def transitiveReduce (data : GraphData) : GraphData :=
         !siblings.any fun w => w != ct && w != cs && (cache.getD w {}).contains ct
     | _, _ => true
   { data with edges := edges }
+
+/-! ## The chapter tables
+
+What a declaration *is* — its label, kind, module, href, signature, docstring, what it means — is
+the same on every page that draws it, and a declaration is drawn on every page whose closure
+reaches it. Writing those fields into each node wrote the same text into thousands of pages: on the
+`LeanMachineLearning` site the node payload was 21% of every declaration page and 54% of *that* was
+the signature and docstring shown under a clicked node.
+
+So a node now carries what is true of it *in this picture* — its id, whether it is the focus,
+whether the view stopped at it — and everything else is looked up by id in a table shared by the
+chapter. `graph.js` fills the nodes back in before it draws, so nothing downstream of the lookup
+knows this happened.
+
+Per chapter rather than per site because the table is fetched, and a reader who opens one
+declaration should not pay for the library. Closures are chapter-local enough for that to pay:
+measured on `LeanMachineLearning`, a page's project nodes span 1.23 chapters on average, and the
+per-chapter tables together hold 1.08 entries per declaration — the overlap between them is small,
+so scoping by chapter costs 8% of duplicated table and saves the reader everything else.
+
+This is the mechanism `upstream.js` already uses for upstream constants, for the reason recorded on
+`withUpstreamNodes`, generalized to the project's own declarations. -/
+
+/-- The fields `thinGraphNodes` takes out of a node, as the table puts them back.
+
+Keys are one letter because there is one entry per declaration in the chapter and the key text
+would otherwise outweigh some of the values. -/
+def declTableEntry (node : GraphNode) : Json :=
+  Json.mkObj [
+    ("l", Json.str node.label),
+    ("k", Json.str node.kind),
+    ("s", Json.str node.status),
+    ("g", Json.str node.groupKey),
+    ("m", Json.str node.moduleName),
+    ("h", Json.str node.href),
+    ("sig", Json.str node.signature),
+    ("d", Json.str node.doc),
+    ("q", Json.str node.meaning)]
+
+/-- The table for one chapter: every declaration any of its pages can draw, keyed by name.
+
+`decls` is the chapter's own declarations *together with everything in their closures*, since a
+page draws its closure and a closure crosses chapters. -/
+def declTableJs (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String) : String :=
+  let entries := decls.map fun decl => (decl.name.toString, declTableEntry (declNode decl declHrefs))
+  -- Merged into whatever is already there, not assigned over it: a page whose closure crosses
+  -- chapters loads more than one of these, and the second must not erase the first.
+  s!"window.RefereeDecls = Object.assign(window.RefereeDecls || \{}, \
+    {(Json.mkObj entries.toList).compress});"
+
+/-- Interns `edges` against `nodes`: the index pairs, and the edges that could not be interned.
+
+Conservative in the same way `transitiveReduce` is about the same case: an edge whose endpoint was
+never listed as a node is kept as it was rather than dropped or guessed at, because an edge is a
+real dependency and a picture that quietly loses one is worse than a larger picture. -/
+def internEdges (nodes : Array GraphNode) (edges : Array GraphEdge) :
+    Array Nat × Array GraphEdge :=
+  let index : Std.HashMap String Nat :=
+    nodes.zipIdx.foldl (init := {}) fun acc (n, i) => acc.insert n.id i
+  edges.foldl (init := (#[], #[])) fun (ix, kept) e =>
+    match index[e.source]?, index[e.target]? with
+    | some s, some t => ((ix.push s).push t, kept)
+    | _, _ => (ix, kept.push e)
+
+/-- Strips from every node what a shared table holds, and records which chapter tables the page must
+load to put its project nodes back.
+
+Two tables, because there are two kinds of node and they were already shared in different places: a
+project node is restored from its chapter's `RefereeDecls` (written by `declTableJs`), an upstream
+band node from the `RefereeUpstream` and `RefereePackages` that `upstreamJsFile` has always emitted.
+Both end up carrying an id and nothing else.
+
+Module and package graphs never reach this — it is applied on declaration pages only — so their
+nodes keep everything they have always had.
+
+`focus` and `unexpanded` stay on every node because they are facts about *this* drawing rather than
+about the declaration, and the same declaration is the focus of one page and an ordinary node on a
+hundred others. -/
+def thinGraphNodes (data : GraphData) (ctx : SiteContext) : GraphData :=
+  let isProject (n : GraphNode) : Bool := n.upstream.isEmpty
+  -- An upstream node may only be thinned if `upstream.js` will actually carry it, and that file
+  -- ships what the current flags can draw rather than everything `collect` recorded. The two sets
+  -- are the same but for one case, and it is a real one: `withUpstreamNodes` draws a `pinned`
+  -- constant whatever its package's trust, so a characterization view pinning a relation from an
+  -- audited package on a site built without `--show-trusted-upstream` draws a node the table does
+  -- not hold. Thinning that node would blank it. The condition below is `upstreamJsFile`'s own
+  -- filter, asked of this constant.
+  let inUpstreamTable (n : GraphNode) : Bool :=
+    match ctx.externalDecls.get? n.id.toName with
+    | none => false
+    | some e => ctx.showTrustedUpstream || !ctx.trusted.contains e.package
+  let thin (n : GraphNode) : GraphNode :=
+    if isProject n then
+      -- Written out rather than left to a `with`: these are exactly the fields the table restores,
+      -- and a field added to `GraphNode` later should have to be classified here on purpose rather
+      -- than ride along in every node because nobody thought about it.
+      { id := n.id, focus := n.focus, unexpanded := n.unexpanded,
+        label := "", kind := "", status := "", groupKey := "", moduleName := "", href := "" }
+    else if inUpstreamTable n then
+      -- A band node keeps nothing but its id. `label` and the module come from `RefereeUpstream`,
+      -- the package from the same entry, and rank and trust from `RefereePackages` — every one of
+      -- them a fact about the constant or its package rather than about this picture, and every one
+      -- of them repeated on each of the thousands of pages that named the constant.
+      --
+      -- `upstream` goes too, which is what marked a node as belonging to the band at all; the
+      -- client recovers that from the id being in the table, and the two node sets are disjoint
+      -- because `packageOf` refuses anything the project declares.
+      { id := n.id, focus := n.focus, unexpanded := n.unexpanded,
+        label := "", kind := "", status := "", groupKey := "", moduleName := "", href := "",
+        upstream := "", upstreamRank := 0 }
+    else n
+  let chaptersOf (ns : Array GraphNode) : Array String :=
+    ns.filterMap fun n => if isProject n && !n.groupKey.isEmpty then some n.groupKey else none
+  let chapters := (chaptersOf data.nodes ++ data.views.flatMap (chaptersOf ·.nodes)).foldl
+    (init := (#[] : Array String)) fun acc g => if acc.contains g then acc else acc.push g
+  let (edgeIx, edges) := internEdges data.nodes data.edges
+  { data with
+    nodes := data.nodes.map thin
+    edges, edgeIx
+    views := data.views.map fun v =>
+      let (vIx, vEdges) := internEdges v.nodes v.edges
+      { v with nodes := v.nodes.map thin, edges := vEdges, edgeIx := vIx }
+    tables := chapters.map declTablePath }
 
 end
 

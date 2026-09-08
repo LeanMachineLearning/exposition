@@ -20,6 +20,100 @@ document.addEventListener('DOMContentLoaded', () => {
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   const graph = JSON.parse(dataNode.textContent);
+
+  /* Nodes arrive carrying only what is true of them *in this picture*: their id, whether they are
+     the focus, whether the view stopped at them. Everything else a node needs — label, kind,
+     status, chapter or package, module, href, signature, docstring, meaning — is a fact about the
+     declaration rather than about the drawing, identical on every page that draws it, and so it
+     lives in a table shared by every page instead of being written into each graph that names it.
+     See `thinGraphNodes`.
+
+     Two tables, because a node is one of two kinds: a declaration of this project, restored from
+     its chapter's `RefereeDecls`; or an upstream constant in the band, restored from
+     `RefereeUpstream` and its package from `RefereePackages`. The two are disjoint — nothing the
+     project declares is in the upstream table — so which one holds the id is what says which kind
+     of node it is, and that is how a band node is recognised now that it no longer carries
+     `upstream`.
+
+     Filling them back in here, before anything reads a node, is what lets the rest of this file go
+     on saying `n.label` and `n.upstream` as though the payload still carried them.
+
+     The node's own fields win over the table's: `focus` and `unexpanded` are about this picture and
+     the table knows nothing of them. An id in neither table keeps exactly what it arrived with,
+     which is what module graphs, package graphs, and any node too rare to be in the upstream table
+     rely on — none of those are thinned. */
+  const declTable = window.RefereeDecls || {};
+  const upTable = window.RefereeUpstream || {};
+  const pkgTable = window.RefereePackages || {};
+
+  /* Field by field rather than a spread, and the node's value only when it has one: a thinned node
+     does not merely omit these, it can carry them empty, and an empty label winning over the
+     table's would draw a graph of blank boxes. Anything the node does say is kept, so a node that
+     was never thinned is unaffected by passing through here. */
+  function fromDecls(n, e) {
+    return {
+      ...n,
+      label: n.label || e.l, kind: n.kind || e.k, status: n.status || e.s,
+      groupKey: n.groupKey || e.g, moduleName: n.moduleName || e.m,
+      href: n.href || e.h, signature: n.signature || e.sig,
+      doc: n.doc || e.d, meaning: n.meaning || e.q,
+    };
+  }
+
+  /* The band node's fields, rebuilt exactly as `withUpstreamNodes` wrote them: the package is both
+     the node's `upstream` and its own colour group, the module falls back to the package when the
+     entry has none, and kind and status are the two readings of whether the package is audited.
+     `href` stays empty — there is no page here for an upstream constant, and an hrefless node is
+     what makes it unclickable. Signature and docstring stay empty too: they are read from this
+     same table at click time and only for the node clicked, and pulling them onto every node here
+     would hold a page's worth of Mathlib statements in memory to show one. */
+  function fromUpstream(n, e) {
+    const pkg = e.package || '';
+    const p = pkgTable[pkg] || {};
+    const trusted = !!p.trusted;
+    return {
+      ...n,
+      label: n.label || e.label || '',
+      kind: n.kind || (trusted ? 'Audited upstream' : 'Upstream declaration'),
+      status: n.status || (trusted ? 'trusted' : 'untrusted'),
+      upstream: n.upstream || pkg,
+      groupKey: n.groupKey || pkg,
+      upstreamRank: n.upstreamRank || p.rank || 0,
+      moduleName: n.moduleName || e.module || pkg,
+    };
+  }
+
+  function hydrate(nodes) {
+    if (!nodes) return;
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      const d = declTable[n.id];
+      if (d) { nodes[i] = fromDecls(n, d); continue; }
+      const u = upTable[n.id];
+      if (u) nodes[i] = fromUpstream(n, u);
+    }
+  }
+  hydrate(graph.nodes);
+  (graph.views || []).forEach(v => hydrate(v.nodes));
+
+  /* Edges arrive as indices into the view's own nodes — see `GraphData.edgeIx` — and are expanded
+     back into the `{source, target}` pairs the layout has always been written against. Appended to
+     whatever `edges` already holds, which is the edges Lean could not intern because an endpoint
+     was never listed as a node; those are already in the shape this produces. */
+  function expandEdges(view) {
+    const ix = view.edgeIx;
+    if (!ix || !ix.length) return;
+    const nodes = view.nodes || [];
+    const out = view.edges ? view.edges.slice() : [];
+    for (let i = 0; i + 1 < ix.length; i += 2) {
+      const s = nodes[ix[i]], t = nodes[ix[i + 1]];
+      if (s && t) out.push({ source: s.id, target: t.id });
+    }
+    view.edges = out;
+  }
+  expandEdges(graph);
+  (graph.views || []).forEach(expandEdges);
+
   /* The picture can offer more than one node set for the same subject — a characterized definition
      is drawn both as what it is built from and as what it takes to recognise it (see `GraphView`).
      The payload's own `nodes`/`edges` are always the first view.
