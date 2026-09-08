@@ -247,8 +247,8 @@ from a node with dependencies (hence a key) and never twice from the same key.
   and none of them states it — `Referee/Diff.lean` finds indirect invalidation with *one pass* over
   `dataTransDeps` rather than a fixpoint, which is correct only under this theorem;
   `Referee/Audit.lean` defines coverage as "every project declaration in its statement closure
-  accepted too" and walks it bottom-up as a reading queue; and the declaration graph lays it out in
-  rows by depth. A closure that was not closed would make all three wrong in the same direction —
+  accepted too", which is also the set a reader works through on the declaration page; and the
+  declaration graph lays it out in rows by depth. A closure that was not closed would make all three wrong in the same direction —
   less to re-read, less to accept, less to look at — which reads exactly like a library with fewer
   dependencies.
 - **No declaration is emitted twice** (`topologicalClosure_nodup`) — a file declaring the same

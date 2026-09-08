@@ -1142,10 +1142,25 @@ main li code { font-size: .92em; }
   align-items: baseline;
   border-bottom: 1px solid var(--site-border);
   display: flex;
+  flex-wrap: wrap;
   gap: .5rem;
   justify-content: space-between;
   margin: -.1rem 0 .6rem;
   padding-bottom: .4rem;
+}
+
+/* Never squeezed out by a long declaration name: it says where this state lives, which is the one
+   thing a reader has to know before typing into the box. */
+.audit-control-head > .audit-hint { flex: 0 0 auto; }
+
+/* Title and declaration on the left, the qualifier on the right, and the pair wraps as one when
+   the name is long. */
+.audit-control-label {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  min-width: 0;
 }
 
 .audit-control-title {
@@ -1154,6 +1169,15 @@ main li code { font-size: .92em; }
   font-weight: 600;
   letter-spacing: .03em;
   text-transform: uppercase;
+}
+
+/* Which declaration this box is about. Quiet — it identifies the control rather than announcing
+   anything — but present, because the same control appears twice on a declaration page and the two
+   are about different statements. */
+.audit-control-name {
+  color: var(--site-ink-2);
+  font-size: .82rem;
+  overflow-wrap: anywhere;
 }
 
 .audit-row {
@@ -1212,12 +1236,6 @@ main li code { font-size: .92em; }
   width: 100%;
 }
 
-/* A graph with a single node and no edges. Drawn so that a declaration page keeps its shape
-   whether or not anything sits under it, but given none of the room a real graph needs: there is
-   no side panel to reserve width for, and 720px of empty canvas under one box reads as a broken
-   picture rather than as an answer. */
-.graph-layout--lone { display: block; }
-
 /* ------------------------------------------------------------ provenance --- */
 
 /* When a declaration last meant something else, under its card. Quiet by design: it is context for
@@ -1239,36 +1257,21 @@ main li code { font-size: .92em; }
 .rev-result { margin: .75rem 0; }
 .rev-caveat { color: var(--site-ink-3); font-size: .85rem; }
 
-.audit-coverage,
-.audit-stale,
-.audit-queue {
-  font-size: .85rem;
-  margin: .5rem 0 0;
-}
-
-/* An acceptance of something this build no longer says. Given a border rather than colour alone:
-   it is the one line in the control that reports the reader's own record as out of date, and it
-   has to survive being skimmed. Collapsed when empty so the control keeps its shape. */
+/* An acceptance of something this build no longer says — the one thing under the note box that
+   survived the control being cut back to a verdict and a note. Given a border rather than colour
+   alone: it reports the reader's own record as out of date, and it has to survive being skimmed.
+   Collapsed when empty so the control keeps its shape. */
 .audit-stale:empty { display: none; }
 
 .audit-stale {
   background: var(--site-warn-soft);
   border-left: 3px solid var(--site-warn-border);
   border-radius: var(--site-radius-sm);
+  font-size: .85rem;
+  margin: .5rem 0 0;
   padding: .5rem .7rem;
 }
 
-.audit-queue { color: var(--site-ink-2); }
-
-.audit-actions {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: .6rem;
-  margin-top: .5rem;
-}
-
-.audit-actions button,
 .audit-toolbar button {
   background: var(--site-surface);
   border: 1px solid var(--site-border-strong);
@@ -1280,7 +1283,6 @@ main li code { font-size: .92em; }
   padding: .2rem .6rem;
 }
 
-.audit-actions button:hover,
 .audit-toolbar button:hover { border-color: var(--site-accent); color: var(--site-accent); }
 
 .audit-toolbar button.audit-danger:hover { border-color: var(--site-del); color: var(--site-del); }
@@ -1288,8 +1290,6 @@ main li code { font-size: .92em; }
 .audit-ok { color: var(--site-ok); font-weight: 600; }
 .audit-warn { color: var(--site-warn); font-weight: 600; }
 .audit-hint { color: var(--site-ink-3); font-size: .8rem; }
-
-.audit-link { font-size: .8rem; margin-left: auto; }
 
 .audit-summary {
   background: var(--site-surface);
@@ -1404,7 +1404,6 @@ main li code { font-size: .92em; }
 .audit-note-text { color: var(--site-ink-2); font-size: .85rem; }
 
 /* Pushed right so the buttons line up down the page rather than tracking name length. */
-.audit-item .audit-start { margin-left: auto; }
 
 /* ------------------------------------------------------------------ graph */
 
@@ -1467,7 +1466,6 @@ main li code { font-size: .92em; }
 }
 
 .graph-toolbar input,
-.graph-toolbar select,
 .graph-toolbar button {
   background: var(--site-surface);
   border: 1px solid var(--site-border);
@@ -1484,10 +1482,20 @@ main li code { font-size: .92em; }
 .graph-toolbar button { cursor: pointer; }
 
 .graph-toolbar input:hover,
-.graph-toolbar select:hover,
 .graph-toolbar button:hover {
   border-color: var(--site-border-strong);
 }
+
+/* The one toolbar control that is a mode rather than an action, filled while it is on for the same
+   reason the view switch is: an outline difference between four pills in a row is not legible, and
+   whether a click will open one card or forty is worth being able to see at a glance. */
+.graph-toolbar button[aria-pressed="true"] {
+  background: var(--site-accent);
+  border-color: var(--site-accent);
+  color: var(--site-surface);
+}
+
+.graph-toolbar button[aria-pressed="true"]:hover { border-color: var(--site-accent); }
 
 .graph-hint {
   color: var(--site-ink-3);
@@ -1537,76 +1545,113 @@ main li code { font-size: .92em; }
   .graph-key-list dd { margin: 0 0 .35rem; }
 }
 
-.graph-layout {
-  display: grid;
-  gap: .9rem;
-  /* Wide enough for a statement to be readable, since that is now the panel's main content. */
-  grid-template-columns: minmax(0, 1fr) 21rem;
+/* The clicked node's declaration, below the picture and across the full column.
+
+   It used to be a narrow column beside the graph, which was the wrong trade twice over: it took a
+   fifth of the width from the drawing, and what it had left could not hold a Lean statement without
+   wrapping it into illegibility. Below the graph there is room for the declaration's real card —
+   the same one its own page shows — and the picture keeps the whole column. */
+.graph-card {
+  margin-top: .9rem;
 }
 
-.graph-panel {
-  background: var(--site-surface-2);
-  border: 1px solid var(--site-border);
-  border-radius: var(--site-radius);
-  padding: .85rem 1rem;
+/* Nothing selected. A single quiet line rather than an empty box: the region has no content of its
+   own to frame, and a bordered placeholder under every graph would read as a panel that failed to
+   fill. */
+.graph-card-empty {
+  color: var(--site-ink-3);
+  font-size: .88rem;
+  margin: 0;
 }
 
-.graph-panel h2 {
+/* What a stack of cards is, said once above it. Quiet: it is an account of the page below, not a
+   finding. */
+.graph-card-lead {
+  color: var(--site-ink-3);
+  font-size: .88rem;
+  margin: 0 0 .3rem;
+}
+
+.graph-card-lead code { font-size: .85rem; }
+
+/* One clicked node, or one step of what it rests on. Kept apart by the head's own rule and by the
+   space below, so that forty of them down a page read as a list rather than as one long document. */
+.graph-card-entry + .graph-card-entry { margin-top: 1.6rem; }
+
+/* The name and the module, above the card. The card carries neither — on its own page the heading
+   is the name — so without this the reader would have a card and no way to tell whose it is. */
+.graph-card-head {
+  border-top: 1px solid var(--site-border);
+  padding-top: .7rem;
+}
+
+.graph-card-name {
   font-size: 1rem;
-  margin-top: 0;
-}
-
-.graph-panel p { font-size: .88rem; }
-.graph-panel code { font-size: .85rem; }
-
-.graph-panel h2 {
+  margin: 0;
   overflow-wrap: anywhere;
 }
 
-.graph-panel-meta {
+.graph-card-name code { font-size: inherit; }
+
+.graph-card-meta {
   color: var(--site-ink-3);
-  margin-top: -.4rem;
+  font-size: .88rem;
+  margin: .15rem 0 0;
 }
 
-.graph-panel-warn {
+.graph-card-warn {
   color: var(--site-warn);
+  font-size: .88rem;
   font-weight: 550;
+  margin: .35rem 0 0;
 }
 
 /* A node this view stopped at. Set apart with a rule and quiet ink rather than the warning colour:
    it corrects an assumption the reader is entitled to make about the picture, which is worth
    interrupting for, but nothing here is wrong. */
-.graph-panel-cut {
+.graph-card-cut {
   border-left: 2px dotted var(--site-border-strong);
   color: var(--site-ink-2);
+  font-size: .88rem;
   line-height: 1.5;
-  margin: .5rem 0;
+  margin: .5rem 0 0;
   padding-left: .6rem;
 }
 
-/* The selected declaration's statement. Scrolls rather than wraps: a broken Lean statement is
-   harder to read than one you have to nudge sideways. */
-.graph-panel-code {
+.graph-card-head p:last-child { margin-bottom: 0; }
+
+.graph-card-body { min-height: 1rem; }
+
+/* The verdict control for the node the graph has open, under its card — the same order the
+   declaration page itself uses: read the thing, then say what you think of it. */
+.graph-card-audit { margin-top: .9rem; }
+
+/* The summary shown while the card is being fetched, and left standing for a node that has no card
+   to fetch — an upstream constant, or any node at all when the site is opened from disk. Scrolls
+   rather than wraps: a broken Lean statement is harder to read than one you have to nudge
+   sideways. */
+.graph-card-code {
   background: var(--site-surface);
   border: 1px solid var(--site-border);
   border-radius: var(--site-radius-sm);
   font-family: var(--verso-code-font-family);
-  font-size: .76rem;
+  font-size: .8rem;
   line-height: 1.5;
-  margin: .6rem 0;
-  max-height: 16rem;
+  margin: .7rem 0;
+  max-height: 22rem;
   overflow: auto;
-  padding: .55rem .65rem;
+  padding: .6rem .7rem;
   white-space: pre;
 }
 
-.graph-panel-doc {
+.graph-card-doc {
   border-left: 2px solid var(--site-border);
   color: var(--site-ink-2);
+  font-size: .9rem;
   padding-left: .6rem;
 }
 
-.graph-panel-nodoc {
+.graph-card-nodoc {
   color: var(--site-ink-3);
   font-style: italic;
 }
@@ -1641,13 +1686,6 @@ main li code { font-size: .92em; }
 
 .graph-node rect.graph-box { transition: stroke-width .09s ease-out; }
 .graph-node, #graph-svg path { transition: opacity .09s ease-out; }
-
-/* Set by the graph script when the drawing is much wider than the column; see `graph.js`. */
-.graph-layout--wide { grid-template-columns: minmax(0, 1fr); }
-
-@media (max-width: 900px) {
-  .graph-layout { grid-template-columns: 1fr; }
-}
 
 /* ------------------------------------------------------------ preferences */
 

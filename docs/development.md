@@ -43,7 +43,7 @@ requires from git with `/ "JunkValues"`.
   standalone file from and which therefore has to stay closed over proofs; `meaningDeps` additionally
   drops the proofs *inside* a definition's value (`MeaningGraph.dataValueConstants`) and drives
   everything the reader is shown — the dependency graph, the upstream-trust analysis, the audit
-  closure and its reading queues, and the revision diff — because a lemma called only by a bundled
+  closure, and the revision diff — because a lemma called only by a bundled
   structure's `left_inv` obligation is not part of what the definition means or of what a reader
   must trust. `sorry` status is a single transitive flag (`dependsOnSorry`) obtained from
   `Lean.collectAxioms`, i.e. the same answer `#print axioms` gives. `@[specifies]` annotations are
@@ -69,7 +69,7 @@ requires from git with `/ "JunkValues"`.
 - `Referee/Audit.lean` — the payloads the theorems page, the landing page's excerpt of it and the
   per-declaration control hand to `assets/audit.js`, plus `dataFingerprint`, the stamp an exported
   audit file carries so it can be matched against the build it was made against. The verdicts,
-  coverage, queue, import and export are all the browser's; this is only the data they run on.
+  coverage, import and export are all the browser's; this is only the data they run on.
 - `Referee/Diff.lean` — the revision comparison (`--baseline`): a pure function of two
   `CollectedData` values, with no environment and no notion of a page. Classifies each declaration
   as statement-changed, body-changed, indirectly invalidated, changed-underneath, proof-only, added

@@ -25,7 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
      The payload's own `nodes`/`edges` are always the first view.
 
      Everything the chrome describes is computed over *every* view's nodes rather than the current
-     one: the chapter filter, the key, whether there is a focus node. A control that appeared and
+     one: the key, the colour scale, whether there is a focus node. A control that appeared and
      vanished as the reader switched would read as a bug, and re-deriving the key per view would
      mean the legend describing the picture changed underneath the picture. */
   const views = [{ label: graph.viewLabel || '', note: graph.viewNote || '',
@@ -49,10 +49,14 @@ document.addEventListener('DOMContentLoaded', () => {
      meant something else, and putting a tick on it here would be the one misleading thing this
      picture could say — the same reason the audit page excludes those from its counts. */
   const audit = (UNIT === 'package') ? null : (window.RefereeAudit || null);
+  /* Which nodes a reader can have a verdict on, and so which ones get a mark and a verdict control:
+     declarations of this project. Not a module or a package, which are not things anyone accepts,
+     and nothing in the upstream band, audited or not — a verdict is a judgement about a declaration
+     of *this* project, and there is no page here on which to have made one. */
+  const auditable = n =>
+    !!audit && UNIT === 'declaration' && !n.upstream && n.status !== 'untrusted';
   const verdictMark = n => {
-    // No verdict on anything in the upstream band, audited package or not: a verdict is a judgement
-    // about a declaration of *this* project, and there is no page here on which to have made one.
-    if (!audit || n.upstream || n.status === 'untrusted') return null;
+    if (!auditable(n)) return null;
     const v = audit.verdictOf(n.id);
     if (v === 'query') return { glyph: '?', fill: theme.sorry, title: 'you left a query on this' };
     if (v !== 'accepted') return null;
@@ -113,8 +117,6 @@ document.addEventListener('DOMContentLoaded', () => {
   readTheme();
 
   // ---------------------------------------------------------------- chrome
-
-  const groupOptions = groups.map(g => `<option value="${g}">${g}</option>`).join('');
 
   /* The key, as term-and-meaning pairs behind a disclosure rather than two paragraphs of prose.
      It had grown to describe rows, arrows, transitive reduction, chapter colour, two kinds of
@@ -196,36 +198,53 @@ document.addEventListener('DOMContentLoaded', () => {
     ${viewSwitch}
     ${isLone ? '' : `<div class="graph-toolbar">
       <input id="graph-filter" type="search" placeholder="Filter ${UNITS} by name" />
-      ${groups.length > 1 ? `<select id="graph-group">
-        <option value="">All chapters</option>
-        ${groupOptions}
-      </select>` : ''}
       <button id="graph-fit" type="button">Fit view</button>
       <button id="graph-clear" type="button">Clear focus</button>
+      ${everyNode.some(n => n.href) ? `<button id="graph-stack" type="button" aria-pressed="false"
+        title="Open a card for the clicked ${UNIT} and for everything above it in the picture, in
+               the order the rows draw them">Everything it rests on</button>` : ''}
     </div>`}
     ${isLone
       ? `<p class="graph-hint">One node, no edges: this ${UNIT} rests on nothing else drawn
          here.</p>`
-      : `<p class="graph-hint">Scroll to zoom, drag to pan, click a node to focus it, double-click
-         to open its page.</p>
+      : `<p class="graph-hint">Scroll to zoom, drag to pan, click a node to read it below,
+         double-click to open its page.</p>
     <details class="graph-key" id="graph-key">
       <summary>What the layout and marks mean</summary>
       <dl class="graph-key-list">${KEY_ITEMS.map(
         it => `<dt>${it.term}</dt><dd>${it.text}</dd>`).join('')}</dl>
     </details>`}
-    <div class="graph-layout${isLone ? ' graph-layout--lone' : ''}">
-      <svg id="graph-svg" width="100%" height="${VIEW_H}"></svg>
-      ${isLone ? '' : '<aside id="graph-panel" class="graph-panel"></aside>'}
-    </div>
+    <svg id="graph-svg" width="100%" height="${VIEW_H}"></svg>
+    ${isLone ? '' : '<div id="graph-card" class="graph-card"></div>'}
   `;
 
   // The drawing area grows and shrinks with the graph. A twelve-node graph stranded in a fixed
   // 720px box is mostly empty space; a large one still gets the full height and zoom/pan.
   let viewH = VIEW_H;
   const svg = d3.select('#graph-svg');
-  const panel = document.getElementById('graph-panel');
+  const cardBox = document.getElementById('graph-card');
   const filterInput = document.getElementById('graph-filter');
-  const groupSelect = document.getElementById('graph-group');
+
+  /* One card, or a card for everything the clicked node rests on. Off by default and remembered,
+     on the same reasoning as the key's open state: a reader who wants the whole stack on one
+     declaration wants it on the next, and one reading a single card at a time should not have to
+     switch back on every page. */
+  const stackButton = document.getElementById('graph-stack');
+  let stackMode = false;
+  try { stackMode = localStorage.getItem('referee:graph-stack') === '1'; } catch (e) { /* private */ }
+  if (stackButton) {
+    stackButton.setAttribute('aria-pressed', String(stackMode));
+    stackButton.addEventListener('click', () => {
+      stackMode = !stackMode;
+      stackButton.setAttribute('aria-pressed', String(stackMode));
+      try {
+        localStorage.setItem('referee:graph-stack', stackMode ? '1' : '0');
+      } catch (e) { /* quota, private mode */ }
+      // The open node stays open; only how much of what it rests on comes with it changes.
+      cardFor = null;
+      updateCard();
+    });
+  }
 
   /* Collapsed by default, and remembered: a reader who wants the key open on one declaration page
      wants it open on the next, and one who has learnt it should not have to close it again on
@@ -579,7 +598,8 @@ document.addEventListener('DOMContentLoaded', () => {
     return lineThrough.curve(pts.length === 2 ? d3.curveBumpY : d3.curveMonotoneY)(pts);
   }
 
-  let state = { rows: [], routed: [], sel: null, byId: new Map(), up: new Map(), down: new Map() };
+  let state = { rows: [], routed: [], sel: null, byId: new Map(), up: new Map(), down: new Map(),
+                rowOf: new Map() };
 
   function render(nodes, edges) {
     const { rows, routed, rowPackage, bandCount, extent } = buildLayers(nodes, edges);
@@ -594,14 +614,13 @@ document.addEventListener('DOMContentLoaded', () => {
       ? Math.round(contentHeight(extent) + 8)
       : Math.round(Math.max(260, Math.min(VIEW_H, contentHeight(extent) * viewScale(extent) + 24)));
     svg.attr('height', viewH).attr('viewBox', [0, 0, width, viewH]);
-    /* A wide graph gets the full column, with the details panel below it rather than beside it.
-       A whole-project module graph is several times wider than it is tall, and surrendering a
-       fifth of the width to a mostly-empty panel is what pushes it from tight to illegible. */
-    const layout = root.querySelector('.graph-layout');
-    if (layout) layout.classList.toggle('graph-layout--wide', extent.w > 1600);
     state.rows = rows;
     state.routed = routed;
     state.byId = new Map(nodes.map(n => [n.id, n]));
+    // Which row each node landed in, so a stack of cards can be ordered the way the picture reads:
+    // what depends on nothing first, the clicked node last.
+    state.rowOf = new Map();
+    rows.forEach((row, i) => { for (const c of row) if (c.node) state.rowOf.set(c.node.id, i); });
     state.up = new Map(nodes.map(n => [n.id, []]));
     state.down = new Map(nodes.map(n => [n.id, []]));
     for (const e of edges) {
@@ -719,7 +738,8 @@ document.addEventListener('DOMContentLoaded', () => {
         event.preventDefault();
         state.sel = state.sel === n.id ? null : n.id;
         highlight(state.sel);
-        updatePanel();
+        updateCard();
+        revealCard();
       })
       // Nodes without an href — upstream declarations, packages — have no page here, so a
       // double-click must do nothing rather than navigate to the site root.
@@ -728,7 +748,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (n.href) window.location.href = n.href;
       });
 
-    updatePanel();
+    updateCard();
     fit();
   }
 
@@ -782,30 +802,66 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // A verdict set anywhere on the page repaints the badges here. `audit.js` dispatches this on
-  // every change, including the bulk "accept everything its statement rests on", which is exactly
-  // the action whose effect a reader wants to see land on this picture.
+  // A verdict set anywhere on the page repaints the badges here. `audit.js` dispatches this on every
+  // change, the ones made in the control under an open node included — which is the whole point of
+  // putting a control there: the mark lands on the node you just judged, in front of you.
   document.addEventListener('referee:auditchange', paintVerdicts);
 
-  /* Declaration names are not safe to interpolate raw: Lean names legitimately contain `<` and `&`
-     (`«term_<_»`, for one), which would otherwise be swallowed as markup. */
-  function updatePanel() {
-    // Absent on a lone-node graph, which has nothing to report about neighbours or rows.
-    if (!panel) return;
-    const shown = state.byId.size;
-    const rows = state.rows.length;
-    if (!state.sel || !state.byId.has(state.sel)) {
-      panel.innerHTML = `
-        <h2>Graph</h2>
-        <p>${shown} ${UNITS} across ${rows} dependency ${rows === 1 ? 'row' : 'rows'}.</p>
-        <p>The top row depends on nothing. Click a node for its details.</p>`;
-      return;
-    }
-    /* What the reader wants after clicking is what the declaration *says* — its statement and its
-       docstring. Nothing here restates the graph: the row it sits in, what it depends on and what
-       uses it are all already drawn, and clicking the node highlights exactly those edges. The
-       panel is for what the picture cannot show. */
-    const n = state.byId.get(state.sel);
+  /* The card of a clicked node, fetched from that declaration's own page rather than written into
+     this one.
+
+     A graph node's card is the card the site already renders — docstring, the statement in parts
+     with its hovers, the folded source and proof — and there is exactly one place it exists. Every
+     alternative to fetching it duplicates: inlining every node's card into every page that draws it
+     is quadratic in the closure (the reason the CSS, the scripts and the upstream table were moved
+     out of the pages in the first place), and a second, thinner rendering written here would be a
+     card that disagrees with the real one.
+
+     Cached by href, and the promise rather than its result, so that clicking a node twice — or two
+     nodes that share a page — fetches once and a click during a flight does not start a second. */
+  const cardCache = new Map();
+  function fetchCard(href) {
+    if (cardCache.has(href)) return cardCache.get(href);
+    const pending = fetch(href, { credentials: 'same-origin' })
+      .then(r => (r.ok ? r.text() : null))
+      .then(text => {
+        if (!text) return null;
+        const doc = new DOMParser().parseFromString(text, 'text/html');
+        return extractCard(doc);
+      })
+      // A site opened over `file://` cannot fetch its own pages: the browser treats every file as a
+      // separate origin. So can a page be missing, or served as something other than HTML. All of
+      // them land here, and the caller keeps the summary it had already drawn.
+      .catch(() => null);
+    cardCache.set(href, pending);
+    return pending;
+  }
+
+  /* The card as markup, with every `id` stripped. The card carries the declaration's anchor id and
+     the page it is injected into may carry the same one — clicking the focus node on its own page
+     always does — and two elements sharing an id break every `#anchor` on the page, the sidebar's
+     included. Classes carry all the styling, so nothing is lost. */
+  function extractCard(doc) {
+    const section = doc.querySelector('.decl-section');
+    if (!section) return null;
+    // A copy, because `doc` is this very document when the clicked node is the one the page is
+    // about: stripping ids off the live card would take the anchor every link to it lands on.
+    const copy = section.cloneNode(true);
+    copy.removeAttribute('id');
+    copy.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+    return copy.outerHTML;
+  }
+
+  const samePage = href => {
+    try {
+      return new URL(href, document.baseURI).pathname === window.location.pathname;
+    } catch (_) { return false; }
+  };
+
+  /* The summary drawn straight from the node, shown while the real card is in flight and left
+     standing when there is none to fetch: an upstream constant has no page here, and a site opened
+     from disk cannot reach the pages it does have. */
+  function summaryHtml(n) {
     /* Upstream nodes carry no signature or docstring of their own: those live in the shared
        `upstream.js` table, keyed by full name, so that one Mathlib signature is not written into
        every page that happens to mention it. Project nodes carry theirs inline, since a declaration
@@ -814,38 +870,194 @@ document.addEventListener('DOMContentLoaded', () => {
     const up = (window.RefereeUpstream || {})[n.id] || {};
     const signature = n.signature || up.signature || '';
     const docText = n.doc || up.doc || '';
-    const where = n.moduleName || up.module || '';
-    const warn = n.status === 'sorry'
-      ? '<p class="graph-panel-warn">⚠ depends on <code>sorry</code></p>'
-      : n.status === 'untrusted'
-      ? `<p class="graph-panel-warn">⚠ not audited${
-          up.package ? ` — from <code>${esc(up.package)}</code>` : ''}</p>` : '';
-    /* Said on every click of a cut node, not once per visit. A reader who has just traced an edge
-       upwards and found nothing above this box is owed the reason at the moment they ask, and the
-       view supplies the sentence because only it knows where it stopped and why. */
-    const cut = n.unexpanded
-      ? `<p class="graph-panel-cut">✂ ${esc(views[viewIx].unexpandedNote
-          || 'Drawn without its dependencies: this view deliberately stops here.')}</p>`
-      : '';
     /* An upstream *definition* needs its body as well as its type. The type of `Filter.Tendsto` is
        `(α → β) → Filter α → Filter β → Prop`, whose arguments all read as hypotheses and which never
        says that it means `map f l₁ ≤ l₂` — and "is this the definition I think it is" is the whole
        reason these nodes are clickable. Absent for a theorem, whose type already is its statement. */
     const sig = signature
-      ? `<pre class="graph-panel-code">${esc(signature)}${
+      ? `<pre class="graph-card-code">${esc(signature)}${
           up.value ? `\n  :=\n${esc(up.value)}` : ''}</pre>`
       : '';
     const doc = docText
-      ? `<p class="graph-panel-doc">${esc(docText)}</p>`
-      : '<p class="graph-panel-doc graph-panel-nodoc">No docstring.</p>';
-    panel.innerHTML = `
-      <h2>${esc(n.label)}</h2>
-      <p class="graph-panel-meta">${esc(n.kind)}${where ? ` · <code>${esc(where)}</code>` : ''}</p>
-      ${warn}
-      ${cut}
-      ${sig}
-      ${doc}
-      ${n.href ? `<p><a class="decl-card-action" href="${esc(n.href)}">Open declaration</a></p>` : ''}`;
+      ? `<p class="graph-card-doc">${esc(docText)}</p>`
+      : '<p class="graph-card-doc graph-card-nodoc">No docstring.</p>';
+    return sig + doc;
+  }
+
+  /* Which node the card below the graph is currently showing, so that a redraw for some other
+     reason leaves it alone. `render` runs on every keystroke in the filter box and on a theme
+     change, and re-injecting the card each time would re-fetch nothing (it is cached) but would
+     re-fold the source and proof the reader had just opened. */
+  let cardFor = null;
+
+  /* The nodes above `id` in the picture: everything it rests on, transitively, and itself.
+
+     Walked over `state.up`, which holds the *reduced* edge set. Sound, and not by luck: the
+     reduction removes an edge only when a longer path already carries it (see `transitiveReduce`),
+     so reachability is exactly what it preserves. What it changes is the number of steps, not the
+     set of nodes reached. */
+  function ancestorsOf(id0) {
+    const seen = new Set([id0]);
+    const stack = [id0];
+    while (stack.length) {
+      for (const p of state.up.get(stack.pop()) || []) {
+        if (!seen.has(p)) { seen.add(p); stack.push(p); }
+      }
+    }
+    /* Only what there is something to open. On a declaration page that drops the upstream band,
+       which on this page alone is 94 of the 137 nodes above the clicked one: Mathlib constants with
+       no page here, so no card, no docstring and no verdict — 94 signature blocks to scroll past
+       before the first declaration a reader can actually act on. They stay one click away, and the
+       lead line says how many were left out. The clicked node is kept whatever it is. */
+    const keep = [...seen].filter(id => id === id0 || (state.byId.get(id) || {}).href);
+    // The order the picture reads: the row that depends on nothing first, the clicked node last.
+    // Within a row, by name, so the same click twice gives the same page.
+    keep.sort((a, b) =>
+      (state.rowOf.get(a) || 0) - (state.rowOf.get(b) || 0) || (a < b ? -1 : a > b ? 1 : 0));
+    return { ids: keep, dropped: seen.size - keep.length };
+  }
+
+  // A node whose card is worth going and getting: a declaration of this project with a page here.
+  const loadable = n => UNIT === 'declaration' && !!n.href;
+
+  /* Cards arrive as the reader reaches them.
+
+     "Everything it rests on" is 43 declarations on a middling page here and several hundred on a
+     Mathlib-scale one, and fetching that many pages the instant a node is clicked would be a
+     request storm for cards most readers scroll past. Nothing is blank while one waits: the head
+     and the statement summary come from the node payload, which is already on the page. */
+  const cardLoader = ('IntersectionObserver' in window)
+    ? new IntersectionObserver((entries, obs) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          obs.unobserve(e.target);
+          loadCard(e.target);
+        }
+      }, { rootMargin: '600px 0px' })
+    : null;
+
+  function loadCard(body) {
+    const href = body.dataset.href;
+    if (!href) return;
+    // The focus node's card is on this very page already. Cloning it costs no request and works
+    // from disk, where fetching does not.
+    if (samePage(href)) {
+      const local = extractCard(document);
+      if (local) { showCard(body, local); return; }
+    }
+    // `isConnected` rather than a check on the selection: a card whose entry has been replaced —
+    // by another click, a filter, a view switch — is off the page, whatever is selected now.
+    fetchCard(href).then(html => { if (html && body.isConnected) showCard(body, html); });
+  }
+
+  /* Declaration names are not safe to interpolate raw: Lean names legitimately contain `<` and `&`
+     (`«term_<_»`, for one), which would otherwise be swallowed as markup. */
+  function entryHtml(n) {
+    const up = (window.RefereeUpstream || {})[n.id] || {};
+    // Suppressed when it is the name again: a module node's name *is* its module path, and
+    // "Module · Online.Bandit.Regret" under a heading reading `Online.Bandit.Regret` says nothing.
+    const module = n.moduleName || up.module || '';
+    const where = module === n.id ? '' : module;
+    const warn = n.status === 'sorry'
+      ? '<p class="graph-card-warn">⚠ depends on <code>sorry</code></p>'
+      : n.status === 'untrusted'
+      ? `<p class="graph-card-warn">⚠ not audited${
+          up.package ? ` — from <code>${esc(up.package)}</code>` : ''}</p>` : '';
+    /* Said on every click of a cut node, not once per visit. A reader who has just traced an edge
+       upwards and found nothing above this box is owed the reason at the moment they ask, and the
+       view supplies the sentence because only it knows where it stopped and why. */
+    const cut = n.unexpanded
+      ? `<p class="graph-card-cut">✂ ${esc(views[viewIx].unexpandedNote
+          || 'Drawn without its dependencies: this view deliberately stops here.')}</p>`
+      : '';
+    /* The full name and the module, above the card. The card itself carries neither: on its own
+       page the `<h1>` is the name, and here nothing else would say which node this is — which
+       matters more in a stack of forty than it ever did for one. */
+    return `
+      <section class="graph-card-entry" data-node="${esc(n.id)}">
+        <div class="graph-card-head">
+          <h2 class="graph-card-name"><code>${esc(n.id)}</code></h2>
+          <p class="graph-card-meta">${esc(n.kind)}${where ? ` · <code>${esc(where)}</code>` : ''}</p>
+          ${warn}
+          ${cut}
+          ${n.href
+            ? `<p><a class="decl-card-action" href="${esc(n.href)}">Open ${UNIT}</a></p>` : ''}
+        </div>
+        <div class="graph-card-body" ${loadable(n) ? `data-href="${esc(n.href)}"` : ''}
+          >${summaryHtml(n)}</div>
+        ${auditable(n) ? '<div class="graph-card-audit"></div>' : ''}
+      </section>`;
+  }
+
+  function updateCard() {
+    // Absent on a lone-node graph, whose one node is the declaration whose card is already above.
+    if (!cardBox) return;
+    const sel = state.sel && state.byId.has(state.sel) ? state.sel : null;
+    if (sel && sel === cardFor) return;
+    cardFor = sel;
+    const shown = state.byId.size;
+    const rows = state.rows.length;
+    if (!sel) {
+      cardBox.innerHTML = `
+        <p class="graph-card-empty">${shown} ${UNITS} across ${rows} dependency ${
+          rows === 1 ? 'row' : 'rows'}; the top row depends on nothing. Click a node to read it
+        here.</p>`;
+      return;
+    }
+    const stack = stackMode ? ancestorsOf(sel) : { ids: [sel], dropped: 0 };
+    const nodes = stack.ids.map(id => state.byId.get(id)).filter(Boolean);
+    /* Said once, above the stack, because a reader who clicked one node and got forty cards is owed
+       an account of what they are looking at, in what order, and what is missing from it. Not said
+       for a single card, where the heading below is already the whole answer. */
+    const band = stack.dropped;
+    const lead = nodes.length > 1
+      ? `<p class="graph-card-lead">${nodes.length} ${UNITS}: <code>${esc(sel)}</code> and
+         everything it rests on, in the order the rows read — what depends on nothing first,
+         <code>${esc(sel)}</code> last.${band
+           ? ` Its ${band} upstream ${band === 1 ? 'constant' : 'constants'} are not listed here;
+               click one in the picture for its signature.`
+           : ''}</p>`
+      : '';
+    cardBox.innerHTML = lead + nodes.map(entryHtml).join('');
+
+    cardBox.querySelectorAll('.graph-card-entry').forEach(el => {
+      const n = state.byId.get(el.dataset.node);
+      if (!n) return;
+      /* Under each card, as on a declaration page: read the thing, then say what you think of it.
+         The control is `audit.js`'s own, and one per card is the point of the stack — a theorem and
+         everything it rests on, judged without leaving the page it is on. */
+      const auditHost = el.querySelector('.graph-card-audit');
+      if (auditHost && audit && audit.mountControl) {
+        audit.mountControl(auditHost, { name: n.id, meaning: n.meaning || '' });
+      }
+      const body = el.querySelector('.graph-card-body');
+      if (!body.dataset.href) return;
+      if (cardLoader) cardLoader.observe(body);
+      else loadCard(body);
+    });
+  }
+
+  /* Enough of a scroll to put the card's heading on screen, and no more. A tall graph can push the
+     card below the fold, where a click would look like it did nothing; a card already in view must
+     not be scrolled to, since the reader is still working in the picture. `block: 'nearest'` is
+     exactly that rule. */
+  function revealCard() {
+    if (!cardBox || !state.sel) return;
+    // The account of the stack when there is one, the first card's heading when there is not.
+    const head = cardBox.querySelector('.graph-card-lead, .graph-card-head');
+    if (!head) return;
+    const still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    head.scrollIntoView({ block: 'nearest', behavior: still ? 'auto' : 'smooth' });
+  }
+
+  function showCard(body, html) {
+    body.innerHTML = html;
+    /* The statement-in-parts is markup plus a script: the expand toggle is hidden until the script
+       unhides it, and the per-constant hovers are bound per element. Neither survives being moved
+       here on its own, so the card is handed to `anatomy.js` to wire up in place. Verso's own hovers
+       over highlighted code are bound at load and are not re-bindable from here; the folded source
+       in an injected card is therefore hover-less, which is why the link to the page stays. */
+    if (window.RefereeAnatomy) window.RefereeAnatomy.init(body);
   }
 
   function fit() {
@@ -871,13 +1083,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* Filtering rebuilds the layout from the surviving subgraph rather than hiding nodes in place,
      so rows stay dense and the picture stays readable at every filter setting. */
-  let query = '', group = '';
+  let query = '';
   function apply() {
-    const keep = allNodes.filter(n => {
-      const okGroup = group === '' || n.groupKey === group;
-      const okQuery = query === '' || `${n.id} ${n.moduleName}`.toLowerCase().includes(query);
-      return okGroup && okQuery;
-    });
+    const keep = allNodes.filter(n =>
+      query === '' || `${n.id} ${n.moduleName}`.toLowerCase().includes(query));
     const ids = new Set(keep.map(n => n.id));
     if (state.sel && !ids.has(state.sel)) state.sel = null;
     render(keep, allEdges.filter(e => ids.has(e.source) && ids.has(e.target)));
@@ -892,14 +1101,12 @@ document.addEventListener('DOMContentLoaded', () => {
       query = e.target.value.trim().toLowerCase(); apply();
     });
   }
-  // The chapter filter is only rendered when there is more than one chapter to choose between.
-  if (groupSelect) groupSelect.addEventListener('change', e => { group = e.target.value; apply(); });
   const fitButton = document.getElementById('graph-fit');
   if (fitButton) fitButton.addEventListener('click', fit);
   const clearButton = document.getElementById('graph-clear');
   if (clearButton) {
     clearButton.addEventListener('click', () => {
-      state.sel = null; highlight(null); updatePanel();
+      state.sel = null; highlight(null); updateCard();
     });
   }
 
@@ -921,7 +1128,7 @@ document.addEventListener('DOMContentLoaded', () => {
     svg.call(zoom.transform, d3.zoomIdentity);
     state.sel = null;
     apply();
-    updatePanel();
+    updateCard();
   }
   viewButtons.forEach(b => b.addEventListener('click', () => selectView(Number(b.dataset.view))));
 

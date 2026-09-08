@@ -87,7 +87,7 @@ about how well a definition is pinned down, so the site prints which one it is r
 naming the conclusion is not stating it: `Indistinguishable μ A ⟨M⟩` reads as reassurance whether it
 means "agree almost surely at every time" or something much weaker. A relation declared by the
 project gets its source form and a link; one from an upstream package gets the type and body the
-graph panels show; one from the toolchain gets nothing, since `=` and `↔` are not what a reader is
+graph shows under an upstream node; one from the toolchain gets nothing, since `=` and `↔` are not what a reader is
 stuck on. Underneath are the three declarations with their statements in full, since reading the
 property is the only way to tell whether the claim is worth anything, and a note saying exactly
 that. An unfinished claim — a property with no uniqueness theorem — is drawn as

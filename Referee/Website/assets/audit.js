@@ -95,6 +95,10 @@ document.addEventListener('DOMContentLoaded', function () {
       const s = JSON.parse(raw);
       if (!s || typeof s !== 'object') return blank();
       s.verdicts = s.verdicts || {};
+      // A reading queue left by an older build of the site. There is no queue any more — a claim is
+      // audited from its own page, walking its closure in the graph there — so drop it rather than
+      // let it ride along in every save and into the next exported file.
+      delete s.queue;
       return s;
     } catch (e) { return blank(); }
   }
@@ -145,19 +149,21 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   // An acceptance of something that has since changed is not an acceptance of what is on the page
-  // now, so it does not count as one. Everything derived — coverage, the tallies, the queue — goes
-  // through this rather than through `verdictOf`, so that none of them can report a reader as
-  // further along than they are.
+  // now, so it does not count as one. Everything derived — coverage and the tallies — goes through
+  // this rather than through `verdictOf`, so that none of them can report a reader as further along
+  // than they are.
   const acceptsNow = (name, currentMeaning) =>
     verdictOf(name) === 'accepted' && !isStale(name, currentMeaning);
 
-  // browse.js reads this to fill its Verdict column. Exposed rather than duplicated so that the two
-  // views can never disagree about what a verdict is.
+  // browse.js reads the verdict accessors; graph.js calls `mountControl` to put a control under
+  // the node it has open. Exposed rather than duplicated so that no two views can disagree about
+  // what a verdict is.
   window.RefereeAudit = {
     verdictOf: verdictOf,
     noteOf: noteOf,
     setVerdict: setVerdict,
     isStale: isStale,
+    mountControl: function (host, decl) { return renderControl(host, decl); },
   };
 
   window.addEventListener('beforeunload', e => {
@@ -180,20 +186,74 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // ------------------------------------------------- the declaration control
 
-  if (control) {
-    const host = document.getElementById('audit-control-root');
-    if (host) renderControl(host);
+  /* The verdict control, wherever it is asked for.
+
+     There can be two on a declaration page: one under the declaration's own card, and one under
+     whatever node the dependency graph currently has open (`graph.js` mounts that one through
+     `mountControl`). They are the same control over the same storage and only the declaration
+     differs, so they are built by one function and repainted together — including the note box,
+     since the graph's focus node is the page's own declaration and both panels are then about it.
+
+     What the control holds is the verdict, the note, and the warning that a recorded acceptance
+     was of something this build no longer says. It does not report coverage, offer to accept a
+     closure in bulk, or link onward: those are questions about the closure the graph above it
+     draws, and about a *particular* declaration's closure at that, which a control that follows
+     the reader from node to node cannot answer. The claims page answers them for the library. */
+  const controls = [];
+
+  /* Live controls, most recently mounted last. The graph's controls are mounted after the card's
+     and removed when the reader closes the node or opens another. */
+  function liveControls() {
+    for (let i = controls.length - 1; i >= 0; i--) {
+      if (!controls[i].host.isConnected) controls.splice(i, 1);
+    }
+    return controls;
   }
 
-  function renderControl(host) {
-    const name = control.name;
-    const closure = control.closure || [];
-    const meaning = control.meaning || '';
-    // Positionally parallel to `closure`; see `AuditControlData.closureMeanings` for why it is a
-    // separate array. Missing entries degrade to '' and simply go unchecked.
-    const closureMeanings = control.closureMeanings || [];
-    const meaningAt = i => closureMeanings[i] || '';
+  /* Which control the keyboard acts on: the one the reader is looking at.
 
+     There is no fixed answer. A declaration page carries the card's own control and one under
+     whichever node the graph has open — and with the graph's *everything it rests on* toggle on,
+     one under each of forty cards. First, last, most-recently-mounted: each is right for some of
+     those and silently wrong for the rest, and a verdict recorded against the wrong declaration is
+     the one mistake this control must not make easy.
+
+     So the active control is whichever sits in a band across the middle of the viewport, and the
+     `a · q · u` hint is drawn there and nowhere else — the panel the keys reach is the panel that
+     says so. When none is in the band (the reader is up in the picture, or on a browser without
+     `IntersectionObserver`) it is the last one mounted, which on a declaration page with nothing
+     open is the card's own. */
+  const band = ('IntersectionObserver' in window)
+    ? new IntersectionObserver(entries => {
+        for (const e of entries) e.target.dataset.auditBand = e.isIntersecting ? '1' : '';
+        paintKeys();
+      }, { rootMargin: '-35% 0px -45% 0px' })
+    : null;
+
+  function activeControl() {
+    const live = liveControls();
+    return live.find(c => c.host.dataset.auditBand === '1') || live[live.length - 1] || null;
+  }
+
+  function paintKeys() {
+    const live = liveControls();
+    const active = activeControl();
+    for (const c of live) {
+      const keys = c === active ? 'a · q · u' : '';
+      const el = c.host.querySelector('.audit-keys');
+      // Guarded, because this runs whenever a band edge is crossed and a stack can be forty deep.
+      if (el.textContent !== keys) el.textContent = keys;
+    }
+  }
+
+  if (control) {
+    const host = document.getElementById('audit-control-root');
+    if (host) renderControl(host, control);
+  }
+
+  function renderControl(host, decl) {
+    const name = decl.name;
+    const meaning = decl.meaning || '';
     host.innerHTML = `
       <div class="audit-control">
         <!-- Titled because everything else on the page is derived from the library and this is not:
@@ -201,7 +261,14 @@ document.addEventListener('DOMContentLoaded', function () {
              for something the tool is asserting. The qualifier says where it lives, which is the
              other thing a reader has to know before typing into it. -->
         <div class="audit-control-head">
-          <span class="audit-control-title">Your audit</span>
+          <span class="audit-control-label">
+            <span class="audit-control-title">Your audit</span>
+            <!-- Named, and named even where the name is directly above: there are two of these on a
+                 declaration page, one for the page's own statement and one for whichever node the
+                 graph has open, and a verdict recorded against the wrong declaration is the one
+                 mistake this control must not make easy. -->
+            <code class="audit-control-name">${esc(name)}</code>
+          </span>
           <span class="audit-hint">private to this browser</span>
         </div>
         <div class="audit-row">
@@ -209,20 +276,11 @@ document.addEventListener('DOMContentLoaded', function () {
             ${VERDICTS.map(v => `<button type="button" class="audit-verdict" data-v="${v}">
               ${v}</button>`).join('')}
           </div>
-          <span class="audit-hint">a · q · u</span>
+          <span class="audit-hint audit-keys"></span>
         </div>
         <textarea class="audit-note" rows="2"
           placeholder="Note — what you would ask the author"></textarea>
-        <p class="audit-stale" id="audit-stale"></p>
-        <p class="audit-coverage" id="audit-coverage"></p>
-        <div class="audit-actions">
-          ${closure.length
-            ? `<button type="button" id="audit-accept-closure">Accept this and everything its
-                 statement rests on (${closure.length})</button>`
-            : ''}
-          <a class="audit-link" href="theorems/">Theorems and progress →</a>
-        </div>
-        <p class="audit-queue" id="audit-queue"></p>
+        <p class="audit-stale"></p>
       </div>`;
 
     const noteBox = host.querySelector('.audit-note');
@@ -234,113 +292,58 @@ document.addEventListener('DOMContentLoaded', function () {
       b.addEventListener('click', () => setVerdict(name, b.dataset.v, noteBox.value, meaning));
     });
 
-    const acceptAll = host.querySelector('#audit-accept-closure');
-    if (acceptAll) {
-      // The minimal file for this declaration *is* its closure, inlined. A reader who has read one
-      // has legitimately covered everything in it, so the bulk action matches the artifact rather
-      // than being a shortcut around it.
-      acceptAll.addEventListener('click', () => {
-        closure.forEach((d, i) => {
-          if (verdictOf(d.label) !== 'query') setVerdict(d.label, 'accepted', undefined, meaningAt(i));
-        });
-        setVerdict(name, 'accepted', noteBox.value, meaning);
-      });
-    }
-
-    function paint() {
-      const v = verdictOf(name);
-      host.querySelectorAll('.audit-verdict').forEach(b =>
-        b.classList.toggle('audit-verdict--on', b.dataset.v === v));
-
-      // Above the coverage line, because it is the more urgent of the two: coverage says the
-      // reading is incomplete, this says part of it was of something else.
-      const staleBox = document.getElementById('audit-stale');
-      staleBox.innerHTML = isStale(name, meaning)
-        ? `<span class="audit-warn">You accepted a different version of this.</span> What you
-           recorded was about the declaration as it meant something else; it has changed since.
-           Re-read it and set the verdict again — until you do, it counts as unread everywhere on
-           this site.`
-        : '';
-
-      const unread = closure.filter((d, i) => !acceptsNow(d.label, meaningAt(i)));
-      const cov = document.getElementById('audit-coverage');
-      const covered = v === 'accepted' && !isStale(name, meaning);
-      // Named separately from the rest of the unread, because "you have not read this" and "what
-      // you read is no longer what it says" send a reader to different places.
-      const staleBeneath = closure.filter((d, i) => isStale(d.label, meaningAt(i))).length;
-      const staleNote = staleBeneath
-        ? (staleBeneath === 1
-            ? ' One of them you accepted an earlier version of.'
-            : ` ${staleBeneath} of them you accepted earlier versions of.`)
-        : '';
-      if (!closure.length) {
-        cov.innerHTML = covered
-          ? '<span class="audit-ok">Covered.</span> Its statement rests on nothing else in this project.'
-          : 'Its statement rests on nothing else in this project.';
-      } else if (unread.length === 0) {
-        cov.innerHTML = covered
-          ? `<span class="audit-ok">Covered.</span> You have accepted all ${closure.length}
-             declarations its statement rests on.`
-          : `All ${closure.length} declarations its statement rests on are accepted; this one is not.`;
-      } else {
-        const shown = unread.slice(0, 6).map(d =>
-          `<a href="${esc(d.href || '')}"><code>${esc(d.label)}</code></a>`).join(', ');
-        const more = unread.length > 6 ? `, and ${unread.length - 6} more` : '';
-        cov.innerHTML = (covered
-          ? '<span class="audit-warn">Accepted, but not covered.</span> '
-          : '')
-          + `${unread.length} of the ${closure.length} declarations its statement rests on are not
-             accepted: ${shown}${more}.${staleNote}`;
-      }
-      paintQueue();
-    }
-
-    function paintQueue() {
-      const box = document.getElementById('audit-queue');
-      const q = state.queue;
-      if (!q || !q.names || q.names.indexOf(name) < 0) { box.innerHTML = ''; return; }
-      const pos = q.names.indexOf(name);
-      // A stale acceptance is something still to read, so the queue has to stop at it. `meanings`
-      // is absent from queues built before this existed, which leaves those queues behaving
-      // exactly as they did.
-      const meanings = q.meanings || [];
-      const stillToRead = i => !acceptsNow(q.names[i], meanings[i] || '')
-        && verdictOf(q.names[i]) !== 'query';
-      const left = q.names.filter((n, i) => stillToRead(i));
-      // The next thing to read, not merely the next in the list: a reader who accepted three in a
-      // row should not be walked back through them.
-      let nextAt = -1;
-      for (let i = pos + 1; i < q.names.length; i++) {
-        if (stillToRead(i)) { nextAt = i; break; }
-      }
-      if (nextAt < 0) for (let i = 0; i < pos; i++) {
-        if (stillToRead(i)) { nextAt = i; break; }
-      }
-      const next = nextAt >= 0
-        ? `<a id="audit-next" href="${esc(q.hrefs[nextAt])}">next unread →</a> <span
-             class="audit-hint">n</span>`
-        : '<span class="audit-ok">queue complete</span>';
-      box.innerHTML = `Reading for <code>${esc(q.claim)}</code> — ${pos + 1} of ${q.names.length},
-        ${left.length} still to read. ${next}`;
-    }
-
-    document.addEventListener('referee:auditchange', paint);
-    paint();
-
-    document.addEventListener('keydown', e => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const t = e.target;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      const k = e.key.toLowerCase();
-      if (k === 'a') { setVerdict(name, 'accepted', noteBox.value); e.preventDefault(); }
-      else if (k === 'q') { setVerdict(name, 'query', noteBox.value); noteBox.focus(); e.preventDefault(); }
-      else if (k === 'u') { setVerdict(name, 'unread', noteBox.value); e.preventDefault(); }
-      else if (k === 'n') {
-        const link = document.getElementById('audit-next');
-        if (link) { window.location.href = new URL(link.getAttribute('href'), document.baseURI); }
-      }
-    });
+    const c = { host: host, name: name, meaning: meaning, noteBox: noteBox, stale: null };
+    controls.push(c);
+    if (band) band.observe(host);
+    paintControls();
+    return c;
   }
+
+  const STALE_NOTE = `<span class="audit-warn">You accepted a different version of this.</span> What
+    you recorded was about the declaration as it meant something else; it has changed since. Re-read
+    it and set the verdict again — until you do, it counts as unread everywhere on this site.`;
+
+  function paintControls() {
+    for (const c of liveControls()) {
+      const v = verdictOf(c.name);
+      c.host.querySelectorAll('.audit-verdict').forEach(b =>
+        b.classList.toggle('audit-verdict--on', b.dataset.v === v));
+      // Not while the reader is typing in it, which would fight them for the caret.
+      const note = noteOf(c.name);
+      if (document.activeElement !== c.noteBox && c.noteBox.value !== note) c.noteBox.value = note;
+      // Guarded on the flag rather than re-set, so that setting one verdict does not rewrite forty
+      // paragraphs of markup on a page showing a whole closure.
+      const stale = isStale(c.name, c.meaning);
+      if (stale !== c.stale) {
+        c.stale = stale;
+        c.host.querySelector('.audit-stale').innerHTML = stale ? STALE_NOTE : '';
+      }
+    }
+    paintKeys();
+  }
+
+  document.addEventListener('referee:auditchange', paintControls);
+
+  /* One handler for however many controls are on the page, acting on the one the hint is drawn in.
+     `meaning` goes with the verdict here as it does on a click: without it a keyboard acceptance
+     could never afterwards be told apart from an acceptance of what the declaration says now. */
+  document.addEventListener('keydown', e => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    const c = activeControl();
+    if (!c) return;
+    const k = e.key.toLowerCase();
+    if (k === 'a') { setVerdict(c.name, 'accepted', c.noteBox.value, c.meaning); e.preventDefault(); }
+    else if (k === 'q') {
+      setVerdict(c.name, 'query', c.noteBox.value, c.meaning);
+      c.noteBox.focus();
+      e.preventDefault();
+    } else if (k === 'u') {
+      setVerdict(c.name, 'unread', c.noteBox.value, c.meaning);
+      e.preventDefault();
+    }
+  });
 
   // ------------------------------------------------------------- audit page
 
@@ -398,14 +401,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
       });
     }
-
-    // Wired once. The rows outlive every repaint, so re-binding on each one would stack listeners.
-    document.querySelectorAll('.audit-start[data-claim]').forEach(b => {
-      b.addEventListener('click', () => {
-        const i = index[b.dataset.claim];
-        if (i !== undefined) startQueue(i);
-      });
-    });
 
     // An excerpt — the landing page's ranked top results — is the listing and nothing else. The
     // rows are identical, which is the point: it is the same list, and a reader who has recorded
@@ -527,23 +522,6 @@ document.addEventListener('DOMContentLoaded', function () {
         : '';
 
       paintRows();
-    }
-
-    function startQueue(i) {
-      // Dependency order, bottom first, with the claim itself last: the closure arrives
-      // topologically sorted from `transDeps`, which is the order the extractor needs to emit a
-      // compilable file, and it is exactly the order a reader needs too.
-      const list = decls[i].closure.map(j => names[j]).concat([names[i]]);
-      const hrefs = decls[i].closure.map(j => decls[j].href).concat([decls[i].href]);
-      // Carried with the queue so a declaration page, which holds no table of its own, can tell
-      // whether a queue entry is still to read without loading the whole library's payload.
-      const meanings = decls[i].closure.map(j => meaningOf(j)).concat([meaningOf(i)]);
-      state.queue = { claim: names[i], names: list, hrefs: hrefs, meanings: meanings };
-      dirty = true;
-      save();
-      const firstUnread = list.findIndex((n, k) => !acceptsNow(n, meanings[k]));
-      const at = firstUnread < 0 ? 0 : firstUnread;
-      window.location.href = new URL(hrefs[at], document.baseURI);
     }
 
     document.getElementById('audit-export').addEventListener('click', () => {

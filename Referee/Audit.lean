@@ -79,8 +79,8 @@ structure AuditDecl where
   group : String
   module : String
   href : String
-  /-- Stated with the `theorem` keyword: one of the library's claims, and so a starting point for a
-  reading queue rather than a step in one. -/
+  /-- Stated with the `theorem` keyword: one of the library's claims, and so something a reader sets
+  out to audit rather than something they meet on the way. -/
   claim : Bool
   /-- Its closure rests on a `sorry`. Reported alongside coverage, never folded into it. -/
   sorryDep : Bool
@@ -94,7 +94,7 @@ structure AuditDecl where
   recorded against. Empty on a build without semantic hashes, which switches the check off. -/
   meaning : String := ""
   /-- Indices into `AuditData.names`: the project declarations this one's *statement* rests on, in
-  dependency order, so a reading queue can be walked from the bottom up. -/
+  dependency order — the set its coverage is computed over, and the same set its page draws. -/
   closure : Array Nat := #[]
 deriving Repr, Inhabited, ToJson, FromJson
 
@@ -125,24 +125,22 @@ structure AuditData where
   baselineLabel : String := ""
 deriving Repr, Inhabited, ToJson, FromJson
 
-/-- The payload on a single declaration's page: enough to set a verdict and to say what reading it
-still leaves uncovered, without shipping the whole library. -/
+/-- The payload on a single declaration's page: enough to set a verdict and to tell later that the
+verdict was about something this build no longer says.
+
+It used to carry the statement closure as links, one `LinkInfo` per member, which the control used
+to report coverage and to offer *accept this and everything its statement rests on*. Both are gone
+from the control — it now follows whichever node the graph has open, and it cannot report a closure
+it is not always looking at — so the array went with them. That is the third copy of the closure a
+declaration page carried, after the graph's node payload and the listing; see
+`docs/design/MATHLIB-SCALE.md`. -/
 structure AuditControlData where
   name : String
   /-- Repeated on every declaration page because it is the storage key, and a declaration page is
   reachable without ever loading the audit page. -/
   project : String := ""
-  /-- The project declarations its statement rests on, with links. Dependency-ordered. -/
-  closure : Array LinkInfo := #[]
   /-- What this declaration means now (`meaningKeyOf`), recorded alongside any verdict set here. -/
   meaning : String := ""
-  /-- The same, for each entry of `closure`, positionally.
-
-  A parallel array rather than a field on `LinkInfo`, which is shared with half the site and has no
-  business knowing about audit state. It is needed because the bulk action — *accept this and
-  everything its statement rests on* — sets verdicts for declarations other than this one, and a
-  verdict recorded without a meaning can never be checked for staleness afterwards. -/
-  closureMeanings : Array String := #[]
 deriving Repr, Inhabited, ToJson, FromJson
 
 /-- A fingerprint of the collected declarations: their names paired with what they meant.

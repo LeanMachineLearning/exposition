@@ -54,11 +54,14 @@ def mkGraphData (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String)
     -- through JSON rather than through Verso's link handling — resolves from the root already.
     href := declHrefs.getD decl.name (pathForPart decl.groupKey decl.modulePath decl.name)
     focus := focus? == some decl.name
-    -- Clipped, because this rides along in every node of every graph and a handful of declarations
-    -- carry very long statements. Not at 600, though: that cut 88 of `AlphaRAR`'s 2503 project nodes
-    -- mid-statement, and a statement truncated before its conclusion is worse than no preview at all
-    -- — it shows a theorem's hypotheses and hides what they imply. A limit has to fall somewhere, but
-    -- it should fall past the point where the panel still answers the question it exists for.
+    -- The summary `graph.js` shows under a clicked node while it fetches that node's real card, and
+    -- keeps when it cannot — from a site opened over `file://`, where a page cannot fetch its
+    -- siblings. Clipped, because it rides along in every node of every graph and a handful of
+    -- declarations carry very long statements. Not at 600, though: that cut 88 of `AlphaRAR`'s 2503
+    -- project nodes mid-statement, and a statement truncated before its conclusion is worse than no
+    -- preview at all — it shows a theorem's hypotheses and hides what they imply. A limit has to
+    -- fall somewhere, but it should fall past the point where the summary still answers the
+    -- question it exists for.
     signature := clipText 2400 decl.displaySignature
     doc := clipText 1200 (decl.docText?.getD "")
     meaning := meaningKeyOf decl

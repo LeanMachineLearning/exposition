@@ -97,7 +97,12 @@ Only that the defaults are the inert ones — a project that has never been audi
 -- case and has to be asked for, or a payload built without thinking about it would silently
 -- suppress the progress summary, the queries and export.
 #guard !(default : AuditData).excerpt
-#guard (default : AuditControlData).closure.isEmpty
+-- The declaration control's payload is the name, the project and the meaning, and nothing derived
+-- from the closure: what it records is a verdict on one declaration, and it now follows whichever
+-- node the graph has open rather than being fixed to the page's own.
+#guard (default : AuditControlData).name == ""
+#guard (default : AuditControlData).project == ""
+#guard (default : AuditControlData).meaning == ""
 
 /-! ## Claims listing
 

@@ -36,7 +36,8 @@ differs is which declarations appear and in what order. Here the order is the fi
 curated list is an argument about what matters and its order is part of the argument.
 
 The audit apparatus — export, import, report, the progress summary — stays on the Theorems page. This
-page carries the handful of results the author chose, not a reading queue.
+page carries the handful of results the author chose, and nothing to work through: a claim is
+audited on its own page, in the dependency graph there.
 
 Below the list, three things the compiled library cannot supply:
 

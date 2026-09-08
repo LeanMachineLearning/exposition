@@ -22,7 +22,7 @@ pages are the detail behind it.
   about* rather than anything a proof calls, and the three things that bound what the analysis
   claims.
 - **[Theorems and audit state](audit.md)** — the one page carrying both: what the library states with
-  `theorem`, and against each one the verdicts, derived coverage, reading queues, export and import.
+  `theorem`, and against each one the verdicts, derived coverage, export and import.
   Also the three limits, which the page states to the reader rather than burying here.
 - **[Claims](claims.md)** — the Claims page, built only for a project whose `formalization.yaml`
   declares `status.main_results`: the results the project itself puts forward, which is the one list

@@ -48,8 +48,10 @@ On top of that are the pages a referee needs and ordinary documentation does not
 - **[Audit state](docs/audit.md)** — what *you* have read, on the Theorems page itself rather than on
   one of its own. A declaration is *accepted* when you judge that it says what its name claims, and
   *covered* when everything its statement rests on is accepted too — so the page can report what a
-  checkbox cannot: a claim accepted while resting on definitions nobody has looked at. Reading queues
-  in dependency order, and export to a JSON file that outlives the browser.
+  checkbox cannot: a claim accepted while resting on definitions nobody has looked at. A claim is
+  audited from its own page — its dependency graph draws everything the statement rests on, and each
+  node opens that declaration's card and a verdict control of its own — and exported to a JSON file
+  that outlives the browser.
 - **[Revisions](docs/revisions.md)** — given an earlier `collect` output (`--baseline`), what a reader
   who worked through that revision has to read again. Including the case no textual diff can show:
   results *invalidated indirectly*, whose own statements are untouched but whose meaning rests on a
@@ -133,7 +135,7 @@ flag.
 | [Running in CI](docs/ci.md) | The job shape, and the state that has to survive between runs |
 | [Authoring](docs/authoring.md) | The two things the tool cannot infer: `theorem` vs `lemma`, and `@[specifies]` |
 | [Upstream trust](docs/trust.md) | `--trust`, what counts as a trust dependency, and what the analysis does and does not claim |
-| [Theorems and audit state](docs/audit.md) | Verdicts, coverage, reading queues, export — and the three limits |
+| [Theorems and audit state](docs/audit.md) | Verdicts, coverage, auditing a claim from its own page, export — and the three limits |
 | [Claims](docs/claims.md) | The Claims page: `formalization.yaml`'s main results, and what the site will not take from the file |
 | [Comparing revisions](docs/revisions.md) | `--baseline`, the classification, and what the comparison is made on |
 | [Semantic hashes](docs/semantic-hashes.md) | `--hashes`: structural hashes instead of pretty-printed text |

@@ -680,7 +680,8 @@ structure GraphNode where
   /-- True for the declaration whose page this graph is on, so the reader can see at a glance
   which node the picture is about. False everywhere on the whole-repository graph. -/
   focus : Bool := false
-  /-- The declaration's statement, source form, for the graph's side panel. -/
+  /-- The declaration's statement, source form, for the summary the graph shows under a clicked
+  node until that node's own card arrives. -/
   signature : String := ""
   /-- The declaration's docstring, as written. Empty when it has none. -/
   doc : String := ""
@@ -839,7 +840,7 @@ structure DeclInfo where
   docBlocks : Array (Block Manual)
   /-- The docstring as written, before markdown parsing. `docBlocks` is the rendered form and is
   the right thing for a page; this is kept for the places that need plain text, such as the
-  dependency graph's side panel, which is built as JSON rather than as Verso blocks. -/
+  dependency graph's node data, which is built as JSON rather than as Verso blocks. -/
   docText? : Option String := none
   proofText? : Option String
   source? : Option SourceInfo
@@ -1063,7 +1064,7 @@ deriving Repr, ToJson, FromJson
 /-- An upstream constant a project statement names, with enough of it to be read in place.
 
 These are the nodes a declaration's graph bottoms out in, and until now they were drawn with nothing
-but their name: the panel showed the name again where a signature belongs and a canned sentence
+but their name: the graph showed the name again where a signature belongs and a canned sentence
 where the docstring belongs. A reader asking "is this statement about the definition I think it is"
 — the question the whole site exists to serve — could not answer it without leaving for another
 site. The signature and docstring come straight out of the imported environment, which already has
@@ -1075,7 +1076,7 @@ structure ExternalDeclInfo where
   name : Name
   /-- The package it comes from, as `PackageInfo.name`. -/
   package : Name
-  /-- The module declaring it, for the panel's provenance line. -/
+  /-- The module declaring it, for the graph's provenance line. -/
   moduleName : Name
   /-- Its pretty-printed type. -/
   signature : String
@@ -1083,13 +1084,13 @@ structure ExternalDeclInfo where
   fields. Empty for a theorem, whose type already is its statement, and for anything with no body to
   show.
 
-  Without this the panel answers the wrong question for a definition. `Filter.Tendsto`'s type is
+  Without this the graph answers the wrong question for a definition. `Filter.Tendsto`'s type is
   `(α → β) → Filter α → Filter β → Prop`, which says it takes a function and two filters and yields a
   proposition — every argument reading as a hypothesis, and no hint that it *means* `map f l₁ ≤ l₂`.
   Since the whole point of these nodes is "is this the definition I think it is", the type alone
   cannot answer it. -/
   value : String := ""
-  /-- Its docstring, or `""` when it has none — the panel distinguishes the two. -/
+  /-- Its docstring, or `""` when it has none — the graph distinguishes the two. -/
   doc : String := ""
   /-- Its own meaning edges, restricted to *its own package*, so the graph can draw an unaudited
   package's internal structure rather than a flat row of names. Empty unless the package was expanded
@@ -2601,7 +2602,7 @@ def meaningDepsOf (kind : DeclKind) (isAlias : Bool) (deps typeDeps dataDeps : A
   else if dataDeps.isEmpty then deps
   else dataDeps
 
-/-- Truncates `s` to `n` characters, marking that it was truncated. A panel-sized preview: the
+/-- Truncates `s` to `n` characters, marking that it was truncated. A preview-sized cut: the
 declaration's own page carries the whole thing. -/
 def clipTo (n : Nat) (s : String) : String :=
   let s := (String.trimAscii s).toString
@@ -3204,7 +3205,7 @@ def DeclInfo.toChallengeDecl (decl : DeclInfo) : ChallengeDecl where
 every proof dropped.
 
 This is what the site follows nearly everywhere — the dependency graph and its node set
-(`dataTransDeps`), the upstream-trust analysis, the audit closure and its reading queues, and the
+(`dataTransDeps`), the upstream-trust analysis, the audit closure and its coverage, and the
 revision diff's meaning propagation. All of them ask a version of "what must I accept in order to
 believe this", and the answer never includes a lemma some proof merely called. -/
 def meaningDeps (decl : DeclInfo) : Array Name :=

@@ -508,7 +508,7 @@ private def charPartRow (ctx : SiteContext) (role : String) (name : Name)
 
 Three cases, and the order matters. A relation declared by the project gets its source form and a
 link to its page. One from an upstream package has no page here, so it gets the pretty-printed type
-and body the graph panels use — which for a relation is the informative half: `Filter.EventuallyEq`
+and body the graph summaries use — which for a relation is the informative half: `Filter.EventuallyEq`
 has type `Filter α → (α → β) → (α → β) → Prop`, every argument reading as a hypothesis and nothing
 saying it means `∀ᶠ x in l, f x = g x`. One from the toolchain gets nothing: `=` and `↔` are not
 what a reader is stuck on, and `{α : Sort u} → α → α → Prop` in a slot meant to explain something
@@ -531,7 +531,7 @@ private def charRelationRow? (ctx : SiteContext) (head : Name) : Option CharPart
           some { role := "Relation"
                  name := head.toString
                  kind := ext.package.toString
-                 -- The same `signature := value` shape the upstream graph panels use, so an
+                 -- The same `signature := value` shape the upstream graph summaries use, so an
                  -- upstream constant reads the same wherever the site shows one.
                  signature :=
                    if ext.value.isEmpty then ext.signature
@@ -802,27 +802,12 @@ private def mkProvenanceBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Bl
 What a *reader* has decided, as opposed to what the environment says. See `Referee/Audit.lean` for
 what acceptance is taken to mean and why coverage is derived rather than recorded. -/
 
-/-- The statement closure of a declaration, as links, in dependency order.
-
-The order is `dataTransDeps`', which is topological — every dependency precedes what uses it — for
-the same reason the extraction closure is: it is a dependency-respecting order. A reading queue wants
-exactly that, so it comes for free. The *contents* are the meaning closure, not the extraction one:
-a reader asked to accept this declaration is not asked to accept a lemma some proof merely called. -/
-private def auditClosureLinks (decl : DeclInfo) (ctx : SiteContext) : Array LinkInfo :=
-  decl.dataTransDeps.filterMap fun dep =>
-    if !ctx.declByName.contains dep then none
-    else some { label := dep.toString, href? := ctx.declPageHrefs.get? dep }
-
-/-- The verdict control at the top of a declaration page. -/
+/-- The verdict control for the declaration whose page this is. -/
 private def mkAuditControlBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (Block Manual) :=
   #[.other (Block.auditControl {
       name := decl.name.toString
       project := ctx.rootPrefix.toString
-      closure := auditClosureLinks decl ctx
       meaning := meaningKeyOf decl
-      -- Positionally parallel to `closure`, so it is filtered by the same predicate.
-      closureMeanings := decl.dataTransDeps.filterMap fun dep =>
-        (ctx.declByName.get? dep).map meaningKeyOf
     }) #[]]
 
 /-- The claims listing for `claims`, in the order given, with each row's docstring inlined.
@@ -1106,6 +1091,12 @@ def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
   -- used to be a second link further down whose relative path resolved *underneath* the declaration
   -- page and 404'd, and the page ended up advertising the same artifact three times.
   blocks := blocks ++ mkMinimalFileLink decl ctx
+  -- With the card it is a verdict on, and no longer below the graph. The graph mounts a control of
+  -- its own under whichever node the reader opens (`graph.js`), so a control below the picture
+  -- would sit a few lines above a second one about a different declaration — and this one has
+  -- nothing to do with the closure drawn down there any more: what it records is a judgement about
+  -- the statement directly above it.
+  blocks := blocks ++ mkAuditControlBlocks decl ctx
   -- Transitively reduced: 23 declarations here carry 68 direct edges, most of them implied by a
   -- longer path, and drawing all of them buries the structure in crossings and forces the layout
   -- so wide that it no longer fits the viewport. What survives is the *essential* dependency
@@ -1160,10 +1151,6 @@ def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
         missing picture."
     ])
   blocks := blocks.push (.other (Block.graph graphData) #[])
-  -- Below the picture it is a verdict on. What accepting this declaration would cost is a question
-  -- about the closure the graph has just drawn, and the control that records the answer belongs
-  -- with the surface it is answering about rather than under the card.
-  blocks := blocks ++ mkAuditControlBlocks decl ctx
   blocks := blocks ++ mkAuditBlocks decl ctx
   -- Last, because they answer a different and later question. Everything above says what this
   -- declaration costs to accept; these say what it means. The characterization comes first of the

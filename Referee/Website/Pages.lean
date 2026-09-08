@@ -102,7 +102,8 @@ private def mkModuleGraphData (modules : Array ModuleInfo) (ctx : SiteContext) :
       else s!"{modInfo.decls.size} declarations; {sorried} depend on sorry"
     -- Each label drops its own chapter prefix. On a chapter page every node shares it, so it is
     -- pure width; across the project the chapter is already carried by the node's colour and by
-    -- the side panel, and the full paths are long enough to shrink the whole drawing.
+    -- what a click shows below the graph, and the full paths are long enough to shrink the whole
+    -- drawing.
     let label :=
       (modInfo.path.dropPrefix? s!"{modInfo.groupKey}.").map (·.toString) |>.getD modInfo.path
     { id := modInfo.path

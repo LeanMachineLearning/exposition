@@ -660,7 +660,6 @@ block_extension Block.claimList (_payload : ClaimListData) where
           <span class="audit-meta" data-slot="coverage">{{depsText}}</span>
           <span data-slot="status"></span>
           {{flag}}
-          <button type="button" class="audit-start" data-claim={{row.name}}>"Start reading"</button>
           {{if doc.isEmpty then .empty else {{<div class="audit-doc">{{doc}}</div>}}}}
         </li>
       }}
