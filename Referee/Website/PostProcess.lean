@@ -237,77 +237,6 @@ private def rejoinInlineBlocks (tag : String) (literals bodies : Array String)
     out := out ++ literals[i + 1]!
   return out
 
-/-- Counts how many times each attribute-less inline block occurs across every page under `dir`.
-
-Keyed by tag as well as body, because the same text under two tags is two different assets.
-Recursive for the same reason `pruneSidebarSubTocsIn` is: the pages sit one directory deeper per
-level of the tree. -/
-private partial def scanInlineAssetsIn (dir : System.FilePath)
-    (counts : Std.HashMap (String × String) Nat) : IO (Std.HashMap (String × String) Nat) := do
-  let mut counts := counts
-  for entry in (← dir.readDir) do
-    if (← entry.path.isDir) then
-      counts ← scanInlineAssetsIn entry.path counts
-    else if entry.path.extension == some "html" then
-      let text ← IO.FS.readFile entry.path
-      for kind in inlineAssetKinds do
-        if let some (_, bodies) := splitInlineBlocks text kind.tag then
-          for body in bodies do
-            counts := counts.alter (kind.tag, body) fun n => some (n.getD 0 + 1)
-  return counts
-
-/-- Rewrites every page under `dir`, replacing the blocks named in `names` with references to their
-files. Returns how many pages were shortened and by how much. -/
-private partial def rewriteInlineAssetsIn (dir : System.FilePath)
-    (names : Std.HashMap (String × String) String) : IO (Nat × Nat) := do
-  let mut pages := 0
-  let mut saved := 0
-  for entry in (← dir.readDir) do
-    if (← entry.path.isDir) then
-      let (p, s) ← rewriteInlineAssetsIn entry.path names
-      pages := pages + p
-      saved := saved + s
-    else if entry.path.extension == some "html" then
-      let text ← IO.FS.readFile entry.path
-      let mut out := text
-      for kind in inlineAssetKinds do
-        if let some (literals, bodies) := splitInlineBlocks out kind.tag then
-          out := rejoinInlineBlocks kind.tag literals bodies fun body =>
-            (names[(kind.tag, body)]?).map kind.reference
-      if out.utf8ByteSize < text.utf8ByteSize then
-        IO.FS.writeFile entry.path out
-        pages := pages + 1
-        saved := saved + (text.utf8ByteSize - out.utf8ByteSize)
-  return (pages, saved)
-
-/-- Hoists every shared attribute-less inline block out of the pages under `dir` into the
-`-verso-data` directory beneath it, returning how many pages were shortened, by how much, and how
-many files were written.
-
-Two passes over the tree rather than one: which blocks are shared is not known until every page has
-been read, and holding the pages in memory to avoid the second read is exactly the cost this exists
-to remove. The table between the passes holds only the distinct blocks — a handful, tens of
-kilobytes — never the pages. -/
-def hoistInlineAssetsIn (dir : System.FilePath) : IO (Nat × Nat × Nat) := do
-  if !(← dir.pathExists) then
-    return (0, 0, 0)
-  let counts ← scanInlineAssetsIn dir {}
-  -- `blockTag`, not `tag`: in pattern position the latter resolves to `Html.tag`.
-  let shared := counts.fold (init := #[]) fun acc (blockTag, body) n =>
-    if n ≥ 2 && body.utf8ByteSize ≥ minInlineAssetSize then acc.push (blockTag, body) else acc
-  if shared.isEmpty then
-    return (0, 0, 0)
-  let assetDir := dir / "-verso-data"
-  IO.FS.createDirAll assetDir
-  let mut names : Std.HashMap (String × String) String := {}
-  for (blockTag, body) in shared do
-    let kind := InlineAssetKind.ofTag blockTag
-    let file := inlineAssetFileName kind body
-    IO.FS.writeFile (assetDir / file) body
-    names := names.insert (blockTag, body) file
-  let (pages, saved) ← rewriteInlineAssetsIn dir names
-  return (pages, saved, shared.size)
-
 /-! ### Narrowing the search index
 
 Verso indexes the full text of every page. For a manual that is right — its pages are prose, and a
@@ -470,27 +399,6 @@ def stripSearchAssets (html : String) : String := Id.run do
     if inDroppedScript then return html
     return out
 
-/-- Strips the search references from every page under `dir`, returning how many pages changed and
-how many bytes went. -/
-partial def stripSearchAssetsIn (dir : System.FilePath) : IO (Nat × Nat) := do
-  if !(← dir.pathExists) then
-    return (0, 0)
-  let mut pages := 0
-  let mut saved := 0
-  for entry in (← dir.readDir) do
-    if (← entry.path.isDir) then
-      let (p, s) ← stripSearchAssetsIn entry.path
-      pages := pages + p
-      saved := saved + s
-    else if entry.path.extension == some "html" then
-      let text ← IO.FS.readFile entry.path
-      let stripped := stripSearchAssets text
-      if stripped.utf8ByteSize < text.utf8ByteSize then
-        IO.FS.writeFile entry.path stripped
-        pages := pages + 1
-        saved := saved + (text.utf8ByteSize - stripped.utf8ByteSize)
-  return (pages, saved)
-
 /-- Deletes a directory and everything under it. -/
 private partial def removeTree (dir : System.FilePath) : IO Unit := do
   if !(← dir.pathExists) then
@@ -499,24 +407,133 @@ private partial def removeTree (dir : System.FilePath) : IO Unit := do
     if (← entry.path.isDir) then removeTree entry.path else IO.FS.removeFile entry.path
   IO.FS.removeDir dir
 
+/-! ## One walk over the pages instead of four
+
+Sidebar pruning, search-asset stripping and asset hoisting each used to read every page, transform
+it and write it back — and hoisting reads twice, because it must count which blocks repeat before it
+can know which are worth a file. Four reads and up to three writes per page, over ~95,000 pages at
+93,507 declarations, came to 265 s: 10% of a `build-site` run, all of it file I/O for work that could
+share a walk.
+
+The transforms are independent of each other, so one pass can apply all three. What cannot be merged
+is hoisting's own two phases: the decision needs the whole site's counts. So this is two walks — scan,
+then rewrite — with the other transforms folded into both, and one write at the end.
+
+The scan reads the pages raw. It can, because `splitInlineBlocks` matches `<script>` and `<style>`
+*exactly* — attribute-less only — while pruning removes `<div class="split-toc">` link lists and
+stripping removes tags carrying `src=`/`href=`. Neither can change what the scan counts, so the
+transforms belong only in the second walk.
+
+That is not a micro-optimization: applying them in both walks made this pass **slower than the three
+it replaced** (50.9s against 32.7s at 16,876 declarations). These passes are not I/O-bound, as the
+merge assumed — the pages are in the page cache and the cost is string splitting, with
+`stripSearchAssets` dividing a 25 kB page at every `<`. Halving the reads is worth nothing next to
+doing that work twice. -/
+
+/-- The whole-site page rewrite, as applied to one page.
+
+`names` empty means the scanning pass, which wants the pruned and stripped text but has nothing to
+hoist yet. -/
+private def rewritePage (prune stripSearch : Bool)
+    (names : Std.HashMap (String × String) String) (text : String) : String := Id.run do
+  let mut out := if prune then pruneSidebarSubTocs text else text
+  if stripSearch then
+    out := stripSearchAssets out
+  if !names.isEmpty then
+    for kind in inlineAssetKinds do
+      if let some (literals, bodies) := splitInlineBlocks out kind.tag then
+        out := rejoinInlineBlocks kind.tag literals bodies fun body =>
+          (names[(kind.tag, body)]?).map kind.reference
+  return out
+
+/-- Counts the inline blocks of every page under `dir`, from the raw text; see the note above for
+why the transforms cannot change the answer. -/
+private partial def scanPagesIn (dir : System.FilePath)
+    (counts : Std.HashMap (String × String) Nat) : IO (Std.HashMap (String × String) Nat) := do
+  let mut counts := counts
+  for entry in (← dir.readDir) do
+    if (← entry.path.isDir) then
+      counts ← scanPagesIn entry.path counts
+    else if entry.path.extension == some "html" then
+      let text ← IO.FS.readFile entry.path
+      for kind in inlineAssetKinds do
+        if let some (_, bodies) := splitInlineBlocks text kind.tag then
+          for body in bodies do
+            counts := counts.alter (kind.tag, body) fun n => some (n.getD 0 + 1)
+  return counts
+
+/-- Rewrites every page under `dir` once, applying all three transforms. Returns how many pages
+changed and how many bytes went. -/
+private partial def rewritePagesIn (dir : System.FilePath) (prune stripSearch : Bool)
+    (names : Std.HashMap (String × String) String) : IO (Nat × Nat) := do
+  let mut pages := 0
+  let mut saved := 0
+  for entry in (← dir.readDir) do
+    if (← entry.path.isDir) then
+      let (p, sv) ← rewritePagesIn entry.path prune stripSearch names
+      pages := pages + p
+      saved := saved + sv
+    else if entry.path.extension == some "html" then
+      let text ← IO.FS.readFile entry.path
+      let out := rewritePage prune stripSearch names text
+      if out.utf8ByteSize < text.utf8ByteSize then
+        IO.FS.writeFile entry.path out
+        pages := pages + 1
+        saved := saved + (text.utf8ByteSize - out.utf8ByteSize)
+  return (pages, saved)
+
+/-- What one `rewriteSitePages` run did, for the build log. -/
+structure PageRewriteStats where
+  pages : Nat := 0
+  saved : Nat := 0
+  hoisted : Nat := 0
+
+/-- Prunes sidebars, optionally strips the search assets, and hoists shared inline blocks — in two
+walks over the pages rather than four. See the section note above. -/
+def rewriteSitePages (dir : System.FilePath) (prune stripSearch hoist : Bool) :
+    IO PageRewriteStats := do
+  if !(← dir.pathExists) then
+    return {}
+  let names ← if hoist then do
+      let counts ← scanPagesIn dir {}
+      -- `blockTag`, not `tag`: in pattern position the latter resolves to `Html.tag`.
+      let shared := counts.fold (init := #[]) fun acc (blockTag, body) n =>
+        if n ≥ 2 && body.utf8ByteSize ≥ minInlineAssetSize then acc.push (blockTag, body) else acc
+      if shared.isEmpty then pure {} else do
+        let assetDir := dir / "-verso-data"
+        IO.FS.createDirAll assetDir
+        let mut names : Std.HashMap (String × String) String := {}
+        for (blockTag, body) in shared do
+          let file := inlineAssetFileName (InlineAssetKind.ofTag blockTag) body
+          IO.FS.writeFile (assetDir / file) body
+          names := names.insert (blockTag, body) file
+        pure names
+    else pure {}
+  let (pages, saved) ← rewritePagesIn dir prune stripSearch names
+  return { pages, saved, hoisted := names.size }
+
 /-- Applies `--search` to the site Verso has just written. A no-op for `full`, which is Verso's own
 output. -/
 def applySearchMode (mode : SearchMode) (out : System.FilePath) : IO Unit := do
   if mode == .full then
     return
   let dir := searchAssetDir out
-  if !(← dir.pathExists) then
-    return
   if mode == .none then
-    -- The references first: while they stand, a page asks for files that are about to not exist.
-    let (pages, saved) ← stripSearchAssetsIn out
-    let before := (← dir.readDir).foldl (init := 0) fun acc _ => acc + 1
+    -- The pages' own `<script src>` tags are stripped by `rewriteSitePages`, which walks them once
+    -- for all three whole-site rewrites. What is left here is the assets themselves: Verso is told
+    -- not to build search for this mode (`renderConfig` clears the feature), so the directory is
+    -- normally already absent, but a site rendered by an older build may still have one.
+    let before ← if (← dir.pathExists) then
+        pure ((← dir.readDir).foldl (init := 0) fun acc _ => acc + 1)
+      else pure 0
     removeTree dir
     -- Verso's own search *page*, which nothing links to once the box is gone. Beside the assets,
     -- not beside `out`: the pages live under `html-multi`.
     removeTree (out / "html-multi" / "search")
-    IO.println s!"Removed the search box from {pages} pages ({saved / 1048576} MB of references) \
-      and the {before} files under -verso-search/"
+    if before > 0 then
+      IO.println s!"Removed the {before} files under -verso-search/"
+    return
+  if !(← dir.pathExists) then
     return
   let titles ← readSearchTitles dir
   let payload := (titleOnlyIndex titles).compress

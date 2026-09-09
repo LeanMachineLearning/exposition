@@ -203,11 +203,42 @@ def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Workspace)
     expandedPackages
   }
 
+/-- Current and peak resident set size in MB, read from `/proc/self/status`.
+
+Linux-only and best-effort: anything unreadable yields zeros, because this exists to explain where a
+long build spends itself and is never worth failing a build over. -/
+def rssMB : IO (Nat × Nat) := do
+  try
+    let text ← IO.FS.readFile "/proc/self/status"
+    let field (key : String) : Nat :=
+      text.splitOn "\n" |>.findSome? (fun line =>
+        if line.startsWith key then
+          (line.dropWhile (!·.isDigit)).takeWhile (·.isDigit) |>.toNat?
+        else none) |>.getD 0
+    return (field "VmRSS:" / 1024, field "VmHWM:" / 1024)
+  catch _ => return (0, 0)
+
+/-- Prints how long a phase took and what memory stood at when it ended.
+
+`build-site` at library scale runs for hours in a handful of phases with very different costs, and
+without this the only way to tell which one is expensive is to guess. Peak is carried alongside
+current because the phases that matter are the ones that allocate and release — a phase can double
+the high-water mark and leave no trace in the resident size by the time it ends. -/
+def phase (label : String) (startMs : Nat) : IO Nat := do
+  let now ← IO.monoMsNow
+  let (rss, peak) ← rssMB
+  IO.println s!"  [{label}] {(now - startMs) / 1000}.{((now - startMs) % 1000) / 100}s  \
+    rss {rss} MB  peak {peak} MB"
+  return now
+
 /-- Reads and decodes a `CollectedData` JSON file written by `collect`. -/
-def loadCollectedData (path : String) : IO CollectedData := do
+def loadCollectedData (path : String) (verify : Bool := true) : IO CollectedData := do
+  let t0 ← IO.monoMsNow
   let text ← IO.FS.readFile path
+  let t1 ← phase "read" t0
   let .ok json := Json.parse text
     | throw <| IO.userError s!"Failed to parse JSON from {path}"
+  let t2 ← phase "parse json" t1
   -- Check the format version before decoding, so a stale file produced by an older `collect`
   -- reports what to do rather than surfacing whichever field happened to be added last. A range
   -- rather than an equality: version 11 differs from 12 only in storing closures this build
@@ -219,14 +250,23 @@ def loadCollectedData (path : String) : IO CollectedData := do
       subcommand to regenerate it."
   match decodeCollectedData json with
   | .ok data =>
+    let t3 ← phase "decode (resolve + fromJson)" t2
     -- Closures first, integrity second. The closures are recomputed here by the functions
     -- `MeaningGraph`'s `Proofs.lean` reasons about — never trusted from the file — and the
     -- checks then guard what still crosses the unproved round trip (the direct edges) and the
     -- recomputation's own wiring: see the `Integrity of the collected data` section in
     -- `Collect.lean`.
     let data := data.withClosures
-    if let some report := data.integrityReport then
-      throw <| IO.userError s!"{path}: {report}"
+    let t4 ← phase "withClosures" t3
+    -- Skippable, because it is the one phase whose cost grows faster than the library: 0.5s at
+    -- 16,876 declarations and 36.7s at 93,507, a 73× jump across a 5.5× step. What it guards is
+    -- real — the `intern`/`resolve` round trip is the part of the pipeline `MeaningGraph`'s proofs
+    -- do not reach — so it stays on by default and `--no-verify` is for re-rendering a file that
+    -- has already been checked once.
+    if verify then
+      if let some report := data.integrityReport then
+        throw <| IO.userError s!"{path}: {report}"
+      let _ ← phase "integrity check" t4
     pure data
   | .error err => throw <| IO.userError s!"Failed to decode collected data from {path}: {err}"
 

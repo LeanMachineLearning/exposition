@@ -196,7 +196,7 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     | some out => ["--output", out]
     | none => []
   let config := renderConfig data.externalDecls ctx.trusted cfg.showTrustedUpstream ctx.packageRanks
-      ctx.nodeIndex
+      ctx.nodeIndex cfg.searchMode
   if cfg.perChapter then
     if cfg.searchMode == .full then
       IO.eprintln "--per-chapter requires --search names (or none): merging the full-text \
@@ -208,23 +208,28 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
   else
     -- Built here rather than above the branch: this is the whole document tree, the very
     -- allocation `--per-chapter` exists to avoid holding.
+    let tTree ← IO.monoMsNow
     let root := mkRootPart cfg data.rootPrefix groups data.decls ctx overviewBlocks
+    -- `mkRootPart` is lazy in Lean, so timing it alone measures nothing; forcing the part count is
+    -- what makes the tree exist and the number honest.
+    IO.println s!"  (document tree: {root.subParts.size} top-level parts)"
+    let tRendered ← phase "build document tree" tTree
     let code ← manualMain root (options := versoArgs) (config := config)
+    let _ ← phase "verso render + write" tRendered
     if code != 0 then
       return code
     -- After Verso has written the pages, and only on success: a half-rendered site is not one to
-    -- rewrite in place.
-    let (pages, saved) ← pruneSidebarSubTocsIn ((cfg.outputDir.getD ".") / "html-multi")
-    if pages > 0 then
-      IO.println s!"Pruned the sidebar's inherited sub-tables from {pages} pages, \
-        saving {saved / 1048576} MB"
-    -- Before hoisting, so that a rebuilt `searchIndex.js` is never one of the blocks hoisted out of
-    -- the pages: it is referenced by `<script src>` and so was never inline to begin with, but the
-    -- ordering makes that independent of how Verso chooses to emit it.
+    -- rewrite in place. The index rewrite comes before the page walk so that a rebuilt
+    -- `searchIndex.js` is never one of the blocks hoisted out of the pages — it is referenced by
+    -- `<script src>` and so was never inline, but the ordering makes that independent of how Verso
+    -- chooses to emit it.
+    let tPost ← IO.monoMsNow
     applySearchMode cfg.searchMode (cfg.outputDir.getD ".")
+    let _ ← phase "search mode" tPost
   -- Outside the branch, because both kinds of build render the same pages and those pages reference
   -- these files. Before hoisting only for tidiness in the log: hoisting never looks at them, since
   -- they arrive as `<script src>` rather than as inline blocks.
+  let tTables ← IO.monoMsNow
   let (tables, drawBytes, textBytes) ←
     writeDeclTables ((cfg.outputDir.getD ".") / "html-multi") groups ctx
   let upstreamText ←
@@ -234,12 +239,18 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     IO.println s!"Wrote declaration tables for {tables} chapters: {drawBytes / 1048576} MB the \
       graphs draw from, {textBytes / 1048576} MB fetched only when a node is clicked; \
       upstream text {upstreamText / 1048576} MB, also on demand"
-  if cfg.hoistAssets then
-    let (hoisted, freed, files) ←
-      hoistInlineAssetsIn ((cfg.outputDir.getD ".") / "html-multi")
-    if hoisted > 0 then
-      IO.println s!"Hoisted {files} shared inline assets out of {hoisted} pages, \
-        saving {freed / 1048576} MB"
+  -- One walk over the pages for all three whole-site rewrites; see the section note in
+  -- `PostProcess.lean`. `--per-chapter` has already pruned, because its stitching needs a pruned
+  -- sidebar to lift from the landing page, so it does not ask for that again here.
+  let tRewrite ← phase "chapter tables" tTables
+  let stats ← rewriteSitePages ((cfg.outputDir.getD ".") / "html-multi")
+    (prune := !cfg.perChapter) (stripSearch := cfg.searchMode == .none)
+    (hoist := cfg.hoistAssets)
+  if stats.pages > 0 then
+    IO.println s!"Rewrote {stats.pages} pages in one pass — pruned sidebars, \
+      {if cfg.searchMode == .none then "removed the search box, " else ""}\
+      hoisted {stats.hoisted} shared inline assets — saving {stats.saved / 1048576} MB"
+  let _ ← phase "rewrite pages" tRewrite
   -- After hoisting, which is what decides whether the run-uniform head tail carries references or
   -- inline blocks; either way the global pages take a chapter page's verbatim.
   if cfg.perChapter then
@@ -269,7 +280,7 @@ private unsafe def runExtract (cfg : Cli) : IO UInt32 := do
   let some out := cfg.outputDir
     | IO.eprintln "extract requires --output DIR"
       return 1
-  let data ← loadCollectedData dataPath
+  let data ← loadCollectedData dataPath cfg.verifyIntegrity
   let projectDir : System.FilePath := "."
   let ws ← loadWorkspaceAt projectDir
   let imports := importRoots ws cfg.excludeLibs
@@ -290,7 +301,7 @@ private unsafe def runExtractFlat (cfg : Cli) : IO UInt32 := do
   let some out := cfg.outputDir
     | IO.eprintln "extract-flat requires --output DIR"
       return 1
-  let data ← loadCollectedData dataPath
+  let data ← loadCollectedData dataPath cfg.verifyIntegrity
   let projectDir : System.FilePath := "."
   let ws ← loadWorkspaceAt projectDir
   let imports := importRoots ws cfg.excludeLibs
@@ -376,7 +387,7 @@ private def runProvenance (cfg : Cli) : IO UInt32 := do
   let some ledgerPath := cfg.provenancePath
     | IO.eprintln "provenance requires --provenance PATH (the ledger to create or extend)"
       return 1
-  let data ← loadCollectedData dataPath
+  let data ← loadCollectedData dataPath cfg.verifyIntegrity
   let unhashed := (data.decls.filter (·.proofIrrelHash?.isNone)).size
   if unhashed > 0 then
     IO.eprintln s!"provenance needs semantic hashes: {unhashed} of {data.decls.size} declarations \
@@ -438,7 +449,7 @@ private def runBuildSite (cfg : Cli) : IO UInt32 := do
   let some dataPath := cfg.dataPath
     | IO.eprintln "build-site requires --data PATH"
       return 1
-  let data ← loadCollectedData dataPath
+  let data ← loadCollectedData dataPath cfg.verifyIntegrity
   buildSiteFrom cfg data
 
 /-- `all` (also the default when no subcommand is given): runs the full pipeline in one

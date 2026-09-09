@@ -18,7 +18,7 @@ is.
 | whole Mathlib, 305,428 declarations | | |
 |---|---|---|
 | `collect` | **2 h 06 m, 19.3 GB, 1.23 GB `data.json`** | **measured, completed** |
-| `build-site` | ~7 h, ~50 GB (range 5–10 h, 45–75 GB) | extrapolated |
+| `build-site` | ~7 h, ~50 GB (range 5–10 h, 45–75 GB) | extrapolated from 3 measured points |
 | site on disk | ~8 GB | extrapolated |
 | first page load | ~1.5–2 MB gzipped, ~20 kB thereafter | extrapolated |
 
@@ -59,10 +59,14 @@ none.
 
 | declarations | `collect` | peak RSS | `data.json` | `build-site` | peak RSS | site | per page |
 |---|---|---|---|---|---|---|---|
-| 4,395 | 0:13 | 2.12 GB | 10.5 MB | 0:32 | 0.51 GB | 0.09 GB | 21.3 kB |
-| 16,876 | 0:57 | 2.91 GB | 36.7 MB | 2:44 | 1.65 GB | 0.35 GB | 21.5 kB |
-| 93,507 | 6:16 | 5.95 GB | 246.1 MB | 43:25 | 10.58 GB | 2.29 GB | 25.6 kB |
+| 4,395 | 0:13 | 2.12 GB | 10.5 MB | 0:32 | 0.32 GB | 0.09 GB | 21.3 kB |
+| 16,876 | 0:57 | 2.91 GB | 36.7 MB | 2:48 | 0.96 GB | 0.35 GB | 21.5 kB |
+| 93,507 | 6:16 | 5.95 GB | 246.1 MB | 44:58 | 8.17 GB | 2.29 GB | 25.6 kB |
 | **305,428** | **2:06:21** | **19.30 GB** | **1,262 MB** | *not run* | | | |
+
+The `build-site` peaks are **37%, 42% and 23%** below what the same corpora cost before Verso was
+told not to build a search index it then discarded; wall time did not move. See
+[BUILD-SITE-COST.md](BUILD-SITE-COST.md).
 
 At 93,507 declarations a declaration page is **17.3 kB** of HTML, of which 1.63 kB is the dependency
 graph, drawing a mean of **78.9 nodes**. Served with gzip: **1.24 MB** on a first visit, **18 kB** for
@@ -108,8 +112,8 @@ Exponents fitted between the 16,876- and 93,507-declaration points; extrapolatio
 | `collect` wall | n^1.10 | 0.38 h | **2.11 h** — 5.5× |
 | `collect` peak RSS | n^0.42 | 9.8 GB | **19.3 GB** — 2.0× |
 | `data.json` | n^1.11 | 0.90 GB | **1.23 GB** — 1.4× |
-| `build-site` wall | n^1.61 | 4.9 h | — |
-| `build-site` peak RSS | n^1.09 | 38 GB | — |
+| `build-site` wall | n^1.62 | 5.1 h | — |
+| `build-site` peak RSS | n^1.25 | 36 GB | — |
 | site on disk | n^1.10 | 8.4 GB | — |
 | per declaration page | n^0.10 | 28.9 kB | — |
 
@@ -118,8 +122,10 @@ environment floors and shallower closures than the real thing, and nothing in th
 that. This is the same error the previous document made in a worse form, and the only honest
 correction is to say so and widen the range.
 
-So for `build-site`, the raw 4.9 h and 38 GB become **~7 h and ~50 GB, with a plausible range of
-5–10 h and 45–75 GB**. The most relevant calibration is `data.json`'s 1.4×, since `data.json` is
+So for `build-site`, the raw 5.1 h and 36 GB become **~7 h and ~50 GB, with a plausible range of
+5–10 h and 45–75 GB**. The search-index fix lowered the base but steepened the memory exponent
+(1.09 → 1.25): what it removed is a smaller share of the peak at large scope than at small, so the
+calibrated estimate lands where it did before. The most relevant calibration is `data.json`'s 1.4×, since `data.json` is
 `build-site`'s entire input and it imports no Lean environment; the 5.5× on `collect` wall time is
 driven by importing all of Mathlib, which `build-site` never does.
 
@@ -128,8 +134,9 @@ bounds peak by the largest chapter rather than by the library.
 
 ### The page is flat, which is the point
 
-Page HTML grows as **n^0.10** — 21.3 kB at 4,395 declarations, 25.6 kB at 93,507. A 21× larger
-library costs 20% more page. The closure itself grows (n^1.10, ~260 nodes projected at full scale)
+Page HTML grows as **n^0.12** — 13.4 kB at 4,395 declarations, 17.3 kB at 93,507. A 21× larger
+library costs 29% more page. (The `per page` column in the table above is the *whole site* divided by
+its declaration pages, so it also carries the shared tables and assets.) The closure itself grows (n^1.10, ~260 nodes projected at full scale)
 but at ~21 bytes per node-and-its-edges it stays cheap: a mean page draws its whole closure for
 about 6 kB.
 
@@ -141,30 +148,62 @@ pairs. None of the site's growth is in the pages.
 
 ## Where `build-site` spends itself
 
-Not yet measured phase by phase — this is read off the code, and is the next thing to instrument.
+Summarized here; [BUILD-SITE-COST.md](BUILD-SITE-COST.md) carries the full profile, what was ruled
+out, and the options for fixing it.
 
-1. **Decoding `data.json`.** `loadCollectedData` does `readFile` (the whole file as one `String`) →
-   `Json.parse` (a tree) → `resolve` (a second tree, with interning undone) → `fromJson?` (the
-   structures). Four representations at once, and the interning that keeps the file small is
-   deliberately undone in memory.
-2. **The whole document tree.** `mkRootPart` builds every page's blocks before `manualMain` writes
-   anything, so 305,428 pages exist as `Part`/`Block` structures at once. That `--per-chapter` was
-   built to bound exactly this is the best evidence available that it is the dominant term.
-3. **`withClosures`** rebuilds, on load, the closures `collect` stopped storing at format version 12
-   — twice per declaration, `transDeps` (extraction) and `dataTransDeps` (meaning), as independent
-   arrays. It reads worse than it measures: at 93,507 declarations a page's meaning closure averages
-   78.9 members, so both closure sets together come to roughly 30M pointer entries, **~250 MB against
-   a 10.58 GB peak**. Worth trimming — `build-site` appears never to read `transDeps`, which is the
-   *extraction* closure — but it is not where the memory is.
-4. **Three passes that rewrite every page** — sidebar pruning, search-asset stripping, asset
-   hoisting. Cheap in memory, not in time: at 93,507 declarations that is ~95,000 files rewritten
-   three times, and the pruning alone moved 7.6 GB.
+Measured, not inferred: `build-site` logs elapsed time and RSS at each phase boundary. At 93,507
+declarations (43 min, 10.9 GB peak):
 
-What is known is only that the *payload* is not the driver: halving `data.json` cut `collect`'s peak
-by 59% and `build-site`'s by 8%. Which of (1) and (2) accounts for the rest is unmeasured, and they
-have opposite remedies — stream the decode, or render in chunks. Instrument before choosing.
+| phase | time | share | RSS after |
+|---|---|---|---|
+| read `data.json` | 0.8s | — | 0.6 GB |
+| parse json | 3.0s | — | 1.9 GB |
+| decode (resolve + fromJson) | 6.1s | — | 2.9 GB |
+| `withClosures` | **0.0s** | — | 2.9 GB |
+| integrity check | 36.7s | 1.4% | 2.9 GB |
+| build document tree | 180.9s | 7% | **7.2 GB** |
+| **verso render + write** | **2093.1s** | **81%** | peak **10.9 GB** |
+| prune sidebars | 157.7s | 6% | 3.5 GB |
+| search mode | 36.7s | 1.4% | |
+| chapter tables | 1.5s | — | |
+| hoist assets | 70.3s | 2.7% | |
 
----
+**Verso's render is four fifths of the time.** The parts this project controls — decoding, the
+integrity check, the three rewrite passes — are 11% between them.
+
+**The document tree is the memory.** It is 7% of the time but 4.3 GB of the 10.9 GB peak, and it
+scales worse than anything else measured. From 16,876 to 93,507 declarations — 5.5× — it grew
+**14.4× in memory and 33× in time**, while the decode grew 5.6× and the render's own overhead 4.1×.
+The cause is that the tree holds every page's `GraphData` — node and edge arrays sized by that page's
+closure — for the whole library at once. The rendered page stays flat because interning shrinks it on
+the way out; the structure before serialization does not.
+
+The integrity check is the other superlinear one: 0.5s → 36.7s across the same step, a 73× jump.
+
+**`withClosures` costs nothing** — 0.0s at both scales. An earlier draft of this document named it as
+the prime suspect on the strength of `build-site` not improving when the payload halved. That was an
+elimination dressed up as an accusation; the arithmetic (~30M pointer entries, ~250 MB) never
+supported it, and the measurement settles it.
+
+### One thing Verso was doing for nothing
+
+`emitSearchIndex` is guarded on `.search ∈ config.features`, which defaults to every feature. Nothing
+set it, so under `--search none` Verso built the full-text index, wrote it, and `applySearchMode`
+then emptied it. `renderConfig` now clears the feature for that mode, and Verso never builds it:
+**peak RSS at 16,876 declarations fell from 1,670 MB to 974 MB, −42%**, consistently across repeated
+runs. Wall time did not measurably change — two runs of the same configuration differed by 18%, so
+any time effect is below the noise on a machine in use.
+
+Verso emits the search `<script>` tags from its page template rather than from the feature set, so
+the tags survive the feature being off and `stripSearchAssets` is still required. Suppressing the
+index without stripping them leaves every page requesting five files that were never written.
+
+### Not yet measured
+
+Verso traverses the document to a fixed point — up to `maxTraversals := 20` passes, each ending in a
+deep structural comparison of the whole tree and state. Verso reports per-pass timing under
+`config.verbose`, which this build does not set. Whether the render's 81% is mostly emission or
+mostly re-walking is the obvious next question, and that flag answers it.
 
 ## What it costs a reader
 
@@ -190,11 +229,13 @@ Two things had to go, and both are done:
 
 ## What remains
 
-1. **Instrument `build-site`.** Everything above about where its time and memory go is read off the
-   code. Sample RSS through a run and timestamp the phases before optimizing anything.
-2. **Find the peak before touching anything.** The decode chain and the document tree are the two
-   candidates; closure derivation is not, on the arithmetic above. A first cut: log RSS after
-   `loadCollectedData`, after `withClosures`, and after `mkRootPart`.
+1. **Run Verso with `config.verbose`** to see how many traversal passes actually happen and what
+   each costs. It is one flag, and it splits the render's 81% into "emitting pages" (irreducible
+   here) and "re-walking the document" (possibly not).
+2. **Shrink the document tree, or avoid holding all of it.** 4.3 GB of the 10.9 GB peak, growing
+   14.4× per 5.5× of library. Either the per-page `GraphData` should be built at render time rather
+   than held in the tree, or the tree should be built a chapter at a time — which is what
+   `--per-chapter` already does, and is the reason to reach for it.
 3. **Stream `collect`'s output.** Its 19.3 GB peak includes a late surge from serialization —
    `toJson` over the whole structure, `intern` building a second tree plus its table, `.compress`
    into one 1.26 GB `String`, all before a byte reaches disk. Writing incrementally would cut the

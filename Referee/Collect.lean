@@ -141,6 +141,12 @@ structure Cli where
   A render-time flag, like `--trust`: the index is derived from the rendered pages, so changing it
   costs a `build-site` and never a re-import. -/
   searchMode : SearchMode := .full
+  /-- Whether to re-check the decoded data's closure invariants on load (`--no-verify` turns it
+  off). On by default: it is the guard on the one part of the pipeline `MeaningGraph`'s proofs do
+  not cover, the `intern`/`resolve` round trip. Turning it off is for repeated renders of a file
+  already checked once — it grew 73× across a 5.5× step in library size, so at Mathlib scope it is
+  minutes of re-verifying a file that has not changed. -/
+  verifyIntegrity : Bool := true
   /-- Whether `build-site` renders one chapter at a time instead of the whole library in one Verso
   invocation (`--per-chapter`).
 
@@ -1499,6 +1505,7 @@ def usage : String :=
     "  --data PATH          Collected-data JSON file: written by `collect`, read by `extract`",
     "                       and `build-site`",
     "  --jobs N             Worker processes to run at once in `highlight-extracted`",
+    "  --no-verify          Skip the integrity re-check of the collected data on load",
     "                       (default: CPU count)",
     "  --trust PKG          Treat this upstream package, and everything it depends on, as",
     "                       audited. Repeatable. Anything left untrusted is reported on the",
@@ -1598,6 +1605,9 @@ def parseArgs : List String → Except String Cli
         | .error s!"--search expects one of full, names, none; got: {mode}"
       let cfg ← parseArgs rest
       pure { cfg with searchMode := mode }
+  | "--no-verify" :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with verifyIntegrity := false }
   | flag :: _ =>
       .error s!"Unknown or incomplete option: {flag}\n\n{usage}"
 
