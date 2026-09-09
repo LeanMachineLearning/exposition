@@ -129,10 +129,11 @@ page splitting. That hierarchy is fine as **URL structure and table of contents*
 as the *only way in*, which is what it is today: three clicks deep before a reader sees a
 declaration, in a reading order the library does not actually have.
 
-So the hierarchy stays; the **entry points change**. The spine becomes search, filter, and the
+So the hierarchy stays; the **entry points change**. The spine becomes browsing, filtering, and the
 claims view (P3). Verso ships search as a built-in feature (elasticlunr + fuzzysort,
 [Features.lean](../../.lake/packages/verso/src/verso-manual/VersoManual/Html/Features.lean)) and it is
-on by default — another capability already paid for and currently unexploited.
+on by default, but it is now turned off — see the amendment under "Not yet done" — because its index
+outgrows everything else on a library-scale site.
 
 ### P3. Foreground the library's *claims*, not its declaration count
 
@@ -369,8 +370,11 @@ Declarations whose names differ only outside ASCII — `induction_on`, `inductio
 
 ### Not yet done
 
-- **Search** — Verso's built-in full-text search is enabled and untouched. It does name lookup;
-  it does not know about kinds, closures or trust, which is what Browse is for.
+- **Search** — removed rather than deferred. Verso's index is fetched eagerly by every page and is
+  the largest artifact on the site (33.5 MB gzipped at 28,381 declarations; an index over titles
+  alone is still 1.88 MB), and what it bought was name lookup that does not know about kinds,
+  closures or trust. Browse does that job and costs nothing until it is opened, so `build-site`
+  clears Verso's `search` feature and strips the asset tags its page template emits regardless.
 - **P8, partially** — path queries ("why does A depend on B") and module-level aggregate graphs are
   not built. The rest of P8 is done: the force-directed layout is gone, replaced by a deterministic
   layered DAG (rows by longest-path depth, edges routed through waypoints, transitively reduced),

@@ -69,9 +69,6 @@
   --verso-structure-color: var(--site-ink);
   --verso-selected-color: var(--site-accent-soft);
   --verso-toc-background-color: var(--site-surface-2);
-  /* Verso's search stylesheet reads this but never defines it, so it falls back to white and the
-     search box stays light in dark mode. Defining it here is enough to theme the whole combobox. */
-  --verso-background-color: var(--site-surface);
 
   --verso-code-const-color: #2b5f7d;
   --verso-code-const-weight: 500;

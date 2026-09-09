@@ -678,7 +678,7 @@ block_extension Block.graph (_payload : GraphData) where
     -- document order during parsing, which is before `graph.js` draws on `DOMContentLoaded`.
     --
     -- Site-root-relative, which every page's `<base href>` makes correct at every depth, and
-    -- untouched by `hoistInlineAssets`, which only ever looks at attribute-less blocks.
+    -- untouched by `rewriteSitePages`'s hoisting, which only looks at attribute-less blocks.
     let tables := payload.tables.map fun path =>
       Html.tag "script" #[("src", path)] .empty
     pure {{

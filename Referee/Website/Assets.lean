@@ -203,13 +203,14 @@ Takes the upstream table because `upstreamJsFile` depends on the project, unlike
 here, which is `include_str`-embedded at build time. -/
 def renderConfig (externals : Array ExternalDeclInfo) (trusted : Std.HashSet Name)
     (showTrusted : Bool) (packageRanks : Std.HashMap Name Nat)
-    (nodeIndex : Std.HashMap Name Nat) (searchMode : SearchMode) : RenderConfig :=
+    (nodeIndex : Std.HashMap Name Nat) : RenderConfig :=
   {
-    -- `--search none` is told to Verso rather than undone afterwards. Verso guards both
-    -- `emitSearchBox` and `emitSearchIndex` on this flag, so with it off the full-text index is
-    -- never built — where `applySearchMode` could only empty it once written, having paid to
-    -- construct it. On a library-scale site that index is the largest artifact Verso produces.
-    features := if searchMode == .none then .ofArray #[.KaTeX] else .all
+    -- Search is off, and Verso is told so rather than having its output undone afterwards: it
+    -- guards both `emitSearchBox` and `emitSearchIndex` on this flag, so the full-text index is
+    -- never built. On a library-scale site that index is the largest artifact Verso produces —
+    -- about 17 kB per declaration, in a file every page loads eagerly — and it answers a question
+    -- nobody asked, since what a reader wants here is a name, which is Browse's job.
+    features := .ofArray #[.KaTeX]
     emitTeX := false
     emitHtmlSingle := .no
     emitHtmlMulti := .immediately

@@ -3,9 +3,6 @@ module
 public import Referee.Website.Blocks
 -- For `declTableJs`, the other half of `thinGraphNodes`.
 public import Referee.Website.Graph
--- For `--search`, which rebuilds the index Verso emitted using the same builder Verso builds it
--- with, rather than hand-writing elasticlunr's on-disk shape.
-public import VersoSearch
 
 open Lean
 open Lean.Meta
@@ -46,7 +43,7 @@ of that site's 1.5 GB.
 
 Those bytes were never read. `assets/toc.js` has always removed the non-root blocks on load
 (`.split-toc:not(.book)`), because the navigation they duplicate is better served by the module
-page's declaration list, by Browse and by search. This removes them before they are written rather
+page's declaration list and by Browse. This removes them before they are written rather
 than after they are parsed: the same site a reader has always seen, minus the transfer, the parse
 and the storage.
 
@@ -237,129 +234,21 @@ private def rejoinInlineBlocks (tag : String) (literals bodies : Array String)
     out := out ++ literals[i + 1]!
   return out
 
-/-! ### Narrowing the search index
-
-Verso indexes the full text of every page. For a manual that is right — its pages are prose, and a
-reader half-remembers a phrase. For a library it is the single largest artifact on the site and it
-answers a question nobody asked: measured at **16.7 kB per declaration**, which is about 5 GB across
-Mathlib's 304,210, in a file `defer`-loaded by *every* page. Someone searching a library site is
-looking for a name, not a sentence.
-
-`--search names` keeps Verso's search box, its ranking, its result rendering and its links, and
-changes only what the inverted index is built over: each document's title instead of its text. On
-this site a declaration page's title is the declaration's name and a module page's is the module's,
-which is exactly the thing worth finding.
-
-The rewrite is deliberately the smallest one that works. Verso splits its search output in two: an
-eagerly-loaded `searchIndex.js` holding the inverted index, and per-bucket `searchIndex_<n>.js`
-files holding each document's stored fields, fetched only when a result is shown. **Only the
-inverted index is replaced.** The buckets are left exactly as Verso wrote them, so every result
-still renders its real title, breadcrumb and excerpt, and `window.searchIndexVersion` — which is how
-the loader reconstructs bucket URLs — is preserved untouched along with the rest of the file.
-
-`--search none` writes the same file with an index over no documents and deletes the buckets. The
-box stays and finds nothing, which is the honest behaviour for a site published somewhere the index
-cannot be hosted; it is not a way to make search better. -/
-
-/-- Where Verso writes the search assets, relative to the output directory. -/
-private def searchAssetDir (out : System.FilePath) : System.FilePath :=
-  out / "html-multi" / "-verso-search"
-
-/-- The JSON a bucket file wraps, i.e. the argument of its `resolve(…)` call.
-
-Verso writes these as `window.docContents[<n>].resolve(<json>);`, so this recovers `<json>` without
-needing to know `<n>`. -/
-def bucketPayload (text : String) : Option String :=
-  match text.splitOn ".resolve(" with
-  | [] | [_] => none
-  | _ :: rest =>
-    let body := (String.intercalate ".resolve(" rest).trimAscii.toString
-    if body.endsWith ");" then some (body.dropEnd 2).toString else none
-
-/-- Reads the id → title map back out of the bucket files, which is everything needed to rebuild the
-inverted index over titles alone.
-
-Read from Verso's own output rather than rebuilt from `data.decls` so that the ids are by
-construction the ones the pages were written with: an index whose refs did not match would produce
-results that lead nowhere, and would do it silently. -/
-private def readSearchTitles (dir : System.FilePath) : IO (Array (String × String)) := do
-  let mut out := #[]
-  for entry in (← dir.readDir) do
-    if entry.fileName.startsWith "searchIndex_" && entry.path.extension == some "js" then
-      let text ← IO.FS.readFile entry.path
-      let some payload := bucketPayload text | continue
-      let .ok json := Json.parse payload | continue
-      match json with
-      | .obj kvs =>
-        out := kvs.foldl (init := out) fun acc ref doc =>
-          match doc.getObjValAs? String "header" with
-          | .ok header => acc.push (ref, header)
-          | .error _ => acc
-      | _ => continue
-  return out
-
-/-- The bucket files, which `--search none` removes and `--search names` leaves alone. -/
-private def searchBucketFiles (dir : System.FilePath) : IO (Array System.FilePath) := do
-  let mut out := #[]
-  for entry in (← dir.readDir) do
-    if entry.fileName.startsWith "searchIndex_" && entry.path.extension == some "js" then
-      out := out.push entry.path
-  return out
-
-/-- An elasticlunr index over `docs`, each indexed by its title alone.
-
-The field layout matches `Verso.Search.IndexM.finalize` exactly — `id`, `header`, `contents`, with
-`id` as the reference — because the browser-side loader is Verso's and expects that shape. Two
-values differ from what Verso would pass:
-
-* `contents` gets the title rather than the page's text, which is the point of the mode. It gets the
-  title rather than the empty string because `search-box.js` queries `contents` with a boost of 1,
-  so the field has to carry tokens for a match to score.
-* `id` gets the empty string rather than the reference. Verso passes the reference and then indexes
-  it, since the guard in `Index.addDoc` compares a *field name* against the *reference value* and so
-  never fires. Nothing queries `id` — `search-box.js` boosts `header` and `contents` and no other
-  field — so those postings are dead weight, and on a name index they were 29% of it. -/
-def titleOnlyIndex (docs : Array (String × String)) : Json :=
-  let builder : Verso.Search.IndexBuilder := { refField := "id" }
-  let empty := builder.addField "id" |>.addField "header" |>.addField "contents" |>.build
-  let index := docs.foldl (init := empty) fun idx (ref, title) =>
-    idx.addDoc ref #["", title, title]
-  -- Verso stores the documents in the buckets, not in the index, and the loader expects the same.
-  (index.extractDocs.fst).toJson
-
-/-- Replaces the inverted index inside `searchIndex.js`, keeping the rest of the file — the priority
-map and the bucket version — exactly as Verso wrote it. Returns the old and new payload sizes, or
-`none` if the file was not the expected shape. -/
-private def replaceSearchPayload (file : System.FilePath) (payload : String) :
-    IO (Option (Nat × Nat)) := do
-  let text ← IO.FS.readFile file
-  let marker := "const __verso_searchIndexData = "
-  if !text.startsWith marker then
-    return none
-  -- `compress` emits no newlines, so the first blank-line-terminated `;` is the one Verso wrote to
-  -- close the assignment and cannot occur inside the payload.
-  match (text.drop marker.length).toString.splitOn ";\n\n" with
-  | [] | [_] => return none
-  | old :: tail =>
-    IO.FS.writeFile file (marker ++ payload ++ ";\n\n" ++ String.intercalate ";\n\n" tail)
-    return some (old.utf8ByteSize, payload.utf8ByteSize)
-
 /-! ### Removing the search box
 
-`SearchMode.none` has always promised "no index at all, and no search box", and delivered the first
-half: emptying `searchIndex.js` left a box that finds nothing, which reads as a broken feature rather
-than an absent one.
+Verso emits the search assets' `<script>` and `<link>` tags from its page template rather than from
+its feature set, so clearing the feature (see `renderConfig`) stops the index from being *built* but
+leaves every page still asking for it. This removes the tags.
 
-The box is worth being able to remove outright, and not only for tidiness. Measured on the
-28,381-declaration `Mathlib.Analysis` site, `searchIndex.js` is **33.5 MB gzipped** with `full` and
-1.88 MB with `names`, and every page fetches it with a `<script defer>` before a reader has typed
-anything — against about 0.5 MB for everything else the page pulls. At Mathlib's scope the name
-index alone projects past 20 MB per page view. Nothing else on the site is in that league.
+The box is worth removing, and not only for tidiness. Measured on the 28,381-declaration
+`Mathlib.Analysis` site, `searchIndex.js` was **33.5 MB gzipped** over full text and 1.88 MB over
+names alone, and every page fetched it with a `<script defer>` before a reader had typed anything —
+against about 0.5 MB for everything else the page pulls. At Mathlib's scope even the name index
+projects past 20 MB per page view. Nothing else on the site is in that league.
 
-Removing it is a matter of removing references: Verso builds the box in JavaScript
-(`search-init.js`) and writes no markup for it, so a page that loads none of `-verso-search/` simply
-does not have one. What a reader loses is the box; what they keep is Browse, which lists every
-declaration and is fetched only when visited. -/
+Verso builds the box in JavaScript (`search-init.js`) and writes no markup for it, so a page that
+loads none of `-verso-search/` simply does not have one. What a reader loses is the box; what they
+keep is Browse, which lists every declaration and is fetched only when visited. -/
 
 /-- Removes every `<script>` and `<link>` pointing into `-verso-search/` from one page.
 
@@ -399,14 +288,6 @@ def stripSearchAssets (html : String) : String := Id.run do
     if inDroppedScript then return html
     return out
 
-/-- Deletes a directory and everything under it. -/
-private partial def removeTree (dir : System.FilePath) : IO Unit := do
-  if !(← dir.pathExists) then
-    return
-  for entry in (← dir.readDir) do
-    if (← entry.path.isDir) then removeTree entry.path else IO.FS.removeFile entry.path
-  IO.FS.removeDir dir
-
 /-! ## One walk over the pages instead of four
 
 Sidebar pruning, search-asset stripping and asset hoisting each used to read every page, transform
@@ -434,11 +315,10 @@ doing that work twice. -/
 
 `names` empty means the scanning pass, which wants the pruned and stripped text but has nothing to
 hoist yet. -/
-private def rewritePage (prune stripSearch : Bool)
+private def rewritePage (prune : Bool)
     (names : Std.HashMap (String × String) String) (text : String) : String := Id.run do
   let mut out := if prune then pruneSidebarSubTocs text else text
-  if stripSearch then
-    out := stripSearchAssets out
+  out := stripSearchAssets out
   if !names.isEmpty then
     for kind in inlineAssetKinds do
       if let some (literals, bodies) := splitInlineBlocks out kind.tag then
@@ -464,18 +344,18 @@ private partial def scanPagesIn (dir : System.FilePath)
 
 /-- Rewrites every page under `dir` once, applying all three transforms. Returns how many pages
 changed and how many bytes went. -/
-private partial def rewritePagesIn (dir : System.FilePath) (prune stripSearch : Bool)
+private partial def rewritePagesIn (dir : System.FilePath) (prune : Bool)
     (names : Std.HashMap (String × String) String) : IO (Nat × Nat) := do
   let mut pages := 0
   let mut saved := 0
   for entry in (← dir.readDir) do
     if (← entry.path.isDir) then
-      let (p, sv) ← rewritePagesIn entry.path prune stripSearch names
+      let (p, sv) ← rewritePagesIn entry.path prune names
       pages := pages + p
       saved := saved + sv
     else if entry.path.extension == some "html" then
       let text ← IO.FS.readFile entry.path
-      let out := rewritePage prune stripSearch names text
+      let out := rewritePage prune names text
       if out.utf8ByteSize < text.utf8ByteSize then
         IO.FS.writeFile entry.path out
         pages := pages + 1
@@ -488,61 +368,26 @@ structure PageRewriteStats where
   saved : Nat := 0
   hoisted : Nat := 0
 
-/-- Prunes sidebars, optionally strips the search assets, and hoists shared inline blocks — in two
-walks over the pages rather than four. See the section note above. -/
-def rewriteSitePages (dir : System.FilePath) (prune stripSearch hoist : Bool) :
+/-- Prunes sidebars, strips the search assets, and hoists shared inline blocks — in two walks over
+the pages rather than four. See the section note above. -/
+def rewriteSitePages (dir : System.FilePath) (prune : Bool) :
     IO PageRewriteStats := do
   if !(← dir.pathExists) then
     return {}
-  let names ← if hoist then do
-      let counts ← scanPagesIn dir {}
-      -- `blockTag`, not `tag`: in pattern position the latter resolves to `Html.tag`.
-      let shared := counts.fold (init := #[]) fun acc (blockTag, body) n =>
-        if n ≥ 2 && body.utf8ByteSize ≥ minInlineAssetSize then acc.push (blockTag, body) else acc
-      if shared.isEmpty then pure {} else do
-        let assetDir := dir / "-verso-data"
-        IO.FS.createDirAll assetDir
-        let mut names : Std.HashMap (String × String) String := {}
-        for (blockTag, body) in shared do
-          let file := inlineAssetFileName (InlineAssetKind.ofTag blockTag) body
-          IO.FS.writeFile (assetDir / file) body
-          names := names.insert (blockTag, body) file
-        pure names
-    else pure {}
-  let (pages, saved) ← rewritePagesIn dir prune stripSearch names
+  let counts ← scanPagesIn dir {}
+  -- `blockTag`, not `tag`: in pattern position the latter resolves to `Html.tag`.
+  let shared := counts.fold (init := #[]) fun acc (blockTag, body) n =>
+    if n ≥ 2 && body.utf8ByteSize ≥ minInlineAssetSize then acc.push (blockTag, body) else acc
+  let mut names : Std.HashMap (String × String) String := {}
+  if !shared.isEmpty then
+    let assetDir := dir / "-verso-data"
+    IO.FS.createDirAll assetDir
+    for (blockTag, body) in shared do
+      let file := inlineAssetFileName (InlineAssetKind.ofTag blockTag) body
+      IO.FS.writeFile (assetDir / file) body
+      names := names.insert (blockTag, body) file
+  let (pages, saved) ← rewritePagesIn dir prune names
   return { pages, saved, hoisted := names.size }
-
-/-- Applies `--search` to the site Verso has just written. A no-op for `full`, which is Verso's own
-output. -/
-def applySearchMode (mode : SearchMode) (out : System.FilePath) : IO Unit := do
-  if mode == .full then
-    return
-  let dir := searchAssetDir out
-  if mode == .none then
-    -- The pages' own `<script src>` tags are stripped by `rewriteSitePages`, which walks them once
-    -- for all three whole-site rewrites. What is left here is the assets themselves: Verso is told
-    -- not to build search for this mode (`renderConfig` clears the feature), so the directory is
-    -- normally already absent, but a site rendered by an older build may still have one.
-    let before ← if (← dir.pathExists) then
-        pure ((← dir.readDir).foldl (init := 0) fun acc _ => acc + 1)
-      else pure 0
-    removeTree dir
-    -- Verso's own search *page*, which nothing links to once the box is gone. Beside the assets,
-    -- not beside `out`: the pages live under `html-multi`.
-    removeTree (out / "html-multi" / "search")
-    if before > 0 then
-      IO.println s!"Removed the {before} files under -verso-search/"
-    return
-  if !(← dir.pathExists) then
-    return
-  let titles ← readSearchTitles dir
-  let payload := (titleOnlyIndex titles).compress
-  match ← replaceSearchPayload (dir / "searchIndex.js") payload with
-  | none =>
-    IO.eprintln "warning: could not recognise the search index Verso wrote; leaving it alone"
-  | some (old, new) =>
-    IO.println s!"Rebuilt the search index over {titles.size} titles: \
-      {old / 1048576} MB to {new / 1048576} MB"
 
 /-! ## Writing the chapter tables
 

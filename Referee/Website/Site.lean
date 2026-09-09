@@ -196,12 +196,8 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     | some out => ["--output", out]
     | none => []
   let config := renderConfig data.externalDecls ctx.trusted cfg.showTrustedUpstream ctx.packageRanks
-      ctx.nodeIndex cfg.searchMode
+      ctx.nodeIndex
   if cfg.perChapter then
-    if cfg.searchMode == .full then
-      IO.eprintln "--per-chapter requires --search names (or none): merging the full-text \
-        inverted indexes of separate runs would mean re-indexing the whole library."
-      return 1
     let code ← buildSitePerChapter cfg data groups ctx overviewBlocks versoArgs config
     if code != 0 then
       return code
@@ -218,14 +214,6 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     let _ ← phase "verso render + write" tRendered
     if code != 0 then
       return code
-    -- After Verso has written the pages, and only on success: a half-rendered site is not one to
-    -- rewrite in place. The index rewrite comes before the page walk so that a rebuilt
-    -- `searchIndex.js` is never one of the blocks hoisted out of the pages — it is referenced by
-    -- `<script src>` and so was never inline, but the ordering makes that independent of how Verso
-    -- chooses to emit it.
-    let tPost ← IO.monoMsNow
-    applySearchMode cfg.searchMode (cfg.outputDir.getD ".")
-    let _ ← phase "search mode" tPost
   -- Outside the branch, because both kinds of build render the same pages and those pages reference
   -- these files. Before hoisting only for tidiness in the log: hoisting never looks at them, since
   -- they arrive as `<script src>` rather than as inline blocks.
@@ -244,15 +232,14 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
   -- sidebar to lift from the landing page, so it does not ask for that again here.
   let tRewrite ← phase "chapter tables" tTables
   let stats ← rewriteSitePages ((cfg.outputDir.getD ".") / "html-multi")
-    (prune := !cfg.perChapter) (stripSearch := cfg.searchMode == .none)
-    (hoist := cfg.hoistAssets)
+    (prune := !cfg.perChapter)
   if stats.pages > 0 then
     IO.println s!"Rewrote {stats.pages} pages in one pass — pruned sidebars, \
-      {if cfg.searchMode == .none then "removed the search box, " else ""}\
-      hoisted {stats.hoisted} shared inline assets — saving {stats.saved / 1048576} MB"
+      removed the search box, hoisted {stats.hoisted} shared inline assets — \
+      saving {stats.saved / 1048576} MB"
   let _ ← phase "rewrite pages" tRewrite
-  -- After hoisting, which is what decides whether the run-uniform head tail carries references or
-  -- inline blocks; either way the global pages take a chapter page's verbatim.
+  -- After hoisting, which is what turns the run-uniform head tail's inline blocks into references;
+  -- the global pages take a chapter page's verbatim.
   if cfg.perChapter then
     completeGlobalHeadTails ((cfg.outputDir.getD ".") / "html-multi") groups ctx
   return 0

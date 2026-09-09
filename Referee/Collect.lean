@@ -41,29 +41,6 @@ open Verso.Output Html
 open MeaningGraph
 open ChallengeGen
 
-/-- What the site's search index is built over (`--search`).
-
-The default indexes what Verso indexes: the full text of every page. That is the right answer for a
-manual, whose pages are prose a reader half-remembers a phrase from. It is the wrong answer for a
-library of a few hundred thousand declarations, where the index outgrows everything else on the site
-— measured at 16.7 kB per declaration, which is 5 GB across Mathlib, in a file every page loads
-eagerly — and where what a reader is looking for is a *name*, not a sentence. -/
-inductive SearchMode where
-  /-- Verso's index over the full text of every page. -/
-  | full
-  /-- An index over page titles only: for this site, declaration and module names. -/
-  | names
-  /-- No index at all, and no search box. -/
-  | none
-deriving Repr, BEq, Inhabited
-
-/-- How `--search` spells each mode. -/
-def SearchMode.ofString? : String → Option SearchMode
-  | "full" => some .full
-  | "names" => some .names
-  | "none" => some .none
-  | _ => Option.none
-
 /-- CLI options used to configure site generation. Shared across the `collect`,
 `extract`, `build-site`, and `all` subcommands; each one only consults the fields relevant
 to it. -/
@@ -127,20 +104,6 @@ structure Cli where
   /-- What to call this revision in the ledger (`--ref`). Defaults to `git describe --tags
   --always`, which prefers a tag and falls back to a short sha. -/
   revisionRef : Option String := none
-  /-- Whether `build-site` lifts the inline `<style>`/`<script>` blocks Verso repeats on every page
-  into shared files (`--no-hoist-assets` turns it off).
-
-  On by default, which is the unusual choice for a flag that rewrites output, and it is defensible
-  because the transform removes only duplication: 74% of a declaration page is boilerplate that is
-  byte-identical on every other page, and the reader is served the same site with a fraction of the
-  transfer. The flag exists for the case where one self-contained file per page matters more than
-  its size — an archive, or a host that cannot serve the assets alongside. -/
-  hoistAssets : Bool := true
-  /-- What the search index is built over (`--search`).
-
-  A render-time flag, like `--trust`: the index is derived from the rendered pages, so changing it
-  costs a `build-site` and never a re-import. -/
-  searchMode : SearchMode := .full
   /-- Whether to re-check the decoded data's closure invariants on load (`--no-verify` turns it
   off). On by default: it is the guard on the one part of the pipeline `MeaningGraph`'s proofs do
   not cover, the `intern`/`resolve` round trip. Turning it off is for repeated renders of a file
@@ -154,10 +117,7 @@ structure Cli where
   peak memory tracks the library — measured at 14.95 GB for 28,251 declarations and projected past
   150 GB for Mathlib. Per-chapter rendering bounds the peak by the largest chapter instead, at the
   cost of a stitching pass afterwards: the global artifacts Verso derives from the whole tree
-  (sidebar, `xref.json`, the `find` page, search buckets, hover data) are merged from the
-  per-chapter runs. Requires `--search names` or `none`: merging full-text inverted indexes would
-  mean re-indexing everything, and at the scale where this flag matters the full index was never
-  viable anyway. -/
+  (sidebar, `xref.json`, the `find` page, hover data) are merged from the per-chapter runs. -/
   perChapter : Bool := false
 deriving Repr
 
@@ -1505,8 +1465,8 @@ def usage : String :=
     "  --data PATH          Collected-data JSON file: written by `collect`, read by `extract`",
     "                       and `build-site`",
     "  --jobs N             Worker processes to run at once in `highlight-extracted`",
-    "  --no-verify          Skip the integrity re-check of the collected data on load",
     "                       (default: CPU count)",
+    "  --no-verify          Skip the integrity re-check of the collected data on load",
     "  --trust PKG          Treat this upstream package, and everything it depends on, as",
     "                       audited. Repeatable. Anything left untrusted is reported on the",
     "                       trust page and on the pages of the declarations that rest on it",
@@ -1528,16 +1488,9 @@ def usage : String :=
     "                       `build-site`. Optional; without it the site says nothing about when",
     "                       anything changed",
     "  --ref NAME           What to call this revision in the ledger (default: git describe)",
-    "  --search MODE        What the search index covers: `full` (every page's text, the default),",
-    "                       `names` (page titles only — declaration and module names), or `none`.",
-    "                       The full index runs about 17 kB per declaration and is loaded eagerly by",
-    "                       every page, so `names` is what makes a large library searchable at all",
-    "  --no-hoist-assets    Keep Verso's inline CSS and JavaScript in every page instead of lifting",
-    "                       the shared blocks into files under `-verso-data/`. Hoisting is on by",
-    "                       default and removes only duplication: it is about 74% of a page",
     "  --per-chapter        Render the site one chapter at a time, bounding `build-site`'s peak",
     "                       memory by the largest chapter instead of the whole library, then stitch",
-    "                       the global artifacts together. Requires `--search names` or `none`",
+    "                       the global artifacts together",
     "  --input FILE         Internal: the file `highlight-file` should process",
   ]
 
@@ -1594,17 +1547,9 @@ def parseArgs : List String → Except String Cli
   | "--ref" :: name :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with revisionRef := some name }
-  | "--no-hoist-assets" :: rest => do
-      let cfg ← parseArgs rest
-      pure { cfg with hoistAssets := false }
   | "--per-chapter" :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with perChapter := true }
-  | "--search" :: mode :: rest => do
-      let some mode := SearchMode.ofString? mode
-        | .error s!"--search expects one of full, names, none; got: {mode}"
-      let cfg ← parseArgs rest
-      pure { cfg with searchMode := mode }
   | "--no-verify" :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with verifyIntegrity := false }

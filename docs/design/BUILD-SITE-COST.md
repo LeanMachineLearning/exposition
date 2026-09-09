@@ -5,8 +5,8 @@
 this one asks where the cost is once you have decided to build one.
 
 `build-site` logs elapsed time and RSS at each phase boundary (`Referee.phase`), which is how every
-number below was obtained. Two monolith-regime corpora, both `--root Mathlib --search none`:
-16,876 declarations and 93,507.
+number below was obtained. Two monolith-regime corpora, both `--root Mathlib`, both with search
+off (then the `--search none` mode, now the only behaviour): 16,876 declarations and 93,507.
 
 ---
 
@@ -74,8 +74,8 @@ re-walking. There is no obviously wasted work inside it to remove.
 ### One piece of waste that was found
 
 `emitSearchIndex` is guarded on `.search ∈ config.features`, which defaults to every feature and
-which nothing set. Under `--search none` Verso therefore built the full-text index, wrote it, and
-`applySearchMode` emptied it afterwards. `renderConfig` now clears the feature for that mode:
+which nothing set. Under what was then `--search none` Verso therefore built the full-text index,
+wrote it, and a post-pass emptied it afterwards. `renderConfig` now clears the feature outright:
 **peak RSS at 16,876 declarations fell 1,670 MB → 974 MB, −42%**, repeatably. Wall time did not
 measurably move; two runs of one configuration differed by 18%, so any time effect is under the
 noise of a machine in use.
@@ -184,7 +184,7 @@ The phase logging is unconditional and cheap (one `/proc/self/status` read per b
 build prints it:
 
 ```bash
-referee build-site --root Mathlib --data data.json --search none --output site
+referee build-site --root Mathlib --data data.json --output site
 ```
 
 For Verso's own traversal accounting, set `verbose := true` in `renderConfig` — but note it also

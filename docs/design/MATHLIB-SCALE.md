@@ -53,7 +53,8 @@ real thing:
 
 ## What was measured
 
-`--root Mathlib`, `--search none`, without `extract` or `highlight-extracted`. A 20-second heartbeat
+`--root Mathlib`, search off (then `--search none`, now the only behaviour), without `extract` or
+`highlight-extracted`. A 20-second heartbeat
 log ran throughout, so a laptop suspend would have shown as a gap and voided the run; there were
 none.
 
@@ -188,8 +189,8 @@ supported it, and the measurement settles it.
 ### One thing Verso was doing for nothing
 
 `emitSearchIndex` is guarded on `.search ∈ config.features`, which defaults to every feature. Nothing
-set it, so under `--search none` Verso built the full-text index, wrote it, and `applySearchMode`
-then emptied it. `renderConfig` now clears the feature for that mode, and Verso never builds it:
+set it, so under what was then `--search none` Verso built the full-text index, wrote it, and a
+post-pass then emptied it. `renderConfig` now clears the feature outright, and Verso never builds it:
 **peak RSS at 16,876 declarations fell from 1,670 MB to 974 MB, −42%**, consistently across repeated
 runs. Wall time did not measurably change — two runs of the same configuration differed by 18%, so
 any time effect is below the noise on a machine in use.
@@ -214,11 +215,11 @@ per page after. A page loads the declaration tables of the chapters its closure 
 Two things had to go, and both are done:
 
 * **The search box.** Verso's `searchIndex.js` is fetched by every page with a `<script defer>`
-  before the reader types. At 28,381 declarations it was **33.5 MB gzipped** under the default
-  `--search full` and 1.88 MB under `--search names`, against ~0.5 MB for everything else on the
-  page. `--search none` now removes the box as well as the index — Verso builds the box in
-  JavaScript, so a page loading none of `-verso-search/` has none. Finding a name is Browse's job,
-  and Browse costs nothing until opened.
+  before the reader types. At 28,381 declarations it was **33.5 MB gzipped** over full text and
+  1.88 MB over titles alone, against ~0.5 MB for everything else on the page. The site now has no
+  search box at all — Verso builds the box in JavaScript, so a page loading none of
+  `-verso-search/` has none. Finding a name is Browse's job, and Browse costs nothing until
+  opened.
 * **Verso's hover data.** `-verso-docs.json` is fetched whole from `window.onload` by every page.
   Declaration pages no longer render highlighted Lean — the statement is taken apart above the fold
   with the site's own hovers, and `Code` and `Proof` are plain text — so nothing on them needs it.
@@ -273,8 +274,7 @@ lake update && lake build Scope
 
 REFEREE=/path/to/exposition/.lake/build/bin/referee
 /usr/bin/time -v lake env $REFEREE collect --root Mathlib --data data.json
-/usr/bin/time -v $REFEREE build-site --root Mathlib --data data.json \
-  --search none --output site
+/usr/bin/time -v $REFEREE build-site --root Mathlib --data data.json --output site
 ```
 
 `lake build Scope` first: `collect` imports the workspace root's libraries and fails immediately with

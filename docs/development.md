@@ -96,7 +96,7 @@ requires from git with `/ "JunkValues"`.
   | `Declaration.lean` | one declaration's page, section by section |
   | `Pages.lean` | the chapter, module, utility, landing and root pages |
   | `Project.lean` | importing the target project, `collectData`, and reading the data back |
-  | `PostProcess.lean` | the three rewrites of what Verso wrote: sidebar, inline assets, search index |
+  | `PostProcess.lean` | the three rewrites of what Verso wrote: sidebar, search assets, inline assets |
   | `PerChapter.lean` | `--per-chapter` rendering and the stitch passes it needs |
   | `Site.lean` | `buildSiteFrom`, and the subcommand dispatch `Main.lean` calls |
 
@@ -154,9 +154,8 @@ exists in a light and a dark variant. It loads after Verso's `book.css` and `ver
 both restates Verso's own custom properties (fonts, text/code/structure colours, code-highlighting
 colours) and overrides the handful of places its stylesheet hardcodes a colour.
 
-Verso ships no dark mode, so the dark variant also themes its chrome — header, table of contents,
-and the search box, which reads a `--verso-background-color` that Verso never defines and so
-defaulted to white. A control in the sidebar cycles auto → light → dark; the choice is stored in
+Verso ships no dark mode, so the dark variant also themes its chrome — header and table of
+contents. A control in the sidebar cycles auto → light → dark; the choice is stored in
 `localStorage` and applied by a small inline script in `<head>` so the page never flashes the wrong
 theme. The dependency graph reads its colours from the same tokens and repaints on a
 `referee:themechange` event rather than requiring a reload.

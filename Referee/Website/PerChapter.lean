@@ -28,8 +28,8 @@ Verso run per chapter plus one for the whole-library pages, all into the same ou
 then stitches back the artifacts Verso derives from whatever tree it was handed.
 
 The stitching is the whole cost of the trade, and it is the bulk of this file: the sidebar, the
-prev/next navigation, `xref.json`, the `find` page, the search buckets and the hover-data
-numbering all have to be reconstructed from runs that each saw a fraction of the tree.
+prev/next navigation, `xref.json`, the `find` page and the hover-data numbering all have to be
+reconstructed from runs that each saw a fraction of the tree.
 -/
 
 /-! ### Chapter-wise rendering
@@ -45,25 +45,20 @@ What makes the split sound is that Referee never uses Verso's cross-referencing 
 every inter-page link is a raw href computed from the data (`declPageHrefMap` and friends), so a
 page rendered in a chapter-scoped run links into other chapters correctly without Verso ever seeing
 them. What Verso *does* derive from its tree, and what therefore has to be reconstructed, is exactly
-five things:
+four things:
 
 * **Chapter numbering.** A part's number is its position among numbered siblings, so a run for
   chapter `g` includes *stub* parts — title, tag and file, no content, no children — for chapters
   `0..g-1`. The stubs cost pages that must not survive, which run *order* solves: the global run
   goes first and each chapter run follows in descending order, so every stub page a run writes is
-  overwritten by a later run that owns it, and the only casualties — the landing, `find` and
-  `search` pages, clobbered by stub landings — are stashed from the global run and restored.
+  overwritten by a later run that owns it, and the only casualties — the landing and `find` pages,
+  clobbered by stub landings — are stashed from the global run and restored.
 * **The sidebar.** Each run's pages carry a root TOC of that run's tree only. The global run's tree
   (utility pages plus every chapter as a stub) produces the complete TOC, which is lifted off its
   landing page and substituted into every chapter page, with the `current` row mark re-applied per
   chapter — the only per-page variation the pruned root TOC has.
 * **`xref.json` and the `find` page.** Per-domain union of every run's file; the `find` page embeds
   the exact text of `xref.json`, so the merged text is spliced over the global run's copy.
-* **The search buckets.** Every run emits its own content-hashed bucket files; the union of their
-  documents is re-bucketed under one version and the index rebuilt over it. This is why
-  `--per-chapter` requires `--search names` or `none`: merging full-text inverted indexes means
-  re-indexing the library, and at the scale where this flag matters the full index was never
-  viable.
 * **Hover data.** Pages reference `-verso-docs.json` by dense per-run ids. The stitch pass walks
   every page in tree order, re-assigns ids by first encounter of each distinct payload — the same
   discipline Verso's own dedup applies — rewrites the `data-verso-hover` attributes, and writes the
@@ -76,7 +71,7 @@ pages' heads (the global run's tree of stubs never uses the code-rendering featu
 would otherwise lack the styles its own signature excerpts are styled by).
 
 Measured against a monolithic build of the same data, the result is byte-identical except for
-three disclosed residuals, all checked structurally instead:
+two disclosed residuals, both checked structurally instead:
 
 * **Definition links across runs.** When a constant's defining code block is rendered in the same
   Verso run, other occurrences of it in highlighted code link to that definition site; across runs
@@ -88,10 +83,6 @@ three disclosed residuals, all checked structurally instead:
   the links in the stitch would mean rebuilding Verso's definition-site registry from rendered
   HTML — which token of which page *is* a constant's definition — and is the natural follow-up if
   the degradation matters in practice.
-* **The search version hash.** The rebuilt index payload is byte-identical to the monolithic
-  `--search names` one, but the bucket files carry a version derived from it rather than from
-  Verso's full-text index, which does not exist in any per-chapter run. Chapter *entries* in the
-  result list also carry the stub page's (empty) excerpt rather than the module listing's text.
 * **`xref.json`'s `[anonymous]` entry**, where several targets share one key and the monolithic
   build itself keeps whichever its traversal saw last; the merge may keep a different one. -/
 
@@ -113,7 +104,7 @@ private def stubGroupPart (group : GroupInfo) : Part Manual :=
 
 /-- The root-level files a chapter run's stub landing clobbers, restored from the global run. -/
 private def perChapterStashedPages : Array System.FilePath :=
-  #["index.html", "find" / "index.html", "search" / "index.html"]
+  #["index.html", "find" / "index.html"]
 
 /-- Copies the global run's root-level pages and per-run merge inputs into the stash. -/
 private def stashRunArtifacts (htmlDir stashDir : System.FilePath) (label : String)
@@ -260,7 +251,7 @@ private def orderedPagePaths (groups : Array GroupInfo) (ctx : SiteContext) : Ar
         let base := pathForDeclPage group.key m.path decl.name
         out := out.push (base ++ "index.html")
         out := out.push (base ++ "minimal/index.html")
-  out := out ++ #["find/index.html", "search/index.html"]
+  out := out.push "find/index.html"
   return out
 
 /-- The chapter a page belongs to, by its path — which decides both which run rendered it (and so
@@ -374,6 +365,9 @@ private def headTailOf (page : String) : Option String :=
   | [_, rest] => (rest.splitOn "</head>").head?
   | _ => none
 
+/-- The opening bytes of the theme script, the one element of the head tail every run emits. -/
+private def themeScriptStart : String := "\n    <script>\n      try{"
+
 /-- The closing bytes of the theme script, the one element of the head tail every run emits. -/
 private def themeScriptEnd : String := "}catch(e){}</script>"
 
@@ -382,12 +376,11 @@ hoisting has run — the tail is where the hoisted stylesheet and script referen
 global run's tree of stubs never used the features that emit them, so its pages would otherwise
 lack the styles their own signature excerpts are styled by.
 
-Not a verbatim replacement, because two global pages carry page-specific tail content in mono
-order: the `find` page's `window.xref` script sits between the stylesheet references and the
-feature script, and the `search` page's preload link follows the theme script. So the uniform
-elements are grafted around what is there: everything up to the theme script's end is replaced by
-the reference's same span — which preserves anything *after* it — and the `find` page instead gets
-the reference's pieces spliced on either side of its own script. -/
+Not a verbatim replacement, because the `find` page carries page-specific tail content in mono
+order: its `window.xref` script sits between the stylesheet references and the feature script. So
+the uniform elements are grafted around what is there: everything up to the theme script's end is
+replaced by the reference's same span — which preserves anything *after* it — and the `find` page
+instead gets the reference's pieces spliced on either side of its own script. -/
 def completeGlobalHeadTails (htmlDir : System.FilePath) (groups : Array GroupInfo)
     (ctx : SiteContext) : IO Unit := do
   let some g0 := groups[0]? | return
@@ -395,11 +388,13 @@ def completeGlobalHeadTails (htmlDir : System.FilePath) (groups : Array GroupInf
   if !(← refPath.pathExists) then return
   let some refTail := headTailOf (← IO.FS.readFile refPath) | return
   -- The reference tail dissected: stylesheet references, the feature script, the theme script.
+  -- Bounded by the theme script rather than by the first `<script`, because a corpus whose pages
+  -- use none of the code-rendering features has no feature script at all — and taking the first
+  -- one there would graft the *theme* script onto the `find` page, which already has its own.
   let some uCore := (refTail.splitOn themeScriptEnd).head?.map (· ++ themeScriptEnd) | return
-  let linksPart := (refTail.splitOn "<script").headD ""
-  let f116Part := match refTail.splitOn "<script" with
-    | _ :: featurePiece :: _ => "<script" ++ ((featurePiece.splitOn "</script>").headD "") ++ "</script>"
-    | _ => ""
+  let uniformPrefix := (refTail.splitOn themeScriptStart).headD ""
+  let linksPart := (uniformPrefix.splitOn "<script").headD ""
+  let f116Part := (uniformPrefix.drop linksPart.length).toString
   for path in orderedPagePaths groups ctx do
     if (chapterOfPagePath groups path).isSome then continue
     let file := htmlDir / path
@@ -411,17 +406,21 @@ def completeGlobalHeadTails (htmlDir : System.FilePath) (groups : Array GroupInf
       | tail :: tailParts =>
         if tail == refTail then continue
         let newTail ← if path == "find/index.html" then
+            -- Nothing uniform to graft — the reference tail is the theme script alone — so the
+            -- page keeps what it has rather than being spliced with empty pieces.
+            if uniformPrefix.isEmpty then pure tail else
             -- Graft around the page's own `window.xref` script: stylesheet links before it,
             -- the feature script between it and the theme script.
             let withLinks :=
               if tail.startsWith "\n    " then linksPart ++ (tail.drop 5).toString else tail
-            match withLinks.splitOn "\n    <script>\n      try{" with
+            match withLinks.splitOn themeScriptStart with
             | [beforeTheme, themeAndRest] =>
-              pure (beforeTheme ++ "\n    " ++ f116Part ++ "\n    <script>\n      try{" ++ themeAndRest)
+              let feature := if f116Part.isEmpty then "" else "\n    " ++ f116Part
+              pure (beforeTheme ++ feature ++ themeScriptStart ++ themeAndRest)
             | _ => pure withLinks
           else
-            -- Everything up to the theme script becomes the reference's; what follows it —
-            -- the search page's preload link, nothing on the others — is preserved.
+            -- Everything up to the theme script becomes the reference's; whatever follows it is
+            -- preserved.
             match tail.splitOn themeScriptEnd with
             | [_, post] => pure (uCore ++ post)
             | _ => pure tail
@@ -557,59 +556,6 @@ private def spliceFindPage (htmlDir stashDir : System.FilePath) (mergedText : St
   | _ =>
     IO.eprintln "warning: could not locate the xref payload on the find page"
 
-/-- Verso's bucket function for search documents, reimplemented byte-for-byte (a `UInt8` sum of the
-reference's UTF-8 bytes) so merged buckets land where `search-box.js` looks for them. -/
-private def searchBucketOf (s : String) : UInt8 := Id.run do
-  let mut h : UInt8 := 0
-  for b in s.toUTF8 do
-    h := h + b
-  return h
-
-/-- Rebuilds the search assets from the union of every run's buckets: one bucket set under one
-version, and an index over it in the requested mode. The per-run bucket files, each under its own
-run's content hash, are removed. -/
-private def mergeSearchAssets (htmlDir : System.FilePath) (mode : SearchMode) : IO Unit := do
-  let dir := htmlDir / "-verso-search"
-  if !(← dir.pathExists) then return
-  -- Union of every run's documents, keyed by reference. Duplicates come from parts rendered by
-  -- more than one run (chapters as stubs), whose display fields agree where the index uses them.
-  let mut docs : Std.HashMap String Json := {}
-  let mut bucketFiles : Array System.FilePath := #[]
-  for entry in (← dir.readDir) do
-    if entry.fileName.startsWith "searchIndex_" && entry.path.extension == some "js" then
-      bucketFiles := bucketFiles.push entry.path
-      let some payload := bucketPayload (← IO.FS.readFile entry.path) | continue
-      let .ok (Json.obj kvs) := Json.parse payload | continue
-      docs := kvs.foldl (init := docs) fun acc ref doc =>
-        if acc.contains ref then acc else acc.insert ref doc
-  for file in bucketFiles do
-    IO.FS.removeFile file
-  let titles := docs.toArray.filterMap (fun (ref, doc) =>
-      (doc.getObjValAs? String "header").toOption.map (ref, ·))
-    |>.qsort (·.1 < ·.1)
-  let payload := match mode with
-    | .names => (titleOnlyIndex titles).compress
-    | _ => (titleOnlyIndex #[]).compress
-  let version := hex16 (hash payload)
-  if mode == .names then
-    let mut buckets : Std.HashMap UInt8 (Array (String × Json)) := {}
-    for (ref, doc) in docs.toArray.qsort (·.1 < ·.1) do
-      let b := searchBucketOf ref
-      buckets := buckets.alter b fun v => some ((v.getD #[]).push (ref, doc))
-    for (b, entries) in buckets.toArray do
-      let json := Json.mkObj (entries.toList.map fun (ref, doc) => (ref, doc))
-      IO.FS.writeFile (dir / s!"searchIndex_{b}.{version}.js")
-        s!"window.docContents[{b}].resolve({json.compress});"
-  let indexJs := "const __verso_searchIndexData = " ++ payload ++ ";\n\n"
-    ++ "const __versoSearchIndex = elasticlunr ? elasticlunr.Index.load(__verso_searchIndexData) : null;\n"
-    ++ "window.docContents = {};\n"
-    ++ "window.searchIndex = elasticlunr ? __versoSearchIndex : null;\n"
-    ++ "window.docPriorities = {};\n"
-    ++ "window.searchIndexVersion = " ++ toString (Json.str version) ++ ";\n"
-  IO.FS.writeFile (dir / "searchIndex.js") indexJs
-  IO.println s!"Merged search buckets from the per-chapter runs: \
-    {docs.size} documents, index {payload.utf8ByteSize / 1048576} MB"
-
 /-- Renders the site one chapter at a time. See the section comment above for the design; this is
 the orchestration. `manualMain` runs once with every chapter stubbed (the global pages), then once
 per chapter in descending order (so every stub page is overwritten by the run that owns it), and
@@ -654,7 +600,6 @@ def buildSitePerChapter (cfg : Cli) (data : CollectedData) (groups : Array Group
   let mergedText := toString merged
   IO.FS.writeFile (htmlDir / "xref.json") mergedText
   spliceFindPage htmlDir stashDir mergedText
-  mergeSearchAssets htmlDir cfg.searchMode
   -- The stash was only ever an implement of this function; a deployment must not ship it.
   IO.FS.removeDirAll stashDir
   return 0
