@@ -64,8 +64,8 @@ only affect `build-site`'s output, so the same `data.json` can be rendered with 
 for those without re-running `collect`.
 
 Two more subcommands are not in the table: [`extract-flat`](extraction.md), the fallback extraction,
-and `highlight-module` / `highlight-file`, which are the worker processes the two highlighting
-phases fan out to rather than anything to invoke yourself.
+and `highlight-file`, which is the worker process `highlight-extracted` fans out to rather than
+anything to invoke yourself.
 
 For the previous one-shot behavior (no JSON round-trip), use `all`, or omit the subcommand entirely
 — a bare invocation defaults to `all` for backward compatibility. It runs `collect`, `extract` and

@@ -32,7 +32,7 @@ closure that is most of them, and the picture is unreadable without it.
 
 /-- One project declaration as a graph node.
 
-Factored out of `mkGraphData` because the chapter tables are built from it too (`declTableEntry`):
+Factored out of `mkGraphData` because the chapter tables are built from it too (`declDrawTableJs`):
 what `thinGraphNodes` takes out of a node and what the table puts back have to be the same
 fields computed the same way, and the only way to guarantee that is to have one place that
 computes them. -/

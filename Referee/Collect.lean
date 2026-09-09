@@ -1081,12 +1081,6 @@ structure PackageInfo where
   isToolchain : Bool := false
 deriving Repr, BEq, ToJson, FromJson, Inhabited
 
-/-- Data container for MarkdownSection. -/
-structure MarkdownSection where
-  title : String
-  body : String
-deriving Repr, ToJson, FromJson
-
 /-- An upstream constant a project statement names, with enough of it to be read in place.
 
 These are the nodes a declaration's graph bottoms out in, and until now they were drawn with nothing
@@ -1713,48 +1707,6 @@ def markdownToBlocks (doc : String) : Array (Block Manual) :=
           | .error _ => acc.push (.para #[.text doc]))
         #[]
 
-/-- Trims BlankLines. -/
-def trimBlankLines (lines : List String) : List String :=
-  let dropFront := lines.dropWhile (fun s => s.trimAscii.isEmpty)
-  dropFront.reverse.dropWhile (fun s => s.trimAscii.isEmpty) |>.reverse
-
-/-- Splits README text into sections keyed by `##` headings. -/
-def parseMarkdownSections (text : String) : Array MarkdownSection := Id.run do
-  let lines := text.splitOn "\n"
-  let mut introLines : List String := []
-  let mut currentTitle? : Option String := none
-  let mut currentBody : List String := []
-  let mut sections : Array MarkdownSection := #[]
-  for line in lines do
-    if line.startsWith "## " then
-      match currentTitle? with
-      | some title =>
-          let body := String.intercalate "\n" (trimBlankLines currentBody.reverse)
-          if !body.trimAscii.isEmpty then
-            sections := sections.push { title, body }
-      | none =>
-          let intro := String.intercalate "\n" (trimBlankLines introLines.reverse)
-          if !intro.trimAscii.isEmpty then
-            sections := sections.push { title := "Overview", body := intro }
-      currentTitle? := some (line.drop 3).trimAscii.toString
-      currentBody := []
-    else if line.startsWith "# " then
-      continue
-    else
-      match currentTitle? with
-      | some _ => currentBody := line :: currentBody
-      | none => introLines := line :: introLines
-  match currentTitle? with
-  | some title =>
-      let body := String.intercalate "\n" (trimBlankLines currentBody.reverse)
-      if !body.trimAscii.isEmpty then
-        sections := sections.push { title, body }
-  | none =>
-      let intro := String.intercalate "\n" (trimBlankLines introLines.reverse)
-      if !intro.trimAscii.isEmpty then
-        sections := sections.push { title := "Overview", body := intro }
-  sections
-
 /-- Reads a file when present, returning `none` when missing. -/
 def readFileIfExists (path : System.FilePath) : IO (Option String) := do
   if ← path.pathExists then
@@ -1987,20 +1939,6 @@ def headBeforeAssignment (snippet : String) : String :=
   | some (head, _) => (String.trimAscii head).toString
   | none => (String.trimAscii snippet).toString
 
-/-- Helper for headBeforeWhere. -/
-def headBeforeWhere (snippet : String) : String :=
-  let rec go (remaining : List String) (acc : List String) :=
-    match remaining with
-    | [] => String.intercalate "\n" acc.reverse
-    | line :: rest =>
-        let acc := line :: acc
-        let trimmed := (String.trimAscii line).toString
-        if trimmed == "where" || trimmed.endsWith " where" || trimmed.endsWith "where" then
-          String.intercalate "\n" acc.reverse
-        else
-          go rest acc
-  (String.trimAscii (go (snippet.splitOn "\n") [])).toString
-
 /-- Helper for displaySignatureFromSource. -/
 def displaySignatureFromSource (kind : DeclKind) (src? : Option SourceInfo) (lines : Array String) : Option String :=
   match src? with
@@ -2183,45 +2121,6 @@ def isSimpsGeneratedLemma (env : Environment) (simpLemmaNames : Std.HashSet Name
           (underscoreSplits s).any fun (sibling, _) => (env.find? (.str pfx sibling)).isSome
       | _ => false
   | _ => false
-
-/-- Strips DeclPrefix. -/
-def stripDeclPrefix (kind : DeclKind) (shortName : String) (signature : String) : String :=
-  let pfx := s!"{declKeyword kind} {shortName}"
-  match signature.dropPrefix? pfx with
-  | some rest => (String.trimAscii rest.toString).toString
-  | none => signature
-
-/-- Splits TopLevelColon?. -/
-def splitTopLevelColon? (s : String) : Option (String × String) :=
-  let rec go (chars : List Char) (round curly square angled : Nat) (acc : List Char) : Option (String × String) :=
-    match chars with
-    | [] => none
-    | ':' :: rest =>
-        if round == 0 && curly == 0 && square == 0 && angled == 0 then
-          some (
-            (String.trimAscii (String.ofList acc.reverse)).toString,
-            (String.trimAscii (String.ofList rest)).toString
-          )
-        else
-          go rest round curly square angled (':' :: acc)
-    | '(' :: rest => go rest (round + 1) curly square angled ('(' :: acc)
-    | ')' :: rest => go rest (round - 1) curly square angled (')' :: acc)
-    | '{' :: rest => go rest round (curly + 1) square angled ('{' :: acc)
-    | '}' :: rest => go rest round (curly - 1) square angled ('}' :: acc)
-    | '[' :: rest => go rest round curly (square + 1) angled ('[' :: acc)
-    | ']' :: rest => go rest round curly (square - 1) angled (']' :: acc)
-    | '⦃' :: rest => go rest round curly square (angled + 1) ('⦃' :: acc)
-    | '⦄' :: rest => go rest round curly square (angled - 1) ('⦄' :: acc)
-    | ch :: rest => go rest round curly square angled (ch :: acc)
-  go s.toList 0 0 0 0 []
-
-/-- Helper for signatureSections?. -/
-def signatureSections? (kind : DeclKind) (shortName : String) (signature : String) : Option (String × String) :=
-  match kind with
-  | .theorem | .definition | .opaque | .axiom | .instance =>
-      let remainder := stripDeclPrefix kind shortName signature
-      splitTopLevelColon? remainder
-  | _ => none
 
 /-- Infers the display kind for a declaration from environment metadata. -/
 def declKindOf (env : Environment) (info : ConstantInfo) (name : Name) : DeclKind :=

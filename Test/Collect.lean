@@ -73,12 +73,6 @@ namespace Referee.Test
 #guard underscoreSplits "ab_" == ([] : List (String × String))   -- trailing underscore ignored
 #guard underscoreSplits "abc" == ([] : List (String × String))
 
--- `splitTopLevelColon?`: split on the first `:` that is not inside (), {}, [] or ⦃⦄.
-#guard splitTopLevelColon? "x : Nat" == some ("x", "Nat")
-#guard splitTopLevelColon? "(a : b) : c" == some ("(a : b)", "c")
-#guard splitTopLevelColon? "{a : b} → c" == none            -- the only colon is bracketed
-#guard splitTopLevelColon? "no colon here" == none
-
 /-! ## Stripping the decorations before a declaration
 
 `cleanDeclSnippet` has to leave the snippet starting at the declaration keyword, because everything
@@ -589,7 +583,7 @@ private def pkgGraph : Array DeclInfo := #[
 
 /-! ## JSON round-trip for collected data
 
-`DeclInfo`/`ModuleInfo`/`GroupInfo`/`MarkdownSection`/`CollectedData` derive `ToJson`/`FromJson`
+`DeclInfo`/`ModuleInfo`/`GroupInfo`/`CollectedData` derive `ToJson`/`FromJson`
 so `collect` can persist them and `extract`/`build-site` can read them back without
 re-importing the target project. The main risk is the `Block Manual` fields (Verso's
 docstring/markdown AST, populated via `docBlocks`/`docstringBlock?`): these checks exercise
@@ -712,7 +706,6 @@ hence these. -/
 #guard parseHashField? Json.null == none
 
 #guard roundTrips sampleDeclForJson
-#guard roundTrips ({ title := "Section", body := "Some *markdown* body." } : MarkdownSection)
 
 private def sampleCollected : CollectedData := {
   rootPrefix := `Foo

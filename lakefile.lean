@@ -67,7 +67,7 @@ lean_lib Referee where
   needs := #[websiteAssets]
 
 lean_lib Test where
-  globs := #[`Test, `Test.Audit, `Test.Collect, `Test.Diff, `Test.Highlight, `Test.JunkValues,
+  globs := #[`Test, `Test.Audit, `Test.Collect, `Test.Diff, `Test.JunkValues,
     `Test.JunkValuesExtra, `Test.Provenance]
 
 /-- Theorems about the library, as opposed to the `#guard` examples in `Test`.

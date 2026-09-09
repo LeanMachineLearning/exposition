@@ -6,24 +6,22 @@ public import SubVerso.Highlighting
 public import SubVerso.Module
 
 /-!
-# Source-text highlighting for project modules
+# Source-text highlighting for the extracted minimal files
 
-Produces `SubVerso.Highlighting.Highlighted` for every command of a project module, by running the
-Lean frontend over the module's source and highlighting the resulting syntax against its info
-trees.
+Produces `SubVerso.Highlighting.Highlighted` for every command of a source file, by running the
+Lean frontend over it and highlighting the resulting syntax against its info trees.
 
 This is the expensive tier of highlighting. The cheap tier — a declaration's *pretty-printed*
 signature — needs only the environment and already runs during `collect` (see
-`Referee.mkDocstringBlock?`). Highlighting *source text* is different: `highlight` needs
-info trees and messages, which only real elaboration produces. So this module re-elaborates each
-module from source.
+`Referee.mkDocstringBlock?`). Highlighting *source text* is different: it needs info trees and
+messages, which only real elaboration produces. So this module re-elaborates each file from source.
 
-Each command comes back tagged with the names it defines, which is what lets later phases map a
-declaration to its highlighted source, and assemble a minimal file's rendering out of the
-highlighted forms of the declarations it inlines.
+What it is spent on is the minimal files `extract` writes, which is the one place a reader hovers:
+that page's whole point is to be the source, and elaborating it also establishes whether it
+compiles (see `FileHighlighting`). Declaration cards render plain text and need none of this.
 
-Because `importModules` must run against a fresh environment, one module is processed per
-process; `Referee.Website.Site` drives the fan-out by re-invoking this executable.
+Because `importModules` must run against a fresh environment, one file is processed per process;
+`Referee.Website.Site` drives the fan-out by re-invoking this executable.
 -/
 
 open Lean Elab Frontend
@@ -41,98 +39,6 @@ partial def commandKind (cmd : Syntax) : SyntaxNodeKind :=
   match cmd with
   | `(command|$_cmd1 in $cmd2) => commandKind cmd2
   | _ => cmd.getKind
-
-/-- Where `declCode`'s left-to-right pass over one command's highlighting has got to. -/
-structure DeclCodeState where
-  /-- Whether anything that is not whitespace has been emitted yet. While this is false, whitespace
-  is dropped rather than emitted: it is the gap `FrontendResult.updateLeading` scooped up from
-  between this command and the one before it, not part of the code. -/
-  started : Bool := false
-  /-- Whether the pass is past the point where the declaration's own docstring could still appear:
-  either it was found and dropped, or the scan reached the declaration's name, after which a doc
-  comment documents a field or a constructor and stays. -/
-  finished : Bool := false
-  /-- Whether the doc comment was dropped by the node just processed, so the newline it ended on can
-  go with it. -/
-  dropped : Bool := false
-deriving Inhabited
-
-/-- Drops the indentation a dropped doc comment sat on off the end of the output built so far.
-
-Together with the newline `declCodeGo` drops after the doc comment, this is what makes removing a
-docstring remove *its lines* rather than leave the blank line its text used to fill. Only spaces and
-tabs go: the newline before them ends the previous line, and any blank line the author left above the
-docstring is theirs to keep. -/
-def popIndent (out : Array Highlighted) : Array Highlighted :=
-  match out.back? with
-  | some (.text s) =>
-    let s := String.ofList (s.toList.reverse.dropWhile (fun c => c == ' ' || c == '\t')).reverse
-    out.pop.push (.text s)
-  | _ => out
-
-/-- One node of `declCode`'s pass, threading `DeclCodeState` through the tree in document order.
-Nodes it drops become `.empty` rather than disappearing, so the shape of the tree is preserved. -/
-partial def declCodeGo (name : Name) (st : DeclCodeState) :
-    Highlighted → DeclCodeState × Highlighted
-  | hl@(.token tok) =>
-    if st.finished then ({ st with started := true, dropped := false }, hl)
-    else match tok.kind with
-      -- The declaration's own docstring: the only doc comment that can precede the name, since the
-      -- ones that document fields and constructors are written inside the declaration.
-      | .docComment => ({ st with finished := true, dropped := true }, .empty)
-      -- The defining occurrence of the name. Reaching it without having seen a doc comment means
-      -- there was none to drop, and everything past it must be left alone.
-      | .const n _ _ true _ =>
-        ({ st with started := true, finished := st.finished || n == name, dropped := false }, hl)
-      | _ => ({ st with started := true, dropped := false }, hl)
-  | .text s =>
-    if !st.started then
-      let s := s.trimAsciiStart.toString
-      ({ st with started := !s.isEmpty, dropped := false }, .text s)
-    else if st.dropped then
-      ({ st with dropped := false }, .text (if s.startsWith "\n" then (s.drop 1).toString else s))
-    else (st, .text s)
-  | .seq hls => Id.run do
-    let mut st := st
-    let mut out : Array Highlighted := #[]
-    for hl in hls do
-      let (st', hl') := declCodeGo name st hl
-      -- The doc comment was dropped by this node, so the line it sat on goes with it.
-      if st'.dropped && !st.dropped then
-        out := popIndent out
-      st := st'
-      out := out.push hl'
-    return (st, .seq out)
-  | .span info content =>
-    let (st, content) := declCodeGo name st content
-    (st, .span info content)
-  | .tactics info startPos endPos content =>
-    let (st, content) := declCodeGo name st content
-    (st, .tactics info startPos endPos content)
-  | hl@(.point ..) => (st, hl)
-  | hl@(.unparsed s) =>
-    if !st.started && s.all Char.isWhitespace then (st, .empty)
-    else ({ st with started := true }, hl)
-
-/-- The highlighted source of the command defining `name`, as a page showing that one declaration
-wants it: without the docstring, and starting at the code rather than at the gap above it.
-
-Two things are dropped, both of which the declaration page would otherwise show twice or show as
-part of a declaration they do not belong to:
-
-* **the declaration's own docstring**, which the page renders above the code from the environment's
-  copy of it. Only the doc comment written before the declaration's name goes; the ones documenting
-  a structure's fields or an inductive type's constructors are part of the code and stay.
-* **the leading whitespace**, which is the blank line or two between this command and the one before
-  it. `FrontendResult.updateLeading` attaches it to this command so that rendering a whole file
-  reproduces the file; rendering one declaration on its own does not want it. A comment written
-  above the declaration is kept — it is the author's, not a rendering artefact.
-
-Used only for the declaration card. A whole extracted file is rendered from the same highlighting
-untouched, docstrings and all: there the docstring is not shown anywhere else, and the point of the
-file is to be the source. -/
-def declCode (name : Name) (hl : Highlighted) : Highlighted :=
-  (declCodeGo name {} hl).2
 
 /-- One source file's highlighting, together with whatever elaboration complained about.
 
@@ -167,7 +73,7 @@ instance : FromJson FileHighlighting := ⟨FileHighlighting.fromJson?⟩
 so a tool that drives `Command.elabCommandTopLevel` itself, as this one does, elaborates every
 command on a single thread no matter how many cores it was given. On a monolithic module that is
 the dominant cost: on a 3 000-line file, elaboration measured 17.5 s sequentially against 1.7 s
-with the option set, and the whole `highlight-module` run went from 41.9 s to 12.7 s.
+with the option set, and the whole highlighting run went from 41.9 s to 12.7 s.
 
 Turning it on has a price the option's own documentation names — the caller becomes "responsible
 for processing messages and other data not only in the resulting command state but also from async

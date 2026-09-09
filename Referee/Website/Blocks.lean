@@ -276,10 +276,6 @@ private def anatomyAboutHtml (head href gloss : String) (block : Bool := false) 
       else {{<a class="anatomy-about-link" href={{href}}>{{glossHtml gloss}}</a>}}
     {{<span class={{cls}} title={{head}}>{{body}}</span>}}
 
-/-- `h : T`, or just `T` for an anonymous binder. -/
-private def anatomyBinderText (name type : String) : String :=
-  if name.isEmpty then type else s!"{name} : {type}"
-
 /-- A binder as a hover target when the page has a tip for its head constant — `anatomy.js` attaches
 the tooltip by the `data-tip` name — and as plain code otherwise. The fallback for a type with no
 pieces; `anatomyCodeHtml` is the usual case. -/
