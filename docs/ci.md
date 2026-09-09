@@ -16,7 +16,7 @@ steps:
   - uses: leanprover/lean-action@v1     # build the project however you already do
     with: { build: true }
 
-  - uses: LeanMachineLearning/exposition@v0.2.0
+  - uses: LeanMachineLearning/exposition@v4.34.0-rc2-5
     with:
       root: MyLibrary
       site-url: https://owner.github.io/repo
@@ -36,11 +36,11 @@ revision diff against the previous run. Every input is listed in
 | `site-dest` | If set, the built site is copied here — for dropping it into a Pages tree without writing the `cp` |
 | `version` | Which referee release to use. Defaults to the ref the action itself was pinned at |
 
-The action ships from v0.2.0 onward; before that, this pipeline had to be written out by hand in
-each consuming workflow.
+The action ships from `v4.34.0-rc2-5` onward; before that, this pipeline had to be written out by
+hand in each consuming workflow.
 
-Pin the action to a tag. The binary follows it by default, so `@v0.2.0` gets the v0.2.0 referee
-without naming the version twice, and the site generator stops moving under a site anyone is
+Pin the action to a tag. The binary follows it by default, so `@v4.34.0-rc2-5` gets the referee
+built from that tag without naming the version twice, and the site generator stops moving under a site anyone is
 reading. A moving ref like `@main` is not a release, so it resolves to the newest one instead —
 and note that "newest" here means the most recently pushed tag of *any* kind, since
 [`publish_referee_binary.yml`](../.github/workflows/publish_referee_binary.yml) cuts a release on
@@ -59,7 +59,7 @@ project without paying for a site nobody will read, and without a PR folding a r
 never be merged:
 
 ```yaml
-  - uses: LeanMachineLearning/exposition@v0.2.0
+  - uses: LeanMachineLearning/exposition@v4.34.0-rc2-5
     if: github.event_name == 'push'
 ```
 
@@ -75,7 +75,7 @@ The site is a directory of static HTML; nothing about publishing it is Referee's
 Pages tree alongside other documentation:
 
 ```yaml
-  - uses: LeanMachineLearning/exposition@v0.2.0
+  - uses: LeanMachineLearning/exposition@v4.34.0-rc2-5
     if: github.event_name == 'push'
     with:
       root: MyLibrary

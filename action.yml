@@ -53,8 +53,8 @@ inputs:
 
   version:
     description: >-
-      The referee release to use. Defaults to the ref this action was pinned at, so
-      `uses: LeanMachineLearning/exposition@v0.2.0` gets the v0.2.0 binary; a non-tag ref such as
+      The referee release to use. Defaults to the ref this action was pinned at, so pinning the
+      action to a release tag gets the binary built from that same tag; a non-tag ref such as
       `@main` resolves to the most recent release instead. Pin it once anyone is reading the output.
     required: false
     default: ""

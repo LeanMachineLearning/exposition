@@ -247,7 +247,14 @@ test_download_defaults_version_to_the_action_ref() {
   REFEREE_ACTION_REF="main" "$ci_dir/download-referee.sh" >/dev/null 2>&1 || return 1
   local args; args="$(cat "$FAKE_GH_ARGS")"
   case "$args" in *"release download main"*) echo "a branch ref was used as a release tag"; return 1 ;; esac
-  assert_contains "$args" "release download -R"
+  assert_contains "$args" "release download -R" || return 1
+
+  # This repository's release tags are not plain semver — `publish_referee_binary.yml` cuts a
+  # release on `tags: "*"`, and the tags in use track the Lean toolchain. The heuristic has to
+  # recognise that shape too, or pinning the action would silently fall back to "latest".
+  : > "$FAKE_GH_ARGS"
+  REFEREE_ACTION_REF="v4.34.0-rc2-5" "$ci_dir/download-referee.sh" >/dev/null 2>&1 || return 1
+  assert_contains "$(cat "$FAKE_GH_ARGS")" "release download v4.34.0-rc2-5"
 }
 
 # ---------------------------------------------------------------------------------------------

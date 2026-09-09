@@ -15,11 +15,11 @@ release_repo="${REFEREE_RELEASE_REPO:-LeanMachineLearning/exposition}"
 dest="${RUNNER_TEMP:-/tmp}/referee"
 version="${REFEREE_VERSION:-}"
 
-# The version defaults to the ref the action itself was pinned at, so that
-# `uses: LeanMachineLearning/exposition@v0.2.0` gets the binary from the v0.2.0 release without the
-# caller naming it twice. Only tag-shaped refs qualify: `@main` and a raw commit sha are not
-# releases, and resolving those to "latest" is the honest reading — the caller pinned the *action*
-# to a moving ref, so the binary moves with it.
+# The version defaults to the ref the action itself was pinned at, so that pinning the action to a
+# release tag gets the binary built from that same tag without the caller naming a version twice.
+# Only tag-shaped refs qualify: `@main` and a raw commit sha are not releases, and resolving those
+# to "latest" is the honest reading — the caller pinned the *action* to a moving ref, so the binary
+# moves with it.
 if [ -z "$version" ]; then
   case "${REFEREE_ACTION_REF:-}" in
     v[0-9]*) version="$REFEREE_ACTION_REF" ;;
