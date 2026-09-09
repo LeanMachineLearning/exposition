@@ -132,7 +132,7 @@ flag.
 |---|---|
 | [The pipeline](docs/pipeline.md) | The phases, what each produces, and the one hard boundary between them |
 | [CLI reference](docs/cli.md) | Every subcommand and flag |
-| [Running in CI](docs/ci.md) | The job shape, and the state that has to survive between runs |
+| [Running in CI](docs/ci.md) | The composite action, and the state that has to survive between runs |
 | [Authoring](docs/authoring.md) | The two things the tool cannot infer: `theorem` vs `lemma`, and `@[specifies]` |
 | [Upstream trust](docs/trust.md) | `--trust`, what counts as a trust dependency, and what the analysis does and does not claim |
 | [Theorems and audit state](docs/audit.md) | Verdicts, coverage, auditing a claim from its own page, export — and the three limits |

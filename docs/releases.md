@@ -14,6 +14,10 @@ The archive is uploaded as a GitHub Actions artifact named `referee-linux-x86_64
 
 ## Consuming the binary downstream
 
+Most projects should not do this by hand: the [composite action](ci.md) downloads the release,
+checks it against the project's toolchain, and runs the whole pipeline. What follows is what it does
+underneath, for another CI system or a local run.
+
 **Prefer a release over a run artifact.** Release assets of a public repository need no
 authentication and never expire; run artifacts need both a token and luck:
 
@@ -48,6 +52,6 @@ If you do reach for a run artifact anyway, note that `gh run download` extracts 
 artifact directly into `-D`, without a directory named after it — so the archive is at
 `./referee-artifact/referee-linux-x86_64-<sha>.tar.gz`, one level up from where you might expect.
 
-`alpha-rar`'s [`blueprint.yml`](https://github.com/RemyDegenne/alpha-rar/blob/main/.github/workflows/blueprint.yml)
-is a worked example: download, toolchain check, five phases (`collect`, `provenance`, `extract`,
-`highlight-extracted`, `build-site`), and a `--baseline` taken from the previous run's artifact.
+[`ci/download-referee.sh`](../ci/download-referee.sh) is the reference implementation of all of the
+above, including the toolchain check and the resolution of a version from the ref the action was
+pinned at.

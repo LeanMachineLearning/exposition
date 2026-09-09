@@ -13,8 +13,9 @@ pages are the detail behind it.
   environment can recover, so they are yours to state: `theorem` versus `lemma`, and `@[specifies]`.
 - **[Extracted files](extraction.md)** — the self-contained minimal file per declaration, how to
   check it compiles, and the `extract-flat` fallback for when the readable one does not.
-- **[Running in CI](ci.md)** — the job shape for another Lean repository, and the two pieces of
-  state that have to survive between runs before revisions and provenance work at all.
+- **[Running in CI](ci.md)** — the composite action that builds a site for another Lean repository
+  in six lines, the two pieces of state that have to survive between runs before revisions and
+  provenance work at all, and the reasoning the action encodes.
 
 ## What the site reports
 

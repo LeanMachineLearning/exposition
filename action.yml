@@ -1,0 +1,255 @@
+name: Referee
+description: >-
+  Build a Referee site for a Lean project: collect declarations, fold a provenance ledger, diff
+  against the previous run, and render the HTML.
+author: LeanMachineLearning
+
+branding:
+  icon: book-open
+  color: purple
+
+inputs:
+  root:
+    description: >-
+      Root module prefix to expose, e.g. `MyLibrary`. Also the import root the semantic hashes are
+      exported for, so a library left out of it stays out of the hashed set.
+    required: true
+  site-url:
+    description: >-
+      Where the site will be published. Must be the real published URL: it is what the web-editor
+      links to the standalone Lean files are built from.
+    required: true
+
+  exclude-lib:
+    description: A root library to skip when importing the project. Comma- or newline-separated.
+    required: false
+    default: ""
+  repo-url:
+    description: Base GitHub URL for source and issue links.
+    required: false
+    default: ""
+  title:
+    description: Site title override.
+    required: false
+    default: ""
+  trust:
+    description: >-
+      Packages to treat as audited, along with everything they depend on. Comma- or
+      newline-separated. An editorial claim, not a derived fact: naming `mathlib` says whoever
+      publishes this site vouches for it. Name none and every upstream package counts as unaudited.
+    required: false
+    default: ""
+
+  output:
+    description: Directory Referee writes into. The site itself lands in `<output>/html-multi`.
+    required: false
+    default: referee-site
+  site-dest:
+    description: >-
+      If set, the contents of `<output>/html-multi` are copied here after the build — for dropping
+      the site into a Pages tree without writing the `cp` yourself.
+    required: false
+    default: ""
+
+  version:
+    description: >-
+      The referee release to use. Defaults to the ref this action was pinned at, so
+      `uses: LeanMachineLearning/exposition@v0.2.0` gets the v0.2.0 binary; a non-tag ref such as
+      `@main` resolves to the most recent release instead. Pin it once anyone is reading the output.
+    required: false
+    default: ""
+  release-repo:
+    description: Repository to download the referee release from.
+    required: false
+    default: LeanMachineLearning/exposition
+  token:
+    description: >-
+      Token used to download the release, push the ledger branch, and read the previous run's data.
+      The job's own `GITHUB_TOKEN` is enough for all three.
+    required: false
+    default: ${{ github.token }}
+
+  semantic-hashes:
+    description: >-
+      Build `semantic_hash` and key the ledger and the revision diff on rename-invariant hashes
+      rather than on pretty-printed types. Required by the provenance ledger, which hard-fails
+      without it.
+    required: false
+    default: "true"
+  semantic-hash-repo:
+    description: Repository to build `semantic_hash` from.
+    required: false
+    default: https://github.com/mathlib-initiative/semantic_hash
+  semantic-hash-ref:
+    description: >-
+      Tag or branch to pin `semantic_hash` to. Worth setting once the ledger matters: a change in
+      how it hashes reads as every declaration changing meaning at once.
+    required: false
+    default: ""
+
+  provenance:
+    description: >-
+      Fold this revision into the provenance ledger and publish it. Needs
+      `permissions: contents: write`, and a checkout with full history — this action unshallows one
+      itself if it has to.
+    required: false
+    default: "true"
+  ledger-branch:
+    description: >-
+      Branch the ledger lives on. A branch of its own, never the one being built: a protected
+      default branch leaves GITHUB_TOKEN unable to push at all, and a ledger in the working tree
+      makes every fold record a dirty tree.
+    required: false
+    default: referee-ledger
+  revision-ref:
+    description: >-
+      What to call this revision in the ledger. Defaults to `git describe --tags --always`; set it
+      to fold at release cadence instead.
+    required: false
+    default: ""
+
+  baseline:
+    description: >-
+      Compare against the previous successful run's data and add a Changes page. Needs
+      `permissions: actions: read`. Never fails the job: with no baseline the page is simply absent.
+    required: false
+    default: "true"
+  baseline-label:
+    description: What to call the baseline on the Changes page.
+    required: false
+    default: the previous build
+  artifact-name:
+    description: >-
+      Name of the artifact the collected data is uploaded as and read back from. Give two Referee
+      runs in one repository two different names.
+    required: false
+    default: referee-data
+  artifact-retention-days:
+    description: How long to keep the uploaded data.
+    required: false
+    default: "90"
+
+  highlight-extracted:
+    description: >-
+      Render each extracted standalone file as interactive Lean. Off by default: it elaborates every
+      extracted file, one Mathlib-importing process per declaration, and costs more than the rest of
+      the job combined. Without it the files are still written and linked, just not rendered inline.
+    required: false
+    default: "false"
+  jobs:
+    description: >-
+      Worker processes for `highlight-extracted`. Each imports Mathlib into its own multi-gigabyte
+      process, so size this against available RAM, not against cores.
+    required: false
+    default: ""
+  per-chapter:
+    description: >-
+      Render the site one chapter at a time, bounding peak memory by the largest chapter instead of
+      the whole library. Worth it at Mathlib scale; see docs/cli.md for the residuals.
+    required: false
+    default: "false"
+
+outputs:
+  data:
+    description: Path to the collected-data JSON.
+    value: ${{ steps.prepare.outputs.data }}
+  site:
+    description: Path to the rendered site (`<output>/html-multi`).
+    value: ${{ steps.prepare.outputs.site }}
+  provenance:
+    description: Path to the provenance ledger this run folded.
+    value: ${{ steps.prepare.outputs.provenance }}
+
+runs:
+  using: composite
+  steps:
+    # Resolves paths, re-exports the input contract into the job environment for every later step,
+    # and unshallows the checkout if the ledger is going to be folded.
+    - name: Prepare
+      id: prepare
+      shell: bash
+      run: $GITHUB_ACTION_PATH/ci/prepare.sh
+      env:
+        REFEREE_ROOT: ${{ inputs.root }}
+        REFEREE_EXCLUDE_LIB: ${{ inputs.exclude-lib }}
+        REFEREE_SITE_URL: ${{ inputs.site-url }}
+        REFEREE_REPO_URL: ${{ inputs.repo-url }}
+        REFEREE_TITLE: ${{ inputs.title }}
+        REFEREE_TRUST: ${{ inputs.trust }}
+        REFEREE_OUTPUT_DIR: ${{ inputs.output }}
+        REFEREE_SITE_DEST: ${{ inputs.site-dest }}
+        REFEREE_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        REFEREE_LEDGER_BRANCH: ${{ inputs.ledger-branch }}
+        REFEREE_REVISION_REF: ${{ inputs.revision-ref }}
+        REFEREE_BASELINE_LABEL: ${{ inputs.baseline-label }}
+        REFEREE_JOBS: ${{ inputs.jobs }}
+        REFEREE_WITH_HASHES: ${{ inputs.semantic-hashes }}
+        REFEREE_WITH_PROVENANCE: ${{ inputs.provenance }}
+        REFEREE_WITH_BASELINE: ${{ inputs.baseline }}
+        REFEREE_WITH_HIGHLIGHT_EXTRACTED: ${{ inputs.highlight-extracted }}
+        REFEREE_PER_CHAPTER: ${{ inputs.per-chapter }}
+        REFEREE_SEMANTIC_HASH_REPO: ${{ inputs.semantic-hash-repo }}
+        REFEREE_SEMANTIC_HASH_REF: ${{ inputs.semantic-hash-ref }}
+
+    - name: Download referee
+      shell: bash
+      run: $GITHUB_ACTION_PATH/ci/download-referee.sh
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REFEREE_VERSION: ${{ inputs.version }}
+        REFEREE_RELEASE_REPO: ${{ inputs.release-repo }}
+        # The ref this action itself was pinned at, so the binary tracks the action by default.
+        REFEREE_ACTION_REF: ${{ github.action_ref }}
+
+    - name: Export semantic hashes
+      if: ${{ inputs.semantic-hashes == 'true' }}
+      shell: bash
+      run: $GITHUB_ACTION_PATH/ci/semantic-hashes.sh
+
+    - name: Collect
+      shell: bash
+      run: $GITHUB_ACTION_PATH/ci/collect.sh
+
+    # The ledger round trip brackets the fold. It runs after `collect` and before `render`, so that
+    # the working-tree cleanliness the fold records is the repository's and not this job's leftovers.
+    - name: Fetch the provenance ledger
+      if: ${{ inputs.provenance == 'true' }}
+      shell: bash
+      run: $GITHUB_ACTION_PATH/ci/ledger.sh fetch
+      env:
+        REFEREE_TOKEN: ${{ inputs.token }}
+
+    - name: Fold this revision into the provenance ledger
+      if: ${{ inputs.provenance == 'true' }}
+      shell: bash
+      run: $GITHUB_ACTION_PATH/ci/provenance.sh
+
+    - name: Publish the provenance ledger
+      if: ${{ inputs.provenance == 'true' }}
+      shell: bash
+      run: $GITHUB_ACTION_PATH/ci/ledger.sh publish
+      env:
+        REFEREE_TOKEN: ${{ inputs.token }}
+
+    - name: Fetch the previous build's data
+      if: ${{ inputs.baseline == 'true' }}
+      shell: bash
+      run: $GITHUB_ACTION_PATH/ci/baseline.sh
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REFEREE_WORKFLOW: ${{ github.workflow }}
+        REFEREE_BRANCH: ${{ github.ref_name }}
+
+    - name: Build the site
+      shell: bash
+      run: $GITHUB_ACTION_PATH/ci/render.sh
+
+    # Kept so the *next* run can diff against it. Also the thing to download when you want to
+    # re-render the site locally without re-importing the project.
+    - name: Upload the collected data
+      if: ${{ inputs.baseline == 'true' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.prepare.outputs.data }}
+        retention-days: ${{ inputs.artifact-retention-days }}

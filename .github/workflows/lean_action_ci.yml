@@ -6,6 +6,27 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The CI scripts behind the composite action, checked without a Lean toolchain: `gh`, `lake` and
+  # `referee` are replaced by fakes, so this finishes in seconds and gates every pull request
+  # separately from the (much slower) Lean build.
+  #
+  # Worth having as its own job rather than a step of the build: the shell this replaces lived in
+  # consumer workflows where nothing could test it, and when `highlight` was removed from referee
+  # the two copies of it kept calling a subcommand that no longer existed. `subcommands_exist` is
+  # that regression, and it only helps if it runs on every change to either side.
+  ci-scripts:
+    name: CI script tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # shellcheck is preinstalled on the GitHub-hosted Ubuntu images.
+      - name: Lint
+        run: shellcheck -x ci/*.sh ci/tests/*.sh
+
+      - name: Test
+        run: ./ci/tests/run-tests.sh
+
   build:
     runs-on: ubuntu-latest
 
