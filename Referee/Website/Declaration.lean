@@ -206,25 +206,25 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
     -- The pretty-printed signature Verso renders (`decl.docstringBlock?`) is no longer shown: the
     -- statement in parts below says everything it said, with the same hovers on every constant,
     -- and repeating the statement twice above the code was the length the card could least afford.
-    -- Definitions show their body: the value *is* the content. Theorems show only the statement —
-    -- the proof has its own section below, and repeating it here made the card twice as long for
-    -- no gain. The highlighted rendering covers the whole command, so it is only used where the
-    -- whole command is wanted; a statement-only view falls back to the trimmed source text, which
-    -- loses hover types but keeps the pretty-printed signature above, which has them.
     --
-    -- `Highlight.declCode` is what keeps the whole command from including the docstring: it is part
-    -- of the command, and the card has just rendered it above. The text fallback never had the
-    -- problem — `displaySignature` is cleaned of docstring and attributes at collection time — which
-    -- is why the duplicate showed on definitions and structures and not on theorems.
-    let showsBody :=
-      match decl.kind with
-      | .definition | .structure | .typeclass | .inductive => true
-      | _ => false
-    let codeBlock : Block Manual :=
-      if showsBody then
-        leanCodeBlock ((ctx.declHighlights.get? decl.name).map (Highlight.declCode decl.name))
-          decl.displaySignature
-      else .code decl.displaySignature
+    -- Plain source text, for every kind. Definitions used to get Verso's *highlighted* rendering of
+    -- the whole command, hoverable per constant; it is gone, and the reason is what it cost to
+    -- deliver. Verso's hovers read `-verso-docs.json`, one file for the whole site — 11 MB at 28k
+    -- declarations, ~120 MB projected at Mathlib's scope — fetched from `window.onload` by *every*
+    -- page. Only 12.8% of declaration pages had a highlighted block at all, and on every one of them
+    -- it sat inside a `Code` fold that is shut until a reader opens it. The site was buying a
+    -- library-sized download on every page view to make hovers work on content nobody was looking
+    -- at.
+    --
+    -- What is lost is the definition's *body* from this block — `displaySignature` is the signature
+    -- alone. It is not lost from the page: the statement in parts above renders the value
+    -- (`StatementAnatomy.body`), with a gloss and a hover on each of its constants, from the
+    -- page's own `.anatomy-tips` and at no fetch. That is where a reader was reading it anyway.
+    --
+    -- The minimal file keeps its highlighting (`mkMinimalFilePart`). It is a page of its own, a
+    -- reader arrives at it deliberately, and hovering it is the point — "Hover any symbol for its
+    -- type" is what that page says about itself.
+    let codeBlock : Block Manual := .code decl.displaySignature
     -- The declaration taken apart comes first, and the source text folds away under it like the
     -- proof — but only where the parts above already show everything the source says: a theorem's
     -- statement, or a definition's result type and body. An inductive type with several

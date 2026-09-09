@@ -41,11 +41,6 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     data.moduleDocs.foldl (fun m (n, bs) => m.insert n bs) {}
   let modules := buildModules data.rootPrefix order moduleDocs data.decls
   let groups := buildGroups order modules
-  let highlightingDir : System.FilePath :=
-    match cfg.highlightingDir with
-    | some dir => System.FilePath.mk dir
-    | none => System.FilePath.mk (cfg.outputDir.getD ".") / "highlighting"
-  let declHighlights ← loadHighlighting highlightingDir
   let minimalFiles ← loadMinimalFiles
     (System.FilePath.mk (cfg.outputDir.getD ".") / "extracted-highlighting")
   if !minimalFiles.isEmpty then
@@ -67,11 +62,6 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
       the standalone Lean file. Run the `extract` subcommand to write them."
   else
     IO.println s!"Found {extractedStems.size} extracted files to link"
-  if declHighlights.isEmpty then
-    IO.println s!"No highlighting found at {highlightingDir}; rendering plain code. \
-      Run the `highlight` subcommand for interactive Lean."
-  else
-    IO.println s!"Loaded highlighting for {declHighlights.size} declarations"
   -- The provenance ledger, if one was given. Read-only here: `build-site` never folds, so
   -- rendering a site can neither extend the record nor corrupt it.
   let provenance? ← match cfg.provenancePath with
@@ -143,7 +133,6 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     declByName := declByNameMap data.decls
     declHrefs := declHrefMap data.decls
     declPageHrefs := declPageHrefMap data.decls
-    declHighlights := declHighlights
     minimalFiles := minimalFiles
     extractedStems := extractedStems
     packages := data.packages
@@ -152,6 +141,14 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     trusted := trustClosure data.packages cfg.trustedPackages
     packageRanks := packageRanks data.packages
     showTrustedUpstream := cfg.showTrustedUpstream
+    -- Project declarations first, then the upstream constants, in the order each was collected, so
+    -- that the numbering is a function of the data and not of the order two folds happened to run
+    -- in. See `SiteContext.nodeIndex`.
+    nodeIndex :=
+      let fromDecls := data.decls.zipIdx.foldl (init := ({} : Std.HashMap Name Nat))
+        fun acc (d, i) => acc.insert d.name i
+      data.externalDecls.zipIdx.foldl (init := fromDecls) fun acc (e, i) =>
+        if acc.contains e.name then acc else acc.insert e.name (data.decls.size + i)
     expandedPackages := data.expandedPackages.foldl (·.insert ·) {}
     toolchainPackages := data.packages.foldl
       (fun acc p => if p.isToolchain then acc.insert p.name else acc) {}
@@ -199,6 +196,7 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     | some out => ["--output", out]
     | none => []
   let config := renderConfig data.externalDecls ctx.trusted cfg.showTrustedUpstream ctx.packageRanks
+      ctx.nodeIndex
   if cfg.perChapter then
     if cfg.searchMode == .full then
       IO.eprintln "--per-chapter requires --search names (or none): merging the full-text \
@@ -227,11 +225,15 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
   -- Outside the branch, because both kinds of build render the same pages and those pages reference
   -- these files. Before hoisting only for tidiness in the log: hoisting never looks at them, since
   -- they arrive as `<script src>` rather than as inline blocks.
-  let (tables, tableBytes) ←
+  let (tables, drawBytes, textBytes) ←
     writeDeclTables ((cfg.outputDir.getD ".") / "html-multi") groups ctx
+  let upstreamText ←
+    writeUpstreamText ((cfg.outputDir.getD ".") / "html-multi") data.externalDecls ctx.trusted
+      cfg.showTrustedUpstream
   if tables > 0 then
-    IO.println s!"Wrote {tables} chapter declaration tables ({tableBytes / 1048576} MB), \
-      which the graphs' nodes are filled in from"
+    IO.println s!"Wrote declaration tables for {tables} chapters: {drawBytes / 1048576} MB the \
+      graphs draw from, {textBytes / 1048576} MB fetched only when a node is clicked; \
+      upstream text {upstreamText / 1048576} MB, also on demand"
   if cfg.hoistAssets then
     let (hoisted, freed, files) ←
       hoistInlineAssetsIn ((cfg.outputDir.getD ".") / "html-multi")
@@ -299,19 +301,6 @@ private unsafe def runExtractFlat (cfg : Cli) : IO UInt32 := do
   IO.println s!"Wrote {n} flat extraction files in {(← IO.monoMsNow) - startMs}ms"
   return 0
 
-/-- `highlight-module`: the worker behind `highlight`. Re-elaborates one module from source and
-writes its highlighted commands as JSON. Runs one module per process because highlighting needs
-a freshly imported environment, so it is not usable directly — call `highlight` instead. -/
-private unsafe def runHighlightModule (cfg : Cli) : IO UInt32 := do
-  let some modName := cfg.moduleName
-    | IO.eprintln "highlight-module requires --module NAME"
-      return 1
-  let some out := cfg.outputDir
-    | IO.eprintln "highlight-module requires --output FILE"
-      return 1
-  Highlight.writeModuleHighlighting modName (System.FilePath.mk out)
-  return 0
-
 /-- `highlight-file`: the worker behind `highlight-extracted`. Elaborates one standalone `.lean`
 file and writes its highlighting together with any errors it produced. -/
 private unsafe def runHighlightFile (cfg : Cli) : IO UInt32 := do
@@ -335,35 +324,6 @@ private def defaultJobs : IO Nat := do
     return 8
   catch _ =>
     return 8
-
-/-- `highlight`: reads the module list from collected data and fans out one `highlight-module`
-worker per module, writing `<output>/highlighting/<Module>.json`.
-
-Must run inside the target project's `lake env`, like `collect` and `extract`: the workers
-re-elaborate project source and so need its `.olean`s on the search path. -/
-private def runHighlight (cfg : Cli) : IO UInt32 := do
-  let some dataPath := cfg.dataPath
-    | IO.eprintln "highlight requires --data PATH"
-      return 1
-  let some out := cfg.outputDir
-    | IO.eprintln "highlight requires --output DIR"
-      return 1
-  let data ← loadCollectedData dataPath
-  let modules := moduleIndexMap data.decls |>.toArray.map Prod.fst
-  let jobs ← match cfg.jobs with
-    | some n => pure n
-    | none => defaultJobs
-  let exe ← IO.appPath
-  let dir := System.FilePath.mk out / "highlighting"
-  IO.FS.createDirAll dir
-  let startMs ← IO.monoMsNow
-  let results ← Highlight.runFanOut exe (Highlight.moduleWorkItems modules dir) jobs
-  let failures := results.filter (!·.ok)
-  IO.println s!"Highlighted {results.size - failures.size}/{results.size} modules \
-    ({jobs} at a time) in {(← IO.monoMsNow) - startMs}ms"
-  for failure in failures do
-    IO.eprintln s!"  {failure.label}: {failure.message}"
-  return if failures.isEmpty then 0 else 1
 
 /-- `highlight-extracted`: highlights each standalone minimal `.lean` file produced by `extract`,
 writing `<output>/extracted-highlighting/<id>.json`.
@@ -508,8 +468,6 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
     | "collect" :: rest => ("collect", rest)
     | "extract" :: rest => ("extract", rest)
     | "extract-flat" :: rest => ("extract-flat", rest)
-    | "highlight" :: rest => ("highlight", rest)
-    | "highlight-module" :: rest => ("highlight-module", rest)
     | "highlight-extracted" :: rest => ("highlight-extracted", rest)
     | "highlight-file" :: rest => ("highlight-file", rest)
     | "provenance" :: rest => ("provenance", rest)
@@ -526,8 +484,6 @@ unsafe def mainImpl (args : List String) : IO UInt32 := do
   | "collect" => runCollect cfg
   | "extract" => runExtract cfg
   | "extract-flat" => runExtractFlat cfg
-  | "highlight" => runHighlight cfg
-  | "highlight-module" => runHighlightModule cfg
   | "highlight-extracted" => runHighlightExtracted cfg
   | "highlight-file" => runHighlightFile cfg
   | "provenance" => runProvenance cfg

@@ -318,31 +318,54 @@ so scoping by chapter costs 8% of duplicated table and saves the reader everythi
 This is the mechanism `upstream.js` already uses for upstream constants, for the reason recorded on
 `withUpstreamNodes`, generalized to the project's own declarations. -/
 
-/-- The fields `thinGraphNodes` takes out of a node, as the table puts them back.
+/-- What a node needs before it can be drawn: everything `thinGraphNodes` takes out of it except
+the signature and the docstring, which `declTextEntry` carries instead.
 
 Keys are one letter because there is one entry per declaration in the chapter and the key text
 would otherwise outweigh some of the values. -/
-def declTableEntry (node : GraphNode) : Json :=
+def declDrawEntry (ix : Nat) (node : GraphNode) : Json :=
   Json.mkObj [
+    -- The number a thinned node is; see `SiteContext.nodeIndex`. Here rather than in a table of its
+    -- own so that a page that loads a chapter's entries also loads the numbering that reaches them.
+    ("i", Json.num ix),
     ("l", Json.str node.label),
     ("k", Json.str node.kind),
     ("s", Json.str node.status),
     ("g", Json.str node.groupKey),
     ("m", Json.str node.moduleName),
     ("h", Json.str node.href),
-    ("sig", Json.str node.signature),
-    ("d", Json.str node.doc),
     ("q", Json.str node.meaning)]
 
-/-- The table for one chapter: every declaration any of its pages can draw, keyed by name.
+/-- What a node needs only once a reader clicks it: the summary shown under the open node while its
+real card is fetched, and kept when there is nothing to fetch from. See `declTextPath`. -/
+def declTextEntry (node : GraphNode) : Json :=
+  Json.mkObj [
+    ("sig", Json.str node.signature),
+    ("d", Json.str node.doc)]
+
+/-- The draw-time table for one chapter: every declaration any of its pages can draw, keyed by name.
 
 `decls` is the chapter's own declarations *together with everything in their closures*, since a
-page draws its closure and a closure crosses chapters. -/
-def declTableJs (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String) : String :=
-  let entries := decls.map fun decl => (decl.name.toString, declTableEntry (declNode decl declHrefs))
+page draws its closure and a closure crosses chapters.
+
+Also records where this chapter's text table lives, keyed by the chapter as a node reports it in
+`groupKey`. That is what lets a click on a node find the one file holding its signature without the
+page having to carry a map of its own, or `graph.js` having to reimplement `slugify`. -/
+def declDrawTableJs (groupKey : String) (decls : Array DeclInfo)
+    (declHrefs : Std.HashMap Name String) (nodeIndex : Std.HashMap Name Nat) : String :=
+  let entries := decls.map fun decl =>
+    (decl.name.toString, declDrawEntry (nodeIndex.getD decl.name 0) (declNode decl declHrefs))
   -- Merged into whatever is already there, not assigned over it: a page whose closure crosses
   -- chapters loads more than one of these, and the second must not erase the first.
   s!"window.RefereeDecls = Object.assign(window.RefereeDecls || \{}, \
+    {(Json.mkObj entries.toList).compress});\n\
+    window.RefereeDeclText = Object.assign(window.RefereeDeclText || \{}, \
+    {(Json.mkObj [(groupKey, Json.str (declTextPath groupKey))]).compress});"
+
+/-- The click-time table for one chapter, over the same declarations as its draw table. -/
+def declTextTableJs (decls : Array DeclInfo) (declHrefs : Std.HashMap Name String) : String :=
+  let entries := decls.map fun decl => (decl.name.toString, declTextEntry (declNode decl declHrefs))
+  s!"window.RefereeDeclsText = Object.assign(window.RefereeDeclsText || \{}, \
     {(Json.mkObj entries.toList).compress});"
 
 /-- Interns `edges` against `nodes`: the index pairs, and the edges that could not be interned.
@@ -410,13 +433,37 @@ def thinGraphNodes (data : GraphData) (ctx : SiteContext) : GraphData :=
     ns.filterMap fun n => if isProject n && !n.groupKey.isEmpty then some n.groupKey else none
   let chapters := (chaptersOf data.nodes ++ data.views.flatMap (chaptersOf ·.nodes)).foldl
     (init := (#[] : Array String)) fun acc g => if acc.contains g then acc else acc.push g
+  -- A node can leave its name behind only if a table will give it back. Project nodes always can;
+  -- an upstream node can when `inUpstreamTable` says so, which is the same condition that let it be
+  -- thinned at all.
+  let indexOf (n : GraphNode) : Option Nat :=
+    if isProject n || inUpstreamTable n then ctx.nodeIndex[n.id.toName]? else none
+  /- All or nothing per view. A view with one unindexable node keeps every node as an object: the
+     alternative is a payload that is a flat array *and* an object array with positions tying them
+     together, which costs more to describe than the names it saves. The case is rare by
+     construction — see `inUpstreamTable` — and this is the conservative branch. -/
+  let flatten (ns : Array GraphNode) : Array Nat × Array Nat × Array Nat × Array GraphNode :=
+    match ns.mapM indexOf with
+    | none => (#[], #[], #[], ns.map thin)
+    | some ixs =>
+      let focus := ns.zipIdx.filterMap fun (n, i) => if n.focus then some i else none
+      let cut := ns.zipIdx.filterMap fun (n, i) => if n.unexpanded then some i else none
+      (ixs, focus, cut, #[])
   let (edgeIx, edges) := internEdges data.nodes data.edges
+  let (nodeIx, focusIx, unexpandedIx, nodes) := flatten data.nodes
   { data with
-    nodes := data.nodes.map thin
+    nodes, nodeIx, focusIx, unexpandedIx
     edges, edgeIx
     views := data.views.map fun v =>
       let (vIx, vEdges) := internEdges v.nodes v.edges
-      { v with nodes := v.nodes.map thin, edges := vEdges, edgeIx := vIx }
+      let (vn, vf, vc, vNodes) := flatten v.nodes
+      { v with
+        nodes := vNodes
+        nodeIx := vn
+        focusIx := vf
+        unexpandedIx := vc
+        edges := vEdges
+        edgeIx := vIx }
     tables := chapters.map declTablePath }
 
 end

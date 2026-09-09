@@ -46,6 +46,49 @@ document.addEventListener('DOMContentLoaded', () => {
   const upTable = window.RefereeUpstream || {};
   const pkgTable = window.RefereePackages || {};
 
+  /* A view whose nodes were all reducible to numbers arrives as `nodeIx` — one
+     `SiteContext.nodeIndex` number per node, positionally — with `nodes` empty, plus the positions
+     of the focus node and of any the view stopped at. This turns that back into the node objects
+     the rest of the file expects, which `hydrate` then fills in from the tables exactly as it fills
+     in a node that arrived with its name.
+
+     The tables are keyed by name, so they carry a reverse index: `byNumber` is built once, from
+     whichever tables this page loaded. A number with no entry yields a node with no id, which
+     `hydrate` leaves alone and the layout draws as an unlabelled box — the same thing a missing
+     table entry has always produced, rather than a broken page. */
+  let byNumber = null;
+  function numberIndex() {
+    if (byNumber) return byNumber;
+    byNumber = new Map();
+    for (const name in declTable) {
+      const e = declTable[name];
+      if (e && e.i !== undefined) byNumber.set(e.i, name);
+    }
+    for (const name in upTable) {
+      const e = upTable[name];
+      if (e && e.i !== undefined) byNumber.set(e.i, name);
+    }
+    return byNumber;
+  }
+
+  function expandNodes(view) {
+    const ix = view.nodeIx;
+    if (!ix || !ix.length) return;
+    const names = numberIndex();
+    const focus = new Set(view.focusIx || []);
+    const cut = new Set(view.unexpandedIx || []);
+    const out = new Array(ix.length);
+    for (let i = 0; i < ix.length; i++) {
+      const n = { id: names.get(ix[i]) || '' };
+      if (focus.has(i)) n.focus = true;
+      if (cut.has(i)) n.unexpanded = true;
+      out[i] = n;
+    }
+    view.nodes = out;
+  }
+  expandNodes(graph);
+  (graph.views || []).forEach(expandNodes);
+
   /* Field by field rather than a spread, and the node's value only when it has one: a thinned node
      does not merely omit these, it can carry them empty, and an empty label winning over the
      table's would draw a graph of blank boxes. Anything the node does say is kept, so a node that
@@ -955,15 +998,67 @@ document.addEventListener('DOMContentLoaded', () => {
   /* The summary drawn straight from the node, shown while the real card is in flight and left
      standing when there is none to fetch: an upstream constant has no page here, and a site opened
      from disk cannot reach the pages it does have. */
+  /* The signature and docstring of a *project* node, which the chapter's draw table deliberately
+     does not carry: they are 68% of that table and are wanted only for the node a reader clicks.
+     They live in a second file per chapter (`declTextPath`), pulled in by injecting a script the
+     first time a click needs one — a script rather than a `fetch` because a site opened over
+     `file://` cannot fetch its siblings, and that reader is exactly the one this summary exists
+     for.
+
+     One request per chapter, at most, and only for chapters whose nodes were actually opened.
+     `pending` holds the in-flight ones so that clicking three nodes of the same chapter before the
+     file lands does not ask for it three times. */
+  const textPending = new Map();
+  function loadText(path) {
+    if (!path) return Promise.resolve();
+    if (textPending.has(path)) return textPending.get(path);
+    const p = new Promise(resolve => {
+      const el = document.createElement('script');
+      el.src = path;
+      // Resolved either way: a missing table leaves the summary empty, which is what a node showed
+      // before the table existed, and is not worth failing a click over.
+      el.onload = () => resolve();
+      el.onerror = () => resolve();
+      document.head.appendChild(el);
+    });
+    textPending.set(path, p);
+    return p;
+  }
+
+  /* The same arrangement on the upstream side. `upstream.js` used to carry every Mathlib
+     signature, value and docstring the project names, and it is a `RenderConfig` asset — so every
+     page of the site paid for it, graph or no graph, and the text was 90% of the file. It now lives
+     beside the chapter text tables and arrives on the same terms: one request, on the first click
+     that needs a signature. The path is fixed rather than announced by the payload, because unlike
+     the chapter tables there is exactly one of them (`upstreamTextPath`). */
+  const UPSTREAM_TEXT = '-verso-data/upstream-text.js';
+
+  const declText = n => (window.RefereeDeclsText || {})[n.id];
+  const upstreamText = n => (window.RefereeUpstreamText || {})[n.id];
+
+  /* Whether this node's summary text is on the page yet, and if not, what to wait for. */
+  function textReady(n) {
+    if (!n) return null;
+    if (n.upstream) {
+      // Only for a constant the table can actually be about; a band node with no `upstream.js`
+      // entry has no text anywhere and never had.
+      if (upstreamText(n) || !upTable[n.id]) return null;
+      return loadText(UPSTREAM_TEXT);
+    }
+    if (declText(n)) return null;
+    return loadText((window.RefereeDeclText || {})[n.groupKey]);
+  }
+
   function summaryHtml(n) {
     /* Upstream nodes carry no signature or docstring of their own: those live in the shared
-       `upstream.js` table, keyed by full name, so that one Mathlib signature is not written into
-       every page that happens to mention it. Project nodes carry theirs inline, since a declaration
-       appears on few pages. Absent table (older build, or a project with no upstream nodes) simply
-       leaves both empty, which is what these nodes showed before the table existed. */
-    const up = (window.RefereeUpstream || {})[n.id] || {};
-    const signature = n.signature || up.signature || '';
-    const docText = n.doc || up.doc || '';
+       upstream *text* table, keyed by full name, so that one Mathlib signature is not written into
+       every page that happens to mention it. Project nodes have theirs in their chapter's text
+       table. Both are fetched on demand by `textReady`; until one arrives, or if none exists, this
+       leaves the summary empty, which is what these nodes showed before the tables existed. */
+    const up = upstreamText(n) || {};
+    const tx = declText(n) || {};
+    const signature = n.signature || tx.sig || up.signature || '';
+    const docText = n.doc || tx.d || up.doc || '';
     /* An upstream *definition* needs its body as well as its type. The type of `Filter.Tendsto` is
        `(α → β) → Filter α → Filter β → Prop`, whose arguments all read as hypotheses and which never
        says that it means `map f l₁ ≤ l₂` — and "is this the definition I think it is" is the whole
@@ -1125,6 +1220,17 @@ document.addEventListener('DOMContentLoaded', () => {
         audit.mountControl(auditHost, { name: n.id, meaning: n.meaning || '' });
       }
       const body = el.querySelector('.graph-card-body');
+      /* The summary was drawn from whatever text was already on the page, which for a project node
+         the reader has not opened before is none. Pull the chapter's text table in and redraw it
+         when it lands — but only if this body is still showing the summary: `loadCard` may have
+         replaced it with the real card in the meantime, and that is strictly better than what this
+         would put back. */
+      const waiting = textReady(n);
+      if (waiting) {
+        waiting.then(() => {
+          if (body.isConnected && !body.dataset.carded) body.innerHTML = summaryHtml(n);
+        });
+      }
       if (!body.dataset.href) return;
       if (cardLoader) cardLoader.observe(body);
       else loadCard(body);
@@ -1146,6 +1252,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function showCard(body, html) {
     body.innerHTML = html;
+    // Marks the body as holding the real card, so a text table arriving late does not overwrite it
+    // with the summary it supersedes.
+    body.dataset.carded = '1';
     /* The statement-in-parts is markup plus a script: the expand toggle is hidden until the script
        unhides it, and the per-constant hovers are bound per element. Neither survives being moved
        here on its own, so the card is handed to `anatomy.js` to wire up in place. Verso's own hovers

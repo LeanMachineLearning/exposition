@@ -621,7 +621,6 @@ private def sampleDeclForJson : DeclInfo := {
   typeDeps := #[`Nat.add]
   usedBy := #[`Foo.baz]
   transDeps := #[`Nat.add]
-  docstringBlock? := some (.para #[.code "bar"])
 }
 
 

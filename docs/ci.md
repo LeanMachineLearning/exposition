@@ -219,7 +219,7 @@ Push with `GITHUB_TOKEN`, which by design does not trigger another workflow run,
 loop. Note `if git push …; then exit 0; fi` rather than `git push … && exit 0`: under `set -e` the
 second form takes the whole step down on the failure it was meant to handle.
 
-Run `provenance` **after** `collect` and **before** `extract`/`highlight`, so the cleanliness it
+Run `provenance` **after** `collect` and **before** `extract`, so the cleanliness it
 records is the repository's rather than this job's leftovers. It needs `contents: write` in the
 job's `permissions`.
 
@@ -251,12 +251,11 @@ exposes, which is worth stopping for.
 
 ## Cost, and what to leave out
 
-**Skip `highlight-extracted`.** It re-elaborates every extracted file — one Lean process per
+**Skip `highlight-extracted`.** It elaborates every extracted file — one Lean process per
 declaration, each importing Mathlib — and costs more than the rest of the job combined. Without it
-the standalone files are still written and linked, just not rendered inline. `highlight` alone, one
-process per module, is the good trade.
+the standalone files are still written and linked, just not rendered inline as interactive Lean.
 
-**Set `--jobs` explicitly rather than inheriting the default.** Both highlighting phases fan out one
+**Set `--jobs` explicitly rather than inheriting the default.** The phase fans out one
 worker per CPU, and each worker imports Mathlib into its own multi-gigabyte process. A GitHub-hosted
 runner is small enough that the default is usually survivable — but that is the runner's smallness
 protecting you, not a bound the tool applies. On a bigger self-hosted runner the same default
@@ -273,7 +272,7 @@ revision that may never be merged.
 checkout (fetch-depth: 0) → build → download referee (+ toolchain check)
   → build semantic_hash → export hashes
   → collect → fetch ledger → provenance → publish ledger
-  → fetch previous data → extract → highlight → build-site
+  → fetch previous data → extract → highlight-extracted → build-site
   → upload data → deploy
 ```
 

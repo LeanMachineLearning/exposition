@@ -77,11 +77,6 @@ structure Cli where
   /-- Path to the collected-data JSON file: written by `collect`, read by `extract` and
   `build-site`. -/
   dataPath : Option String := none
-  /-- Single module to process, used by the `highlight-module` worker subcommand. -/
-  moduleName : Option Name := none
-  /-- Directory of per-module highlighting JSON written by `highlight`. Read by `build-site`,
-  which falls back to `<output>/highlighting` and renders plain code when it is absent. -/
-  highlightingDir : Option String := none
   /-- Single input file, used by the `highlight-file` worker subcommand. -/
   inputPath : Option String := none
   /-- Maximum number of worker processes to run at once. Defaults to the CPU count. -/
@@ -739,6 +734,20 @@ structure GraphView where
   edges : Array GraphEdge
   /-- `edges` interned against `nodes`; see `GraphData.edgeIx`. -/
   edgeIx : Array Nat := #[]
+  /-- The graph's nodes as `SiteContext.nodeIndex` numbers, positionally, when every one of them
+  could be reduced to a number; `nodes` is then empty and the client rebuilds it from the shared
+  tables. A node that no table can restore — an upstream constant the current flags do not ship —
+  leaves the whole view in the `nodes` form instead, since a mixed encoding would cost more to say
+  than it saves.
+
+  Flat rather than an array of objects because after thinning a node *is* its number: writing
+  `{"ix":12043}` spends thirteen bytes to say six, and there are thousands of them on a page. -/
+  nodeIx : Array Nat := #[]
+  /-- Positions in `nodeIx` of the focus node, and of the nodes a view stopped at — the two facts a
+  thinned node still carries. Held as positions rather than as flags per node so that the common
+  case, one focus and nothing cut, costs one number and one empty array. -/
+  focusIx : Array Nat := #[]
+  unexpandedIx : Array Nat := #[]
 deriving Repr, ToJson, FromJson
 
 /-- Data container for GraphData. -/
@@ -775,6 +784,20 @@ structure GraphData where
   node, which `transitiveReduce` already tolerates — so the two are read together and neither is
   authoritative alone. -/
   edgeIx : Array Nat := #[]
+  /-- The graph's nodes as `SiteContext.nodeIndex` numbers, positionally, when every one of them
+  could be reduced to a number; `nodes` is then empty and the client rebuilds it from the shared
+  tables. A node that no table can restore — an upstream constant the current flags do not ship —
+  leaves the whole view in the `nodes` form instead, since a mixed encoding would cost more to say
+  than it saves.
+
+  Flat rather than an array of objects because after thinning a node *is* its number: writing
+  `{"ix":12043}` spends thirteen bytes to say six, and there are thousands of them on a page. -/
+  nodeIx : Array Nat := #[]
+  /-- Positions in `nodeIx` of the focus node, and of the nodes a view stopped at — the two facts a
+  thinned node still carries. Held as positions rather than as flags per node so that the common
+  case, one focus and nothing cut, costs one number and one empty array. -/
+  focusIx : Array Nat := #[]
+  unexpandedIx : Array Nat := #[]
 deriving Repr, ToJson, FromJson
 
 /-- Drops the fields whose value carries no information, recursively.
@@ -987,7 +1010,6 @@ structure DeclInfo where
   /-- The statement taken apart by binder role — see `StatementAnatomy` — for a declaration whose
   conclusion is a proposition, and `none` for everything else. -/
   anatomy? : Option StatementAnatomy := none
-  docstringBlock? : Option (Block Manual) := none
 deriving Repr, ToJson, FromJson
 
 /-- The kind label to show for this declaration; see `displayKindLabel`. -/
@@ -1374,7 +1396,7 @@ decode error when handed a JSON file written by an older `collect`.
 - 14: adds `DeclInfo.anatomy?`, the statement split by binder role for the card's "in parts" view.
   Optional for the same reason, so `minReadableDataVersion` stays at 11; an older file renders
   without the section -/
-def collectedDataVersion : Nat := 14
+def collectedDataVersion : Nat := 15
 
 /-- The oldest data-format version the current binary can read. Version 11 remains readable because
 the only change in 12 is that closures are no longer stored, and this binary recomputes them from
@@ -1451,9 +1473,6 @@ def usage : String :=
     "                       source: unreadable but far more robust, as a fallback for files",
     "                       `extract` cannot make compile. Writes to <output>/html-multi/",
     "                       extracted-flat.",
-    "  highlight            Elaborate each project module and write interactive-Lean highlighting",
-    "                       to <output>/highlighting. Optional; without it the site renders plain",
-    "                       code blocks.",
     "  highlight-extracted  Elaborate each extracted minimal .lean file and write its highlighting,",
     "                       plus whether it compiles, to <output>/extracted-highlighting. Requires",
     "                       `extract` to have run first.",
@@ -1464,10 +1483,10 @@ def usage : String :=
     "                       needed).",
     "  all                  Run collect, extract, and build-site in one process, without a JSON",
     "                       round-trip (default when no subcommand is given, for backward",
-    "                       compatibility). Does not include the highlighting phases.",
+    "                       compatibility). Does not include `highlight-extracted`.",
     "",
-    "  highlight-module / highlight-file are internal workers used by the two phases above; they",
-    "  process a single module or file and are not meant to be invoked directly.",
+    "  highlight-file is the internal worker behind `highlight-extracted`; it processes a",
+    "  single file and is not meant to be invoked directly.",
     "",
     "Options:",
     "  --root PREFIX        Root module prefix to expose (default: first root library)",
@@ -1479,9 +1498,7 @@ def usage : String :=
     "  --exclude-lib NAME   Exclude a root library when importing the target project",
     "  --data PATH          Collected-data JSON file: written by `collect`, read by `extract`",
     "                       and `build-site`",
-    "  --highlighting DIR   Directory of per-module highlighting read by `build-site`",
-    "                       (default: <output>/highlighting)",
-    "  --jobs N             Worker processes to run at once in the highlighting phases",
+    "  --jobs N             Worker processes to run at once in `highlight-extracted`",
     "                       (default: CPU count)",
     "  --trust PKG          Treat this upstream package, and everything it depends on, as",
     "                       audited. Repeatable. Anything left untrusted is reported on the",
@@ -1514,7 +1531,6 @@ def usage : String :=
     "  --per-chapter        Render the site one chapter at a time, bounding `build-site`'s peak",
     "                       memory by the largest chapter instead of the whole library, then stitch",
     "                       the global artifacts together. Requires `--search names` or `none`",
-    "  --module NAME        Internal: the module `highlight-module` should process",
     "  --input FILE         Internal: the file `highlight-file` should process",
   ]
 
@@ -1542,12 +1558,6 @@ def parseArgs : List String → Except String Cli
   | "--data" :: path :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with dataPath := some path }
-  | "--module" :: name :: rest => do
-      let cfg ← parseArgs rest
-      pure { cfg with moduleName := some name.toName }
-  | "--highlighting" :: dir :: rest => do
-      let cfg ← parseArgs rest
-      pure { cfg with highlightingDir := some dir }
   | "--input" :: path :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with inputPath := some path }
@@ -2409,6 +2419,29 @@ written. -/
 def declTablePath (groupKey : String) : String :=
   s!"-verso-data/referee-decls-{slugify groupKey}.js"
 
+/-- Where a chapter's *signature and docstring* table is written, site-root-relative.
+
+Split from `declTablePath` because the two are needed at different moments and only one of them is
+needed to draw. A graph needs every node's label, kind, module and href before it can put a box on
+the screen; it needs a signature only for the one node a reader clicks, and often for none. Measured
+on `Mathlib.Analysis`, signature and docstring were **68%** of the chapter tables, and a page loads
+7.25 of them on average — so keeping them in the eagerly-loaded file cost a first-time reader ~8.7 MB
+to draw a picture that needed ~2.9 MB of it.
+
+Fetched by injecting a `<script>` on the first click that needs one, not by `fetch`, for the reason
+`upstreamJsFile` gives: a site opened over `file://` cannot fetch its siblings, and the summary
+under a clicked node is precisely what that reader is left with. -/
+def upstreamTextPath : String := "-verso-data/upstream-text.js"
+
+/-- Where the upstream constants' signatures, values and docstrings are written.
+
+Split from `upstream.js` for the reason `declTextPath` gives, and with more force: `upstream.js` is
+a `RenderConfig` asset, so *every* page of the site loads it whether or not it draws a graph, and
+the text was 90% of it. What stays behind is what the band needs to be drawn — the label, module and
+package of each constant, and its `nodeIndex` number. -/
+def declTextPath (groupKey : String) : String :=
+  s!"-verso-data/referee-text-{slugify groupKey}.js"
+
 /-- Computes module HrefOf. -/
 def moduleHrefOf (modulePath : String) : String :=
   s!"module-{slugify modulePath}/"
@@ -3194,7 +3227,6 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
     let (declDeps, cache') := depsCtx.declDeps cache name info
     cache := cache'
     let axs := declAxioms.getD name #[]
-    let docstringBlock? ← mkDocstringBlock? env name
     let decl : DeclInfo := {
       name := name
       moduleName := moduleName
@@ -3234,7 +3266,6 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       deps := declDeps.deps
       typeDeps := declDeps.typeDeps
       dataDeps := declDeps.dataDeps
-      docstringBlock? := docstringBlock?
     }
     decls := decls.push decl
   pure decls

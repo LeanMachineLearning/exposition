@@ -10,7 +10,6 @@ environment produces **data**, and rendering is a pure function of that data.
 | `collect` | yes | `data.json` — declarations, *direct* dependencies, docstrings, axioms, `sorry` status, and (given `--hashes`) semantic hashes. Transitive closures are deliberately not stored: every consumer recomputes them from the direct edges on load, because materialized closures dominated both the file and `collect`'s memory at scale |
 | `provenance` | no (needs git) | `provenance.json` — when each declaration's meaning last changed, and where its source was last edited |
 | `extract` | yes | `extracted/*.lean` — the self-contained minimal file per declaration |
-| `highlight` | yes | `highlighting/*.json` — interactive Lean for each project module |
 | `highlight-extracted` | yes | `extracted-highlighting/*.json` — interactive Lean for each minimal file, **and whether it compiles** |
 | `build-site` | no | the Verso HTML site |
 
@@ -34,8 +33,7 @@ lake env "$REFEREE" collect --root MyLibrary --data data.json
 
 lake env "$REFEREE" extract --data data.json --output "$OUT"
 
-# Interactive Lean: hover a symbol for its type, click to jump to its definition.
-lake env "$REFEREE" highlight --data data.json --output "$OUT"
+# Interactive Lean in the minimal files: hover a symbol for its type.
 lake env "$REFEREE" highlight-extracted --output "$OUT"
 
 "$REFEREE" build-site --data data.json --output "$OUT" \

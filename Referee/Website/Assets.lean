@@ -109,6 +109,22 @@ private def markedJsFile : JsFile where
   contents := JS.mk Verso.Code.Highlighted.WebAssets.marked
   sourceMap? := none
 
+/-- The upstream constants' signatures, values and docstrings: everything `upstreamJsFile` no longer
+carries, over exactly the constants it does carry. See `upstreamTextPath`.
+
+Not a `JsFile`, because a `RenderConfig` asset is loaded by every page and being loaded by every page
+is the thing this file exists to stop. `writeUpstreamText` puts it in place instead, and `graph.js`
+asks for it on the first click that needs a signature. -/
+def upstreamTextJs (externals : Array ExternalDeclInfo) (trusted : Std.HashSet Name)
+    (showTrusted : Bool) : String :=
+  let shown := externals.filter fun e => showTrusted || !trusted.contains e.package
+  let entries := shown.map fun e =>
+    (e.name.toString, Json.mkObj [
+      ("signature", Json.str e.signature),
+      ("value", Json.str e.value),
+      ("doc", Json.str e.doc)])
+  s!"window.RefereeUpstreamText = {(Json.mkObj entries.toList).compress};"
+
 /-- An upstream constant's node label: its last component, as `withUpstreamNodes` has always drawn
 it. Total where `Name.getString!` is partial — a numeric or anonymous last component has no string,
 and falls back to the whole name rather than panicking a site build over one node's caption. -/
@@ -140,13 +156,13 @@ correct by construction.
 there are ten of them against tens of thousands of constants, so a node that has been thinned to an
 id gets them from here rather than repeating a rank and a status per occurrence. -/
 def upstreamJsFile (externals : Array ExternalDeclInfo) (trusted : Std.HashSet Name)
-    (showTrusted : Bool) (packageRanks : Std.HashMap Name Nat) : JsFile :=
+    (showTrusted : Bool) (packageRanks : Std.HashMap Name Nat)
+    (nodeIndex : Std.HashMap Name Nat) : JsFile :=
   let shown := externals.filter fun e => showTrusted || !trusted.contains e.package
   let entries := shown.map fun e =>
     (e.name.toString, Json.mkObj [
-      ("signature", Json.str e.signature),
-      ("value", Json.str e.value),
-      ("doc", Json.str e.doc),
+      -- The number a thinned band node is; see `SiteContext.nodeIndex`.
+      ("i", Json.num (nodeIndex.getD e.name 0)),
       ("label", Json.str (upstreamLabelOf e.name)),
       ("module", Json.str e.moduleName.toString),
       ("package", Json.str e.package.toString)])
@@ -186,7 +202,8 @@ def duplicateDeclTags (decls : Array DeclInfo) : Array (String × Array Name) :=
 Takes the upstream table because `upstreamJsFile` depends on the project, unlike every other asset
 here, which is `include_str`-embedded at build time. -/
 def renderConfig (externals : Array ExternalDeclInfo) (trusted : Std.HashSet Name)
-    (showTrusted : Bool) (packageRanks : Std.HashMap Name Nat) : RenderConfig :=
+    (showTrusted : Bool) (packageRanks : Std.HashMap Name Nat)
+    (nodeIndex : Std.HashMap Name Nat) : RenderConfig :=
   {
     emitTeX := false
     emitHtmlSingle := .no
@@ -209,7 +226,7 @@ def renderConfig (externals : Array ExternalDeclInfo) (trusted : Std.HashSet Nam
     -- page, and since the pretty-printed signature block went, a page built without the
     -- highlighting phases has no highlighted block to bring them. The same values Verso registers,
     -- so a page that does have highlighted code gets them once.
-    extraJsFiles := {d3JsFile, upstreamJsFile externals trusted showTrusted packageRanks, graphJsFile,
+    extraJsFiles := {d3JsFile, upstreamJsFile externals trusted showTrusted packageRanks nodeIndex, graphJsFile,
       tocJsFile, auditJsFile,
       revisionsJsFile, browseJsFile, popperJs, tippyJs, markedJsFile, anatomyJsFile}
     -- Inline and in `<head>`, so the stored theme is applied before the first paint. Loading this

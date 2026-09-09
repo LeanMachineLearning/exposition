@@ -8,13 +8,12 @@
 | `provenance` | no (needs git) | Fold this revision into the ledger. See [provenance](provenance.md) |
 | `extract` | yes | Write the standalone minimal `.lean` file per declaration |
 | `extract-flat` | yes | The [fallback extraction](extraction.md): robust, unreadable |
-| `highlight` | yes | Interactive Lean per project module |
 | `highlight-extracted` | yes | Interactive Lean per minimal file, and whether it compiles |
 | `build-site` | no | Render the site |
 | `all` | yes | `collect` + `extract` + `build-site` in one process, no JSON round-trip. The default when no subcommand is given |
 
-`highlight-module` and `highlight-file` also exist; they are the worker processes the two
-highlighting phases fan out to, not commands to run yourself.
+`highlight-file` also exists; it is the worker process `highlight-extracted` fans out to, not a
+command to run yourself.
 
 ## Options
 
@@ -37,7 +36,7 @@ Which phase reads a flag is worth knowing, because it decides what a change cost
 | `--baseline PATH` | `build-site` | An earlier `collect` output to compare against. See [comparing revisions](revisions.md) |
 | `--baseline-label S` | `build-site` | What to call that baseline on the page (default: its file name) |
 | `--provenance PATH` | `provenance`, `build-site` | The ledger: written and extended by the subcommand, read by the site. See [provenance](provenance.md) |
-| `--jobs N` | the highlight phases | Worker processes (default: the CPU count) |
+| `--jobs N` | `highlight-extracted` | Worker processes (default: the CPU count) |
 | `--search MODE` | `build-site` | What the search index covers: `full` (default), `names`, or `none`. See [below](#--search) |
 | `--no-hoist-assets` | `build-site` | Keep Verso's inline CSS and JavaScript in every page instead of lifting the shared blocks into files. See [below](#--no-hoist-assets) |
 | `--per-chapter` | `build-site` | Render one chapter at a time, bounding peak memory by the largest chapter instead of the whole library. Requires `--search names` or `none`. See [below](#--per-chapter) |
@@ -56,7 +55,7 @@ answers a question nobody asks of a library. What a reader wants to find is a na
 |---|---|---|
 | `full` (default) | every page's full text | 14.05 MB |
 | `names` | page titles — declaration and module names | **0.73 MB** |
-| `none` | nothing; the box stays and finds nothing | 3 kB |
+| `none` | nothing; the box is removed | 3 kB |
 
 `names` changes only what the inverted index is built over. Verso splits its search output in two —
 an eagerly-loaded `searchIndex.js` holding the index, and per-bucket files holding each document's
@@ -70,8 +69,16 @@ even though the guard meant to skip the reference compares a field *name* agains
 `id` — `search-box.js` boosts `header` and `contents` and nothing else — so `names` passes it the
 empty string, and the URL tokens leave all three fields at once.
 
-`none` is for publishing somewhere the index cannot be hosted. It is not a way to make search
-better: the box remains and matches nothing.
+`none` removes the search box as well as the index — Verso builds the box in JavaScript and writes
+no markup for it, so a page that loads none of `-verso-search/` has none. The `-verso-search/`
+directory and Verso's search page go with it.
+
+That is worth reaching for on a large library, and not only where the index cannot be hosted.
+`searchIndex.js` is loaded by every page with a `<script defer>`, before a reader has typed
+anything: on the 28,381-declaration `Mathlib.Analysis` site it is **33.5 MB gzipped** under `full`
+and 1.88 MB under `names`, against about 0.5 MB for everything else that page fetches. At Mathlib's
+full scope even the name index projects past 20 MB per page view. What a reader keeps without the
+box is Browse, which lists every declaration and costs nothing until it is opened.
 
 ## `--no-hoist-assets`
 

@@ -50,4 +50,4 @@ artifact directly into `-D`, without a directory named after it — so the archi
 
 `alpha-rar`'s [`blueprint.yml`](https://github.com/RemyDegenne/alpha-rar/blob/main/.github/workflows/blueprint.yml)
 is a worked example: download, toolchain check, five phases (`collect`, `provenance`, `extract`,
-`highlight`, `build-site`), and a `--baseline` taken from the previous run's artifact.
+`highlight-extracted`, `build-site`), and a `--baseline` taken from the previous run's artifact.

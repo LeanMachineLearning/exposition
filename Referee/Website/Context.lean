@@ -76,45 +76,6 @@ def clipText (n : Nat) (s : String) : String :=
   let s := (String.trimAscii s).toString
   if s.length ≤ n then s else (s.take n).trimAscii.toString ++ "…"
 
-/-- Reads the per-module highlighting JSON written by `highlight` and indexes it by the names
-each command defines, so a declaration can be rendered as interactive Lean rather than as inert
-text.
-
-Missing or unreadable files are not an error: `build-site` must keep working without a
-`highlight` pass, falling back to plain code blocks. Each module's JSON is decoded and reduced to
-the entries we keep before moving to the next, since the whole corpus is far larger than the part
-that is actually referenced. -/
-def loadHighlighting (dir : System.FilePath) : IO (Std.HashMap Name Highlighted) := do
-  if !(← dir.pathExists) then
-    return {}
-  let mut acc : Std.HashMap Name Highlighted := {}
-  for entry in (← dir.readDir) do
-    if entry.path.extension != some "json" then
-      continue
-    let some result ← (do
-        let text ← IO.FS.readFile entry.path
-        let .ok json := Json.parse text | return none
-        let .ok (r : Highlight.FileHighlighting) := Highlight.FileHighlighting.fromJson? json
-          | return none
-        return some r)
-      | IO.eprintln s!"warning: could not read highlighting from {entry.path}"
-        continue
-    for item in result.items do
-      for name in item.defines do
-        acc := acc.insert name item.code
-  return acc
-
-/-- Renders highlighted Lean source as a block, or falls back to a plain code block when the
-declaration has no highlighting (no `highlight` pass was run, or its module failed).
-
-`defSite := false` matters: the same declaration is shown on many pages — its own, and every page
-whose closure inlines it — and letting each occurrence register as a definition site would
-produce duplicate cross-reference tags. -/
-def leanCodeBlock (hl? : Option Highlighted) (fallback : String) : Block Manual :=
-  match hl? with
-  | some hl => .other (Block.lean hl { showProofStates := false, defSite := some false }) #[]
-  | none => .code fallback
-
 /-- A minimal file's highlighted rendering plus whether it compiled. -/
 structure MinimalFile where
   code : Highlighted
@@ -174,8 +135,6 @@ structure SiteContext where
   declByName : Std.HashMap Name DeclInfo
   declHrefs : Std.HashMap Name String
   declPageHrefs : Std.HashMap Name String
-  /-- Declaration name ↦ highlighted source, empty when no `highlight` pass was run. -/
-  declHighlights : Std.HashMap Name Highlighted := {}
   /-- `anchorIdOf` stem ↦ the declaration's minimal file, empty without `highlight-extracted`. -/
   minimalFiles : Std.HashMap String MinimalFile := {}
   /-- The workspace's packages and their dependency edges. -/
@@ -195,6 +154,20 @@ structure SiteContext where
   /-- Whether audited packages appear in the upstream band (`--show-trusted-upstream`). Unaudited
   ones always do. -/
   showTrustedUpstream : Bool := false
+  /-- Every drawable constant ↦ a number, project declarations and upstream constants in one
+  sequence. It is what a thinned graph node *is*: see `thinGraphNodes`.
+
+  A node used to name its declaration in full, which on `Mathlib.Analysis` came to two thirds of
+  what was left of the payload — the same name written into every page whose closure reaches it.
+  The tables it is looked up in are shared already, so the name only has to appear in them, and a
+  node can be the number instead.
+
+  One sequence across both kinds because a node is drawn from whichever table holds it and nothing
+  upstream of that cares which; the two sets are disjoint, since `packageOf` refuses anything the
+  project declares. Assigned once here so that the tables, the pages and the client cannot disagree
+  about it — a build that renumbered between writing a table and writing a page would draw the
+  wrong declarations, which is the one failure this must not permit. -/
+  nodeIndex : Std.HashMap Name Nat := {}
   /-- The upstream packages whose internal structure `collect` was able to walk, and which are
   therefore drawn as layered blocks rather than as a flat surface. -/
   expandedPackages : Std.HashSet Name := {}

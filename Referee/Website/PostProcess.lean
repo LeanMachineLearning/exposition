@@ -415,6 +415,90 @@ private def replaceSearchPayload (file : System.FilePath) (payload : String) :
     IO.FS.writeFile file (marker ++ payload ++ ";\n\n" ++ String.intercalate ";\n\n" tail)
     return some (old.utf8ByteSize, payload.utf8ByteSize)
 
+/-! ### Removing the search box
+
+`SearchMode.none` has always promised "no index at all, and no search box", and delivered the first
+half: emptying `searchIndex.js` left a box that finds nothing, which reads as a broken feature rather
+than an absent one.
+
+The box is worth being able to remove outright, and not only for tidiness. Measured on the
+28,381-declaration `Mathlib.Analysis` site, `searchIndex.js` is **33.5 MB gzipped** with `full` and
+1.88 MB with `names`, and every page fetches it with a `<script defer>` before a reader has typed
+anything — against about 0.5 MB for everything else the page pulls. At Mathlib's scope the name
+index alone projects past 20 MB per page view. Nothing else on the site is in that league.
+
+Removing it is a matter of removing references: Verso builds the box in JavaScript
+(`search-init.js`) and writes no markup for it, so a page that loads none of `-verso-search/` simply
+does not have one. What a reader loses is the box; what they keep is Browse, which lists every
+declaration and is fetched only when visited. -/
+
+/-- Removes every `<script>` and `<link>` pointing into `-verso-search/` from one page.
+
+Walks the tags rather than matching text, because the references differ in attribute order and
+quoting (`<script defer="defer" src=…>`, `<script src=… defer="defer">`, `<script type="module"
+src=…>`), and a `<script>` has to take its closing tag with it. A page whose tags do not parse is
+returned untouched, on the same principle as `pruneSidebarSubTocs`: a page with a search box is a
+size problem, truncated HTML is a broken page. -/
+def stripSearchAssets (html : String) : String := Id.run do
+  match html.splitOn "<" with
+  | [] => return html
+  | first :: rest =>
+    let mut out := first
+    let mut inDroppedScript := false
+    for piece in rest do
+      let parts := piece.splitOn ">"
+      -- No `>` at all: not a tag this understands, so put it back exactly as it came.
+      if parts.length ≤ 1 then
+        out := out ++ "<" ++ piece
+        continue
+      let tag := parts.head!
+      let rest' := piece.drop (tag.length + 1)
+      if inDroppedScript then
+        -- Everything up to the closing tag goes with it; a `<script src>` body is empty anyway.
+        if tag.startsWith "/script" then
+          inDroppedScript := false
+          out := out ++ rest'
+      else if (tag.startsWith "script" || tag.startsWith "link")
+          && (tag.splitOn "-verso-search/").length > 1 then
+        if tag.startsWith "script" then
+          inDroppedScript := true
+        else
+          out := out ++ rest'
+      else
+        out := out ++ "<" ++ piece
+    -- An unclosed `<script>` means the walk lost its place; keep the page Verso wrote.
+    if inDroppedScript then return html
+    return out
+
+/-- Strips the search references from every page under `dir`, returning how many pages changed and
+how many bytes went. -/
+partial def stripSearchAssetsIn (dir : System.FilePath) : IO (Nat × Nat) := do
+  if !(← dir.pathExists) then
+    return (0, 0)
+  let mut pages := 0
+  let mut saved := 0
+  for entry in (← dir.readDir) do
+    if (← entry.path.isDir) then
+      let (p, s) ← stripSearchAssetsIn entry.path
+      pages := pages + p
+      saved := saved + s
+    else if entry.path.extension == some "html" then
+      let text ← IO.FS.readFile entry.path
+      let stripped := stripSearchAssets text
+      if stripped.utf8ByteSize < text.utf8ByteSize then
+        IO.FS.writeFile entry.path stripped
+        pages := pages + 1
+        saved := saved + (text.utf8ByteSize - stripped.utf8ByteSize)
+  return (pages, saved)
+
+/-- Deletes a directory and everything under it. -/
+private partial def removeTree (dir : System.FilePath) : IO Unit := do
+  if !(← dir.pathExists) then
+    return
+  for entry in (← dir.readDir) do
+    if (← entry.path.isDir) then removeTree entry.path else IO.FS.removeFile entry.path
+  IO.FS.removeDir dir
+
 /-- Applies `--search` to the site Verso has just written. A no-op for `full`, which is Verso's own
 output. -/
 def applySearchMode (mode : SearchMode) (out : System.FilePath) : IO Unit := do
@@ -423,19 +507,25 @@ def applySearchMode (mode : SearchMode) (out : System.FilePath) : IO Unit := do
   let dir := searchAssetDir out
   if !(← dir.pathExists) then
     return
-  let titles ← if mode == .names then readSearchTitles dir else pure #[]
+  if mode == .none then
+    -- The references first: while they stand, a page asks for files that are about to not exist.
+    let (pages, saved) ← stripSearchAssetsIn out
+    let before := (← dir.readDir).foldl (init := 0) fun acc _ => acc + 1
+    removeTree dir
+    -- Verso's own search *page*, which nothing links to once the box is gone. Beside the assets,
+    -- not beside `out`: the pages live under `html-multi`.
+    removeTree (out / "html-multi" / "search")
+    IO.println s!"Removed the search box from {pages} pages ({saved / 1048576} MB of references) \
+      and the {before} files under -verso-search/"
+    return
+  let titles ← readSearchTitles dir
   let payload := (titleOnlyIndex titles).compress
   match ← replaceSearchPayload (dir / "searchIndex.js") payload with
   | none =>
     IO.eprintln "warning: could not recognise the search index Verso wrote; leaving it alone"
   | some (old, new) =>
-    if mode == .none then
-      for bucket in ← searchBucketFiles dir do
-        IO.FS.removeFile bucket
-      IO.println s!"Emptied the search index ({old / 1048576} MB), and removed its buckets"
-    else
-      IO.println s!"Rebuilt the search index over {titles.size} titles: \
-        {old / 1048576} MB to {new / 1048576} MB"
+    IO.println s!"Rebuilt the search index over {titles.size} titles: \
+      {old / 1048576} MB to {new / 1048576} MB"
 
 /-! ## Writing the chapter tables
 
@@ -461,27 +551,49 @@ def declTableMembers (group : GroupInfo) (ctx : SiteContext) : Array DeclInfo :=
 
 /-- Writes one declaration table per chapter into the rendered site.
 
-Returns the number of tables written and their total size, for the same reason the other passes
-here report theirs: these are bytes the pages no longer carry, and a build that quietly stopped
-writing them would otherwise show up only as a site full of blank nodes. -/
+Two files per chapter, for the reason on `declTextPath`: the draw table every page of the chapter
+loads, and the text table only a click pulls in.
+
+Returns the chapter count and the two sizes, for the same reason the other passes here report
+theirs: these are bytes the pages no longer carry, and a build that quietly stopped writing them
+would otherwise show up only as a site full of blank nodes. -/
 def writeDeclTables (dir : System.FilePath) (groups : Array GroupInfo) (ctx : SiteContext) :
-    IO (Nat × Nat) := do
+    IO (Nat × Nat × Nat) := do
   if !(← dir.pathExists) then
-    return (0, 0)
+    return (0, 0, 0)
   let mut written := 0
   let mut bytes := 0
+  let mut textBytes := 0
   for group in groups do
     let members := declTableMembers group ctx
     if members.isEmpty then
       continue
-    let path := dir / declTablePath group.key
-    if let some parent := path.parent then
+    let drawPath := dir / declTablePath group.key
+    if let some parent := drawPath.parent then
       IO.FS.createDirAll parent
-    let js := declTableJs members ctx.declPageHrefs
-    IO.FS.writeFile path js
+    let draw := declDrawTableJs group.key members ctx.declPageHrefs ctx.nodeIndex
+    IO.FS.writeFile drawPath draw
+    let text := declTextTableJs members ctx.declPageHrefs
+    IO.FS.writeFile (dir / declTextPath group.key) text
     written := written + 1
-    bytes := bytes + js.length
-  return (written, bytes)
+    bytes := bytes + draw.length
+    textBytes := textBytes + text.length
+  return (written, bytes, textBytes)
+
+/-- Writes the upstream constants' text table into the rendered site; see `upstreamTextPath`.
+
+Alongside `writeDeclTables` and for the same reason: it is one file the whole site shares, and the
+pages that want it ask for it themselves. -/
+def writeUpstreamText (dir : System.FilePath) (externals : Array ExternalDeclInfo)
+    (trusted : Std.HashSet Name) (showTrusted : Bool) : IO Nat := do
+  if !(← dir.pathExists) then
+    return 0
+  let path := dir / upstreamTextPath
+  if let some parent := path.parent then
+    IO.FS.createDirAll parent
+  let js := upstreamTextJs externals trusted showTrusted
+  IO.FS.writeFile path js
+  return js.length
 
 end
 

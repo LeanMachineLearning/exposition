@@ -301,31 +301,6 @@ unsafe def highlightSource (fname : System.FilePath) : IO FileHighlighting := do
   let errors ← errorMessages.mapM fun m => m.toString
   return { items, errors }
 
-/-- Resolves a module name to its source file and highlights it. -/
-unsafe def highlightModule (modName : Name) : IO FileHighlighting := do
-  initSearchPath (← findSysroot)
-  let sp ← Compat.initSrcSearchPath
-  let sp : SearchPath := (sp : List System.FilePath) ++ [("." : System.FilePath)]
-  let some fname ← sp.findModuleWithExt "lean" modName
-    | throw <| IO.userError s!"Failed to find source for module {modName} in {sp}"
-  highlightSource fname
-
-/-- Where a module's highlighting lands inside the highlighting directory. -/
-def moduleFile (dir : System.FilePath) (modName : Name) : System.FilePath :=
-  dir / s!"{modName}.json"
-
-/-- Worker entry point: highlight one module and write its JSON. -/
-unsafe def writeModuleHighlighting (modName : Name) (outPath : System.FilePath) : IO Unit := do
-  let result ← highlightModule modName
-  if let some parent := outPath.parent then
-    IO.FS.createDirAll parent
-  -- `compress`, not `toString`: `ToString Json` pretty-prints, which on a single module cost
-  -- 651 ms against 91 ms and wrote 11.3 MB where 9.2 MB says the same thing. These files are
-  -- an intermediate that only `build-site` reads back, so the indentation buys nothing and is
-  -- paid for twice — once writing it, once parsing it again. `collect` already writes its data
-  -- this way.
-  IO.FS.writeFile outPath (ToJson.toJson result).compress
-
 /-- Worker entry point for a standalone file (an extracted minimal file rather than a project
 module): highlight it and write its JSON, including whether it compiled. -/
 unsafe def writeFileHighlighting (leanPath outPath : System.FilePath) : IO Unit := do
@@ -380,14 +355,6 @@ def runFanOut (exe : System.FilePath) (items : Array WorkItem) (jobs : Nat) :
           let msg := if out.stderr.isEmpty then out.stdout else out.stderr
           results := results.push ⟨item.label, false, msg⟩
   return results
-
-/-- Work items highlighting each project module into `dir`. -/
-def moduleWorkItems (modules : Array Name) (dir : System.FilePath) : Array WorkItem :=
-  modules.map fun modName => {
-    label := modName.toString
-    args := #["highlight-module", "--module", modName.toString,
-              "--output", (moduleFile dir modName).toString]
-  }
 
 /-- Work items highlighting each extracted minimal `.lean` file into `dir`. -/
 def extractedWorkItems (files : Array System.FilePath) (dir : System.FilePath) : Array WorkItem :=
