@@ -148,6 +148,33 @@ inputs:
       the whole library. Worth it at Mathlib scale; see docs/cli.md for the residuals.
     required: false
     default: "false"
+  claims-only:
+    description: >-
+      Build only the results the project puts forward — formalization.yaml's status.main_results, or
+      a Comparator setup — and the declarations their statements rest on. A collect-time scope, so
+      the data file it produces cannot also render a full site, and `baseline` refuses to compare
+      one against a differently scoped file. See docs/claims.md.
+    required: false
+    default: "false"
+  claim:
+    description: >-
+      Declarations to treat as the main results instead of whatever the project's metadata says,
+      comma- or newline-separated. Only used when claims-only is true.
+    required: false
+    default: ""
+  only:
+    description: >-
+      Build the site for this one declaration: claims-only with a claim set of one, so everything
+      its statement rests on gets a page too. Takes precedence over claims-only. Not compatible
+      with provenance, which needs a full collect.
+    required: false
+    default: ""
+  comparator-dir:
+    description: >-
+      Where the Comparator configs are, when formalization.yaml does not point at them and they are
+      not in a directory a shallow scan of the project root finds.
+    required: false
+    default: ""
 
 outputs:
   data:
@@ -188,6 +215,10 @@ runs:
         REFEREE_WITH_BASELINE: ${{ inputs.baseline }}
         REFEREE_WITH_HIGHLIGHT_EXTRACTED: ${{ inputs.highlight-extracted }}
         REFEREE_PER_CHAPTER: ${{ inputs.per-chapter }}
+        REFEREE_CLAIMS_ONLY: ${{ inputs.claims-only }}
+        REFEREE_ONLY: ${{ inputs.only }}
+        REFEREE_CLAIM: ${{ inputs.claim }}
+        REFEREE_COMPARATOR_DIR: ${{ inputs.comparator-dir }}
         REFEREE_SEMANTIC_HASH_REPO: ${{ inputs.semantic-hash-repo }}
         REFEREE_SEMANTIC_HASH_REF: ${{ inputs.semantic-hash-ref }}
 

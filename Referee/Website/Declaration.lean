@@ -286,15 +286,19 @@ private def sorryChain (start : Name) (ctx : SiteContext) : Option (Array Name) 
   let mut visited : Std.HashSet Name := ({} : Std.HashSet Name).insert start
   let mut frontier : Array Name := #[start]
   let mut culprit? : Option Name := none
+  let bound := ctx.declByName.size + ctx.thinByName.size
   -- Bounded by the declaration count: a BFS visits each declaration at most once, and an explicit
   -- bound keeps this structurally terminating.
-  for _ in [0:ctx.declByName.size] do
+  for _ in [0:bound] do
     if culprit?.isSome || frontier.isEmpty then
       break
     let mut next : Array Name := #[]
     for name in frontier do
-      if let some d := ctx.declByName.get? name then
-        if d.hasOwnSorry then
+      -- `sorryNode?`, not `declByName`: on a scoped build the declaration that owns the `sorry` is
+      -- usually one of the ones dropped, and looking only at the rendered declarations would end
+      -- the walk one step short of the answer and report the gap as inherited from upstream.
+      if let some (deps, hasOwnSorry) := ctx.sorryNode? name then
+        if hasOwnSorry then
           culprit? := some name
           break
         -- `deps`, the raw type-and-body edges: a `sorry` reached only through a proof is still a
@@ -302,8 +306,8 @@ private def sorryChain (start : Name) (ctx : SiteContext) : Option (Array Name) 
         -- which walks proofs. Neither `meaningDeps` nor `closureDeps` will do: both are `typeDeps`
         -- for a non-alias theorem, so the proof that reaches the `sorry` is exactly what they drop,
         -- and the chain would come back empty for the declarations that most need it.
-        for dep in d.deps do
-          if !visited.contains dep && ctx.declByName.contains dep then
+        for dep in deps do
+          if !visited.contains dep && (ctx.sorryNode? dep).isSome then
             visited := visited.insert dep
             parents := parents.insert dep name
             next := next.push dep
@@ -312,7 +316,7 @@ private def sorryChain (start : Name) (ctx : SiteContext) : Option (Array Name) 
   -- Walk parent pointers back to `start`, then reverse into dependency order.
   let mut path : Array Name := #[culprit]
   let mut cursor := culprit
-  for _ in [0:ctx.declByName.size] do
+  for _ in [0:bound] do
     match parents.get? cursor with
     | none => break
     | some p =>

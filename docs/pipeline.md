@@ -14,9 +14,16 @@ environment produces **data**, and rendering is a pure function of that data.
 | `build-site` | no | the Verso HTML site |
 
 `collect` is also the phase that reads the project root itself: `README.md` for the landing page's
-overview, and `formalization.yaml` — when there is one — for the [Claims](claims.md) page. Both go
-into `data.json`, because `build-site` runs from that file alone and never sees the project
-directory.
+overview, and `formalization.yaml` and any [Comparator](https://github.com/leanprover/comparator)
+configs — when there are any — for the [Claims](claims.md) page. All of it goes into `data.json`,
+because `build-site` runs from that file alone and never sees the project directory.
+
+**Scope is a `collect`-time property**, unlike every other flag in the table below.
+[`--claims-only` and `--only`](claims.md#building-only-the-claims) decide what is *in* `data.json`,
+not how it is rendered, so they cannot be varied over one collected file the way `--trust` and
+`--baseline` can. That is the point of them: the saving is in the phases that import the project,
+and a file scoped to 37 declarations no longer holds what a full site would need. The scope is
+recorded in the file, and `build-site` reads it to frame the site rather than to decide it.
 
 `build-site` touches nothing but those files, so it can be re-run as many times as you like —
 e.g. while iterating on page layout or CSS — without re-importing the target project.

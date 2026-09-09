@@ -21,8 +21,28 @@ if referee_enabled "${REFEREE_WITH_HASHES:-}"; then
   hashes=(--hashes "$(referee_require REFEREE_HASHES)")
 fi
 
+# The scope, which is a collect-time property and not a render-time one: `--claims-only` decides
+# what goes *into* the data file, so it cannot be varied downstream the way `--trust` can.
+scope=()
+claims=()
+# `referee_split_list` assigns rather than appends, so it gets an array of its own; writing into
+# `scope` here would discard the `--claims-only` already in it.
+referee_split_list claims --claim "${REFEREE_CLAIM:-}"
+if referee_enabled "${REFEREE_CLAIMS_ONLY:-}"; then
+  scope=(--claims-only "${claims[@]}")
+fi
+# `--only` wins: it names the one declaration to publish, which is a narrower instruction than
+# "whatever the metadata calls a main result".
+if [ -n "${REFEREE_ONLY:-}" ]; then
+  scope=(--only "$REFEREE_ONLY" "${claims[@]}")
+fi
+if [ -n "${REFEREE_COMPARATOR_DIR:-}" ]; then
+  scope+=(--comparator "$REFEREE_COMPARATOR_DIR")
+fi
+
 lake env "$(referee_require REFEREE_BIN)" collect \
   --root "$(referee_require REFEREE_ROOT)" \
   "${exclude[@]}" \
   "${hashes[@]}" \
+  "${scope[@]}" \
   --data "$(referee_require REFEREE_DATA)"

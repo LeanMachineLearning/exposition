@@ -25,9 +25,11 @@ On top of that are the pages a referee needs and ordinary documentation does not
 
 - **Theorems** — everything stated with `theorem`, separated from the machinery, each row carrying
   what you have made of it (see **[audit state](docs/audit.md)** below). **[Claims](docs/claims.md)**
-  — the same rows, but only the results the project's own `formalization.yaml` puts forward, for a
+  — the same rows, but only the results the project itself puts forward, read from its
+  `formalization.yaml` or from a [Comparator](https://github.com/leanprover/comparator) setup, for a
   project that ships the [Palomar registry](https://palomar-registry.org/)'s metadata: the one list
-  here that is asserted rather than measured. **Browse** — every
+  here that is asserted rather than measured, and the one place the site can report a statement
+  certified by something other than this tool. **Browse** — every
   declaration in one sortable, filterable table. **Sorries and assumptions** — `sorry` chains,
   extra axioms and unaudited upstream packages, reported as findings only: the page counts what is
   missing and never how much is done.
@@ -59,6 +61,14 @@ On top of that are the pages a referee needs and ordinary documentation does not
 - **[Provenance](docs/provenance.md)** — when each declaration's meaning last changed, and in which
   revision, kept apart from when its file was last edited. The sentence that saves the most work is
   the one combining them: *edited last week, meaning unchanged since March*.
+
+**[Claims-only and single-result builds](docs/claims.md#building-only-the-claims).**
+`collect --claims-only` restricts the whole build to those results and the declarations their
+*statements* rest on; `collect --only DECL` is the same with a claim set of one declaration. The
+choice of closure is what makes it worth having: what a statement rests on is about 2% of a
+formalization, where what its proof calls is about 70%. Measured on two projects, 1901 declarations
+become 37 and 816 become 53 — and since `highlight-extracted` runs one Lean process per published
+declaration, that is the expensive phase shrinking by the same factor.
 
 It also writes **[standalone `.lean` files](docs/extraction.md)**, one per declaration, each
 self-contained with its transitive dependencies inlined and proofs replaced by `sorry` — the
@@ -136,7 +146,7 @@ flag.
 | [Authoring](docs/authoring.md) | The two things the tool cannot infer: `theorem` vs `lemma`, and `@[specifies]` |
 | [Upstream trust](docs/trust.md) | `--trust`, what counts as a trust dependency, and what the analysis does and does not claim |
 | [Theorems and audit state](docs/audit.md) | Verdicts, coverage, auditing a claim from its own page, export — and the three limits |
-| [Claims](docs/claims.md) | The Claims page: `formalization.yaml`'s main results, and what the site will not take from the file |
+| [Claims](docs/claims.md) | The Claims page: main results from `formalization.yaml` or a Comparator setup, the claims-only and single-result builds, and what the site will not take from the file |
 | [Comparing revisions](docs/revisions.md) | `--baseline`, the classification, and what the comparison is made on |
 | [Semantic hashes](docs/semantic-hashes.md) | `--hashes`: structural hashes instead of pretty-printed text |
 | [Provenance](docs/provenance.md) | `--provenance`: when meaning last changed, and the revision selector |

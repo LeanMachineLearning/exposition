@@ -232,10 +232,47 @@ structure SiteContext where
   provEntries : Std.HashMap Name ProvenanceEntry := {}
   /-- Declaration ↦ where its source was last touched, resolved once. -/
   provEdits : Std.HashMap Name EditInfo := {}
+  /-- How the build was scoped. A full build leaves this empty and nothing on the site mentions
+  scope at all; a scoped one has to say so wherever it reports a count, because every count is now
+  over the claims' cone rather than over the library. -/
+  scope : CollectionScope := {}
+  /-- Exposed declarations before scoping, which a scoped site cannot recompute. Zero on a full
+  build, where `decls.size` is already the answer. -/
+  libraryDeclCount : Nat := 0
+  /-- The results the project puts forward, from `formalization.yaml`, a Comparator setup, or the
+  command line. See `Referee.Claims`. -/
+  claims? : Option ClaimSet := none
+  /-- The declarations a scoped build kept the edges of and renders nothing for.
+
+  One reader: `sorryChain`. A scoped build drops the proof machinery, and a `sorry` a claim reaches
+  through a proof would otherwise still be *reported* — `dependsOnSorry` comes from `collectAxioms`
+  against the whole environment and does not care what was collected — with nothing left to explain
+  it. The page would then blame an upstream package for the project's own gap. -/
+  thinByName : Std.HashMap Name ThinDecl := {}
   /-- The git ref source links should point at: the revision the ledger was last folded at, so a
   published site's links keep showing the code it was built from rather than drifting with the
   branch. `main` without a ledger, which is what the site did before there was anything better. -/
   sourceRef : String := "main"
+
+/-- Whether this declaration has a page of its own in this build.
+
+The single point where that is decided. Everything downstream already copes with the answer being
+no, because upstream constants have never had pages: listings filter the rows they cannot link,
+`specTheoremRows` and friends fall back to an empty href and render a bare name, and the graph
+refuses to navigate from an hrefless node while keeping its summary panel. -/
+def SiteContext.hasPage (ctx : SiteContext) (name : Name) : Bool :=
+  ctx.declPageHrefs.contains name
+
+/-- The `sorry`-relevant facts of any declaration this build kept: the raw type-and-body edges, and
+whether the `sorry` is its own.
+
+Reads the thin tier as well as the full one, which is the whole reason the thin tier exists. Only
+`sorryChain` asks: no other consumer follows proof edges, so this is the only place a scoped build
+has to look past the declarations it renders. -/
+def SiteContext.sorryNode? (ctx : SiteContext) (name : Name) : Option (Array Name × Bool) :=
+  match ctx.declByName.get? name with
+  | some decl => some (decl.deps, decl.hasOwnSorry)
+  | none => (ctx.thinByName.get? name).map fun thin => (thin.deps, thin.hasOwnSorry)
 
 end
 

@@ -38,10 +38,20 @@ Which phase reads a flag is worth knowing, because it decides what a change cost
 | `--provenance PATH` | `provenance`, `build-site` | The ledger: written and extended by the subcommand, read by the site. See [provenance](provenance.md) |
 | `--jobs N` | `highlight-extracted` | Worker processes (default: the CPU count) |
 | `--per-chapter` | `build-site` | Render one chapter at a time, bounding peak memory by the largest chapter instead of the whole library. See [below](#--per-chapter) |
+| `--claims-only` | `collect` | Build only the results the project puts forward and what their *statements* rest on. See [claims](claims.md#building-only-the-claims) |
+| `--only DECL` | `collect` | Build the site for one declaration: `--claims-only` with a claim set of one |
+| `--claim NAME` | `collect` | Treat `NAME` as a main result instead of whatever the metadata says. Repeatable |
+| `--comparator DIR` | `collect` | Where the Comparator configs are, when the metadata does not point at them |
 
 Each of `--trust`, `--baseline` and `--provenance` is gated: omit it and the site says nothing on
 that subject at all — no page, no column, no badge. That is deliberate and uniform, so a site never
 implies it has checked something it was not asked about.
+
+`--claims-only` and `--only` are the exception to the phase table's usefulness, and worth stating
+plainly: they are read by `collect`, not by `build-site`, because they decide what is *in* the data
+file rather than how it is rendered. The scope is recorded in `data.json` and `build-site` reads it
+to frame the site — a scoped file cannot be rendered as a full one, because it no longer holds what
+a full one would need. `--baseline` refuses to compare two files collected at different scopes.
 
 ## No search box
 

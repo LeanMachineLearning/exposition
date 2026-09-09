@@ -97,28 +97,38 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     | none => pure none
     | some path => do
       let baseline ← loadCollectedData path
-      let label := cfg.baselineLabel.getD (System.FilePath.mk path).fileName.get!
-      let report := diff baseline data label
-      IO.println s!"Baseline {path}: {report.needingReaudit.size} of {data.decls.size} \
-        declarations need re-reading ({(report.ofKind .statementChanged).size} statement, \
-        {(report.ofKind .bodyChanged).size} definition, {(report.ofKind .indirect).size} indirect, \
-        {(report.ofKind .upstream).size} underneath, {(report.ofKind .added).size} new); \
-        {(report.ofKind .proofOnly).size} proof-only and {report.removed.size} removed"
-      IO.println <|
-        if report.fullyHashed then
-          s!"Compared on semantic hashes ({report.comparisons} declarations)"
-        else if report.usedHashes then
-          s!"Compared on semantic hashes for {report.hashedComparisons} of {report.comparisons} \
-            declarations; the rest on pretty-printed types"
-        else
-          s!"Compared on pretty-printed types ({report.comparisons} declarations). Collect both \
-            revisions with --hashes for a comparison a toolchain upgrade cannot disturb"
-      if report.looksLikeToolchainChurn then
-        IO.eprintln "warning: almost every statement is reported as changed, which is the shape a \
-          toolchain upgrade produces rather than an edit. Statements are compared as \
-          pretty-printed elaborated types; collect both revisions on the same toolchain, or with \
-          --hashes, for a meaningful diff."
-      pure (some report)
+      -- Two files collected at different scopes are not comparable, and the failure is not subtle:
+      -- every declaration the narrower one dropped reads as removed. On `colt-2026-83` that is 1864
+      -- false "this was deleted" rows, which is worse than having no comparison at all.
+      if baseline.scope != data.scope then
+        IO.eprintln s!"warning: {path} was collected as a {baseline.scope.label} build and this \
+          one is {data.scope.label}; the comparison is skipped, because every declaration the \
+          narrower build left out would be reported as removed. Collect both revisions the same \
+          way."
+        pure none
+      else
+        let label := cfg.baselineLabel.getD (System.FilePath.mk path).fileName.get!
+        let report := diff baseline data label
+        IO.println s!"Baseline {path}: {report.needingReaudit.size} of {data.decls.size} \
+          declarations need re-reading ({(report.ofKind .statementChanged).size} statement, \
+          {(report.ofKind .bodyChanged).size} definition, {(report.ofKind .indirect).size} indirect, \
+          {(report.ofKind .upstream).size} underneath, {(report.ofKind .added).size} new); \
+          {(report.ofKind .proofOnly).size} proof-only and {report.removed.size} removed"
+        IO.println <|
+          if report.fullyHashed then
+            s!"Compared on semantic hashes ({report.comparisons} declarations)"
+          else if report.usedHashes then
+            s!"Compared on semantic hashes for {report.hashedComparisons} of {report.comparisons} \
+              declarations; the rest on pretty-printed types"
+          else
+            s!"Compared on pretty-printed types ({report.comparisons} declarations). Collect both \
+              revisions with --hashes for a comparison a toolchain upgrade cannot disturb"
+        if report.looksLikeToolchainChurn then
+          IO.eprintln "warning: almost every statement is reported as changed, which is the shape a \
+            toolchain upgrade produces rather than an edit. Statements are compared as \
+            pretty-printed elaborated types; collect both revisions on the same toolchain, or with \
+            --hashes, for a meaningful diff."
+        pure (some report)
   -- Reverse `dataTransDeps`, counted once. Built for a baseline or a ledger, since both order their
   -- queues by it: a changed statement forty results rest on is a different size of problem from
   -- one nothing uses, and that ordering is the only thing on either page that says so.
@@ -133,6 +143,10 @@ private def buildSiteFrom (cfg : Cli) (data : CollectedData) : IO UInt32 := do
     declByName := declByNameMap data.decls
     declHrefs := declHrefMap data.decls
     declPageHrefs := declPageHrefMap data.decls
+    scope := data.scope
+    libraryDeclCount := data.libraryDeclCount
+    claims? := data.claims?
+    thinByName := data.thinDecls.foldl (fun acc t => acc.insert t.name t) {}
     minimalFiles := minimalFiles
     extractedStems := extractedStems
     packages := data.packages
@@ -382,6 +396,19 @@ private def runProvenance (cfg : Cli) : IO UInt32 := do
       deliberately no fallback to comparing pretty-printed types, because a ledger is append-only \
       and would record a toolchain upgrade as a permanent library-wide change."
     return 1
+  -- A scoped build and an append-only ledger are a bad pair, and the badness is quiet.
+  -- `foldRevision` keeps the entry of any declaration this revision does not expose, so nothing is
+  -- lost — but nothing is *updated* either: every declaration outside the scope keeps whatever
+  -- "meaning last changed" it had, however much it moves, and the revision row records the scoped
+  -- count as if it were the library's. A ledger folded from a mix of scoped and full builds is
+  -- therefore accurate about neither.
+  if !data.scope.isFull then
+    IO.eprintln s!"warning: {dataPath} is a {data.scope.label} build ({data.decls.size} \
+      declarations, out of {data.libraryDeclCount} the library exposes). Folding it into a ledger \
+      records this revision as having only those, and freezes the recorded history of every \
+      declaration outside the scope — a later full build would then attribute their accumulated \
+      changes to whichever revision next observed them. Fold from a full `collect`, and keep the \
+      scoped one for rendering."
   let projectDir : System.FilePath := "."
   let some (head, describedRef) ← headCommit projectDir
     | IO.eprintln "provenance could not read git history from the current directory. It must run \

@@ -13,6 +13,7 @@ public import MeaningGraph
 public import Characterization
 public import ChallengeGen
 public import Referee.Formalization
+public import Referee.Claims
 
 @[expose] public section
 
@@ -110,6 +111,31 @@ structure Cli where
   already checked once — it grew 73× across a 5.5× step in library size, so at Mathlib scope it is
   minutes of re-verifying a file that has not changed. -/
   verifyIntegrity : Bool := true
+  /-- Restrict the build to the results the project puts forward and what their *statements* rest
+  on (`--claims-only`). See `Referee.Claims` for where the list of results comes from.
+
+  Read by `collect`, which is where the scope is decided, and recorded in `data.json` so that
+  `build-site` can frame the site without re-deciding it. Unlike `--trust` or `--baseline` this
+  cannot be varied over one collected file, because the file no longer holds what a wider build
+  would need — which is the point of it. -/
+  claimsOnly : Bool := false
+  /-- Build the site for one declaration (`--only DECL`).
+
+  Exactly `--claims-only` with a claim set of this one declaration: the same scope rule, and the
+  same site, so everything its statement rests on gets a page too. Rendering only the named
+  declaration was the first design and it was wrong — a claim's page is mostly the dependency graph
+  under it, and a graph whose nodes have no pages strands the reader on a summary panel when what
+  they want is the card. -/
+  onlyDecl : Option Name := none
+  /-- Declarations to treat as the project's main results (`--claim NAME`), overriding whatever
+  `formalization.yaml` or a Comparator setup says. Repeatable.
+
+  For a project with neither metadata document, and for the case where you disagree with the one it
+  has. Ignored unless `--claims-only` or `--only` asked for a scoped build. -/
+  claimNames : Array Name := #[]
+  /-- Where to look for Comparator configs (`--comparator DIR`), when they are not where the
+  metadata points and not in a directory the shallow scan finds. -/
+  comparatorDir : Option String := none
   /-- Whether `build-site` renders one chapter at a time instead of the whole library in one Verso
   invocation (`--per-chapter`).
 
@@ -1325,6 +1351,57 @@ def resolve (table : Array Json) (j : Json) : Json :=
     acc.push (resolveAgainst acc entry)
   resolveAgainst resolved j
 
+/-! ## The thin tier
+
+A scoped build drops 93–98% of the library, and two analyses would notice if the dropped
+declarations vanished entirely rather than thinning: the extraction closure a minimal file inlines
+along, and the `sorry` chain that explains a finding. Both need names and edges; neither needs a
+signature, a docstring, an anatomy or a line of source.
+
+So they get a record that cannot be rendered. That is deliberate and is why this is a separate array
+rather than a partly-filled `DeclInfo`: a thin record that reached a page would draw an empty card,
+and keeping the two types apart makes that impossible instead of merely unlikely.
+
+Measured, this tier is one declaration on `colt-2026-83` and none on `alpha-rar`. It is a
+correctness backstop, not a carrier of bulk. -/
+
+/-- A declaration a scoped build keeps the edges of but renders nothing for. -/
+structure ThinDecl where
+  name : Name
+  moduleName : Name
+  kind : DeclKind
+  /-- Needed because `closureDepsOf` and `meaningDepsOf` both branch on it. -/
+  isAlias : Bool := false
+  deps : Array Name := #[]
+  typeDeps : Array Name := #[]
+  /-- Whether the `sorry` is this declaration's own, which is where a chain stops. -/
+  hasOwnSorry : Bool := false
+  /-- Whether one is anywhere beneath it, which is what makes it a possible link in a chain. -/
+  dependsOnSorry : Bool := false
+deriving Repr, ToJson, FromJson, Inhabited
+
+/-- How a `data.json` was scoped, so a later run can tell whether it is comparing like with like.
+
+`--baseline` is the reason this is stored rather than inferred. A scoped file compared against a
+full-scope one reports every dropped declaration as removed — 1864 false "this was deleted" rows on
+`colt-2026-83` — and the only thing that can catch it is the two files saying how they were made. -/
+structure CollectionScope where
+  /-- `""` for a full build, `"claims"` for `--claims-only`, `"single"` for `--only`. -/
+  mode : String := ""
+  /-- The declarations the scope was seeded from, in order. Part of the identity of the scope: two
+  `--claims-only` builds of different claim sets are not comparable either. -/
+  seeds : Array String := #[]
+deriving Repr, ToJson, FromJson, Inhabited, BEq
+
+/-- Whether this build kept the whole library. -/
+def CollectionScope.isFull (scope : CollectionScope) : Bool := scope.mode.isEmpty
+
+/-- What to call the scope in a sentence. -/
+def CollectionScope.label (scope : CollectionScope) : String :=
+  if scope.mode == "claims" then "claims-only"
+  else if scope.mode == "single" then "single-declaration"
+  else "full"
+
 /-- Format version of `CollectedData`. Bump whenever `DeclInfo` or `CollectedData` gains or
 changes a field, so that `build-site` fails with an actionable message rather than a field-level
 decode error when handed a JSON file written by an older `collect`.
@@ -1356,7 +1433,7 @@ decode error when handed a JSON file written by an older `collect`.
 - 14: adds `DeclInfo.anatomy?`, the statement split by binder role for the card's "in parts" view.
   Optional for the same reason, so `minReadableDataVersion` stays at 11; an older file renders
   without the section -/
-def collectedDataVersion : Nat := 15
+def collectedDataVersion : Nat := 16
 
 /-- The oldest data-format version the current binary can read. Version 11 remains readable because
 the only change in 12 is that closures are no longer stored, and this binary recomputes them from
@@ -1395,6 +1472,21 @@ structure CollectedData where
   inside `maxExpandedPackage`. Their declarations carry `ExternalDeclInfo.deps` and are drawn as a
   layered block; everything else is drawn as the flat surface it always was. -/
   expandedPackages : Array Name := #[]
+  /-- How this file was scoped. Defaulted, so a file from before the field existed reads as the
+  full build it was. -/
+  scope : CollectionScope := {}
+  /-- The results the project puts forward, when something named them. Read at `collect` time for
+  the same reason `formalization?` is: `build-site` runs from this file alone and never sees the
+  project directory. Present on a full build too, where it drives the Claims page and nothing
+  else. -/
+  claims? : Option ClaimSet := none
+  /-- Exposed declarations *before* scoping. The number a scoped site needs in order to say what it
+  left out, and the one thing a scoped file cannot recompute. Zero on a full build, where
+  `decls.size` is already the answer. -/
+  libraryDeclCount : Nat := 0
+  /-- The declarations a scoped build keeps the edges of and renders nothing for; see `ThinDecl`.
+  Always empty on a full build. -/
+  thinDecls : Array ThinDecl := #[]
 deriving ToJson, FromJson
 
 /-- What `collect` actually writes: a `CollectedData` with its repeated subtrees hoisted into
@@ -1482,6 +1574,15 @@ def usage : String :=
     "                       `build-site`. Optional; without it the site says nothing about when",
     "                       anything changed",
     "  --ref NAME           What to call this revision in the ledger (default: git describe)",
+    "  --claims-only        Build only the results the project puts forward (formalization.yaml's",
+    "                       status.main_results, or a Comparator setup) and the declarations their",
+    "                       statements rest on. Read by `collect`, recorded in the data file",
+    "  --only DECL          Build the site for this one declaration: --claims-only with a claim",
+    "                       set of one, so everything its statement rests on gets a page too",
+    "  --claim NAME         Treat NAME as a main result, instead of whatever the project's",
+    "                       metadata says. Repeatable. Needs --claims-only or --only",
+    "  --comparator DIR     Where the Comparator configs are, when neither formalization.yaml nor",
+    "                       a shallow scan of the project root finds them",
     "  --per-chapter        Render the site one chapter at a time, bounding `build-site`'s peak",
     "                       memory by the largest chapter instead of the whole library, then stitch",
     "                       the global artifacts together",
@@ -1544,6 +1645,18 @@ def parseArgs : List String → Except String Cli
   | "--per-chapter" :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with perChapter := true }
+  | "--claims-only" :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with claimsOnly := true }
+  | "--only" :: decl :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with onlyDecl := some decl.toName }
+  | "--claim" :: name :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with claimNames := cfg.claimNames.push name.toName }
+  | "--comparator" :: dir :: rest => do
+      let cfg ← parseArgs rest
+      pure { cfg with comparatorDir := some dir }
   | "--no-verify" :: rest => do
       let cfg ← parseArgs rest
       pure { cfg with verifyIntegrity := false }
@@ -2546,6 +2659,11 @@ declaration *means* or what a reader must *trust* uses `meaningDepsOf` instead. 
 def closureDepsOf (kind : DeclKind) (isAlias : Bool) (deps typeDeps : Array Name) : Array Name :=
   if kind == .theorem && !isAlias then typeDeps else deps
 
+/-- `closureDepsOf` for a thin record: the edges extraction inlines along. Defined here rather than
+beside `ThinDecl` so that the rule has exactly one statement. -/
+def ThinDecl.closureDeps (decl : ThinDecl) : Array Name :=
+  closureDepsOf decl.kind decl.isAlias decl.deps decl.typeDeps
+
 /-- The edges *meaning and trust* follow: nothing a proof merely calls.
 
 Three cases, one principle. A theorem contributes its statement, not its proof — the kernel already
@@ -2970,19 +3088,357 @@ def directUpstreamPackages (env : Environment) (packages : Array PackageInfo)
         | none => acc
   acc.toArray.qsort Name.lt
 
+/-- Prints how long one step of `collect` took.
+
+`build-site` has had phase timings since it started taking hours; `collect` never did, so the only
+way to tell which of its steps is expensive was to guess. That matters more now that `--claims-only`
+exists: the point of a scoped build is to skip work, and without timings there is no way to see
+which work is still being done for the whole library. -/
+def collectPhase (label : String) (startMs : Nat) : IO Nat := do
+  let now := ← IO.monoMsNow
+  IO.println s!"  [{label}] {(now - startMs) / 1000}.{((now - startMs) % 1000) / 100}s"
+  return now
+
+/-! ### The two passes
+
+`collectDecls` runs over every exposed declaration twice, and the split is what makes
+`--claims-only` worth having.
+
+The first pass computes the facts that are *cheap per declaration*: the dependency edges, the kind,
+and the four keyword questions read off the parsed source. Every file cost in it — reading the
+source, parsing its commands — is paid once per *file*, and both are cached, so a project's 1901
+declarations cost 161 file reads whether they are all kept or none are.
+
+The second pass computes what is expensive per declaration and is wanted only by a page:
+`ppExprString` over the type, `statementAnatomyOf` taking the statement apart, the signature and
+proof text cut out of the source, the docstring rendered to blocks. On `colt-2026-83` a
+`--claims-only` build runs that pass 37 times instead of 1901.
+
+Nothing about the unscoped path changes: with no scope, the second pass runs over everything the
+first produced, and the result is the same array it always was. -/
+
+/-- What the first pass learns about a declaration: everything needed to place it in the dependency
+graph and to decide whether it is in scope, and nothing that costs real work.
+
+Holds a `ConstantInfo` and so never leaves this process — it is the hand-off between the two passes,
+not a stored form. -/
+structure DeclFacts where
+  name : Name
+  moduleName : Name
+  info : ConstantInfo
+  kind : DeclKind
+  isLemma : Bool
+  isAlias : Bool
+  isInstanceDecl : Bool
+  source? : Option SourceInfo
+  typeDeps : Array Name
+  deps : Array Name
+  dataDeps : Array Name
+  axioms : Array Name
+  hasOwnSorry : Bool
+  dependsOnSorry : Bool
+
+/-- `meaningDepsOf` for the first pass's record: the edges a *statement* rests on. Seeds the page
+scope. -/
+def DeclFacts.meaningDeps (facts : DeclFacts) : Array Name :=
+  meaningDepsOf facts.kind facts.isAlias facts.deps facts.typeDeps facts.dataDeps
+
+/-- `closureDepsOf` for the first pass's record: the edges extraction inlines along. -/
+def DeclFacts.closureDeps (facts : DeclFacts) : Array Name :=
+  closureDepsOf facts.kind facts.isAlias facts.deps facts.typeDeps
+
+/-! ### Discovering the scope without walking the library
+
+A scoped build asks a reachability question from a handful of seeds. Computing every declaration's
+dependencies and *then* traversing answers it, and that is what the first version did — but it costs
+the whole library to learn about 2% of it, which is exactly backwards at the scale this exists for.
+Measured on `colt-2026-83`, that eager first pass was 30.7s of a 35.6s `--claims-only` collect; on a
+million-line library it is the difference between minutes and hours.
+
+So a scoped build walks outward from the seeds instead, computing a declaration's edges, kind and
+keywords only when the traversal actually reaches it. Source files are read and parsed only when
+they contain a declaration in scope — ten files rather than a hundred and forty.
+
+The traversal has to interleave two kinds of step, which is why it is one worklist and not two
+passes. Following `meaningDeps` finds what a claim's statement rests on. Pulling in the theorems
+that *speak for* a definition — `@[specifies]`, `@[characterization]` — finds what a reader needs in
+order to judge it, and no dependency edge points that way. A pulled-in theorem has a statement of
+its own, so the two steps feed each other until neither adds anything.
+
+The full build keeps the eager loop. It needs every declaration anyway, so a worklist would only
+add bookkeeping, and keeping the paths separate is what stops the scoped work from changing what an
+unscoped build computes. Both call `declFactsOf`, so the per-declaration answer cannot drift. -/
+
+/-- The caches the first pass threads: memoized dependency expansion, and the lines and parsed
+commands of each source file.
+
+Explicit rather than mutable locals because both the eager loop and the lazy traversal thread them
+through the same `declFactsOf`, and a file read once for the eager path must not be read again. -/
+structure FactsCache where
+  deps : MeaningGraph.Cache := {}
+  lines : Std.HashMap System.FilePath (Array String) := {}
+  commands : Std.HashMap System.FilePath (Array CommandKeyword) := {}
+
+/-- Everything the first pass learns about one declaration.
+
+Cheap in the sense that matters: the per-file work — reading the source and running the Lean parser
+over it — is paid once per file however many declarations ask for it, and the per-declaration work
+is a dependency expansion and four keyword questions. What it deliberately does *not* do is anything
+that costs real time per declaration; that is `declInfoOf`'s half, and a scoped build runs it 38
+times instead of 1901.
+
+`axioms` and `dependsOnSorry` are left empty here and filled by `withAxioms`, because which
+declarations need them is not known until the scope is. -/
+def declFactsOf (env : Environment) (projectDir : System.FilePath) (pkg : Lake.Package)
+    (depsCtx : MeaningGraph.Context) (simpLemmaNames : Std.HashSet Name) (cache : FactsCache)
+    (name moduleName : Name) (info : ConstantInfo) : IO (DeclFacts × FactsCache) := do
+  let mut cache := cache
+  let ranges? ← findRanges? env name
+  let source? ← toSourceInfo? projectDir pkg moduleName ranges?
+  let mut text? : Option String := none
+  let lines ← match source? with
+    | none => pure #[]
+    | some src =>
+      match cache.lines.get? src.absPath with
+      | some ls => pure ls
+      | none => do
+          let text ← IO.FS.readFile src.absPath
+          let ls := (text.splitOn "\n").toArray
+          cache := { cache with lines := cache.lines.insert src.absPath ls }
+          text? := some text
+          pure ls
+  -- The command this declaration's range falls inside, which is where its keyword is read from.
+  let cmd? ← match source? with
+    | none => pure none
+    | some src => do
+      let cmds ← match cache.commands.get? src.absPath with
+        | some cs => pure cs
+        | none => do
+            let text ← match text? with
+              | some t => pure t
+              | none => IO.FS.readFile src.absPath
+            let cs ← commandKeywordsOf env text src.absPath.toString
+            cache := { cache with commands := cache.commands.insert src.absPath cs }
+            pure cs
+      pure (commandKeywordAt? cmds src.line)
+  let kind := declKindOf env info name
+  -- Parsed syntax when the range lands in a command, the source text otherwise.
+  let isLemma := (kind == .theorem &&
+      match cmd? with
+      | some c => c.isLemma
+      | none => isLemmaFromSource kind source? lines)
+    || isSimpsGeneratedLemma env simpLemmaNames name info
+  let isInstanceDecl := kind == .theorem &&
+    match cmd? with
+    | some c => c.isInstance
+    | none => isInstanceFromSource kind source? lines
+  let isInstanceDecl := isInstanceDecl || (kind == .theorem && isInstanceName name)
+  let isAlias := match cmd? with
+    | some c => c.isAlias
+    | none => isAliasFromSource source? lines
+  -- The constants this declaration rests on, recovered by `MeaningGraph` (which also looks
+  -- through compiler-generated helpers and recovers the notation/coercion dependencies the
+  -- elaborated term drops). The reverse notation direction — a declaration whose *source* uses a
+  -- notation — is handled syntactically during extraction, where the parsed syntax is available.
+  let (declDeps, depsCache) := depsCtx.declDeps cache.deps name info
+  cache := { cache with deps := depsCache }
+  let facts : DeclFacts := {
+    name := name
+    moduleName := moduleName
+    info := info
+    kind := kind
+    isLemma := isLemma
+    isAlias := isAlias
+    isInstanceDecl := isInstanceDecl
+    source? := source?
+    typeDeps := declDeps.typeDeps
+    deps := declDeps.deps
+    dataDeps := declDeps.dataDeps
+    axioms := #[]
+    dependsOnSorry := false
+    -- `allowOpaque := true` is required, not cosmetic: `ConstantInfo.value?` returns `none` for
+    -- a `.thmInfo` without it, so every theorem — the declarations that actually carry a `sorry`
+    -- in their proof — reported `hasOwnSorry := false`, and `sorryChain` then found no culprit
+    -- and the page blamed the gap on an upstream package.
+    hasOwnSorry := info.type.hasSorry ||
+      ((info.value? (allowOpaque := true)).map Expr.hasSorry).getD false
+  }
+  return (facts, cache)
+
+/-- Fills in what `collectAxioms` reports, once it is known which declarations need it. -/
+def DeclFacts.withAxioms (facts : DeclFacts) (axs : Array Name) : DeclFacts :=
+  { facts with axioms := axs, dependsOnSorry := axs.contains ``sorryAx }
+
+/-- Exposed declaration ↦ its module and `ConstantInfo`, for a traversal that looks names up rather
+than iterating. Cheap: one insert per project constant, and no analysis. -/
+def exposedIndex (depsCtx : MeaningGraph.Context) :
+    Std.HashMap Name (Name × ConstantInfo) :=
+  depsCtx.constants.foldl (init := {}) fun acc (name, moduleName, info) =>
+    if depsCtx.exposed.contains name then acc.insert name (moduleName, info) else acc
+
+/-- Definition ↦ the theorems whose authors said what it means.
+
+The inverse of the `@[specifies]` and `@[characterization]` tables, which are keyed by the theorem
+and by the definition respectively while the traversal needs to ask "what speaks for *this*". Built
+once, in time proportional to the number of annotations rather than to the library. -/
+def speakersForTargets (env : Environment) : Std.HashMap Name (Array Name) := Id.run do
+  let mut acc : Std.HashMap Name (Array Name) := {}
+  for entry in Characterization.specEntries env do
+    acc := acc.insert entry.target ((acc.getD entry.target #[]).push entry.theoremName)
+  for c in Characterization.characterizations env do
+    let parts := #[c.property] ++ c.existence.map (·.declName) ++ c.uniqueness.map (·.declName)
+    acc := acc.insert c.target (acc.getD c.target #[] ++ parts)
+  return acc
+
+/-- What `collectDecls` hands back.
+
+A record rather than a tuple because three of the four are answers only it is in a position to give:
+it holds the `MeaningGraph.Context`, which has already walked every project constant and applied
+`shouldExpose` to each. Recomputing that in the caller cost a second whole-environment scan — 26.3s
+on a 32,154-declaration project, spent to print one diagnostic line. -/
+structure CollectedDecls where
+  decls : Array DeclInfo
+  /-- The declarations a scoped build keeps the edges of; empty on a full build. -/
+  thin : Array ThinDecl := #[]
+  /-- Exposed declarations *before* scoping, which a scoped file cannot recompute. -/
+  libraryDeclCount : Nat := 0
+  /-- Project constants `shouldExpose` rejected: compiler helpers and internals. -/
+  excludedNames : Array Name := #[]
+
+/-- The first pass over every exposed declaration: the full build's path.
+
+A plain loop, because a full build needs all of them and a worklist would only add bookkeeping. -/
+def collectFactsEager (env : Environment) (projectDir : System.FilePath) (pkg : Lake.Package)
+    (depsCtx : MeaningGraph.Context) (simpLemmaNames : Std.HashSet Name) :
+    IO (Array DeclFacts × FactsCache) := do
+  let mut cache : FactsCache := {}
+  let mut facts : Array DeclFacts := #[]
+  for (name, moduleName, info) in depsCtx.constants do
+    if !depsCtx.exposed.contains name then
+      continue
+    let (f, cache') ← declFactsOf env projectDir pkg depsCtx simpLemmaNames cache name moduleName
+      info
+    cache := cache'
+    facts := facts.push f
+  return (facts, cache)
+
+/-- The first pass from the claim seeds outward: the scoped build's path.
+
+One worklist carrying both kinds of step — the statement edges a declaration rests on, and the
+theorems that speak for a definition already reached — because each feeds the other and neither
+reaches a fixpoint alone. See the section note above.
+
+Bounded by the number of exposed declarations: a name is enqueued at most once, so the number of
+levels cannot exceed the number of names, and the bound is what makes this structurally terminating
+rather than merely terminating. -/
+def collectFactsLazy (env : Environment) (projectDir : System.FilePath) (pkg : Lake.Package)
+    (depsCtx : MeaningGraph.Context) (simpLemmaNames : Std.HashSet Name)
+    (index : Std.HashMap Name (Name × ConstantInfo)) (speakers : Std.HashMap Name (Array Name))
+    (seeds : Array Name) (cache : FactsCache) : IO (Array DeclFacts × FactsCache) := do
+  let mut cache := cache
+  let mut facts : Array DeclFacts := #[]
+  let mut visited : Std.HashSet Name := {}
+  let mut pending : Array Name := #[]
+  for seed in seeds do
+    if index.contains seed && !visited.contains seed then
+      visited := visited.insert seed
+      pending := pending.push seed
+  for _ in [0:index.size + 1] do
+    if pending.isEmpty then
+      break
+    let mut next : Array Name := #[]
+    for name in pending do
+      let some (moduleName, info) := index.get? name
+        | continue
+      let (f, cache') ← declFactsOf env projectDir pkg depsCtx simpLemmaNames cache name moduleName
+        info
+      cache := cache'
+      facts := facts.push f
+      -- What the statement rests on.
+      for dep in f.meaningDeps do
+        if index.contains dep && !visited.contains dep then
+          visited := visited.insert dep
+          next := next.push dep
+      -- And what speaks for it, which no edge points at.
+      for speaker in speakers.getD name #[] do
+        if index.contains speaker && !visited.contains speaker then
+          visited := visited.insert speaker
+          next := next.push speaker
+    pending := next
+  return (facts, cache)
+
+/-- Walks outward from `start` along `edge`, computing facts on demand, and returns the
+declarations reached that are not already `known`.
+
+Both thin tiers are this shape, and both are traversals a scoped build must not pay the library for:
+the extraction closure a minimal file inlines along, and the declarations a `sorry` chain passes
+through. `admit` decides whether a reached declaration is kept *and* whether the walk continues
+through it — which is what lets the `sorry` tier prune at declarations that cannot reach a gap. -/
+def expandTier (env : Environment) (projectDir : System.FilePath) (pkg : Lake.Package)
+    (depsCtx : MeaningGraph.Context) (simpLemmaNames : Std.HashSet Name)
+    (index : Std.HashMap Name (Name × ConstantInfo)) (known : Std.HashSet Name)
+    (start : Array Name) (edge : DeclFacts → Array Name)
+    (admit : Array DeclFacts → IO (Array DeclFacts)) (cache : FactsCache) :
+    IO (Array DeclFacts × FactsCache) := do
+  let mut cache := cache
+  let mut out : Array DeclFacts := #[]
+  let mut visited : Std.HashSet Name := known
+  let mut pending : Array Name := #[]
+  for name in start do
+    if !visited.contains name then
+      visited := visited.insert name
+      pending := pending.push name
+  -- `start` itself is already known; the walk begins at its edges.
+  let mut frontier : Array Name := #[]
+  for name in start do
+    if let some (moduleName, info) := index.get? name then
+      let (f, cache') ← declFactsOf env projectDir pkg depsCtx simpLemmaNames cache name moduleName
+        info
+      cache := cache'
+      for dep in edge f do
+        if index.contains dep && !visited.contains dep then
+          visited := visited.insert dep
+          frontier := frontier.push dep
+  for _ in [0:index.size + 1] do
+    if frontier.isEmpty then
+      break
+    let mut reached : Array DeclFacts := #[]
+    for name in frontier do
+      let some (moduleName, info) := index.get? name
+        | continue
+      let (f, cache') ← declFactsOf env projectDir pkg depsCtx simpLemmaNames cache name moduleName
+        info
+      cache := cache'
+      reached := reached.push f
+    let kept ← admit reached
+    out := out ++ kept
+    let mut next : Array Name := #[]
+    for f in kept do
+      for dep in edge f do
+        if index.contains dep && !visited.contains dep then
+          visited := visited.insert dep
+          next := next.push dep
+    frontier := next
+  return (out, cache)
+
 /-- Collects all exposed declarations and computes their primary metadata. The dependency lists
 (`deps`, `typeDeps`) come from `MeaningGraph`; everything else — signature, docstring, source
-snippet, kind, `sorry` status — is computed here. -/
+snippet, kind, `sorry` status — is computed here.
+
+`scopeSeeds?` switches the first pass from the eager loop to the traversal described above, so that
+a scoped build's cost is proportional to what it renders rather than to the library. Returns the
+full declarations and, when scoped, the thin tier: the dropped declarations two analyses still need
+the edges of. See `ThinDecl`. -/
 def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
-    (pkg : Lake.Package) (env : Environment) (packages : Array PackageInfo := #[]) :
-    IO (Array DeclInfo) := do
+    (pkg : Lake.Package) (env : Environment) (packages : Array PackageInfo := #[])
+    (scopeSeeds? : Option (Array Name) := none) : IO CollectedDecls := do
   -- `withDataValueConsts` is what lets `declDeps` report `dataDeps`; without it every `dataDeps`
   -- would silently equal `deps` and the graph would be unchanged. It needs `MetaM` because deciding
   -- whether a constructor field is `Prop`-valued is a typing question.
+  let tStart ← IO.monoMsNow
   let depsCtx ← runCoreIO env
     (Lean.Meta.MetaM.run' (MeaningGraph.Context.of env rootPrefix).withDataValueConsts)
-  let declAxioms ← axiomsOfDecls env (depsCtx.constants.filterMap fun (name, _, _) =>
-    if depsCtx.exposed.contains name then some name else none)
+  let tCtx ← collectPhase "dependency context" tStart
   let simpTheorems ← runCoreIO env Lean.Meta.getSimpTheorems
   let simpLemmaNames : Std.HashSet Name :=
     simpTheorems.lemmaNames.fold (fun acc origin =>
@@ -3010,82 +3466,93 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
         uniqueness := c.uniqueness.map fun e =>
           { name := e.declName, relation := e.relation, relationHead := e.relationHead } }
       acc.insert c.target ((acc.getD c.target #[]).push bundle)
-  let mut cache : MeaningGraph.Cache := {}
-  let mut fileLines : Std.HashMap System.FilePath (Array String) := {}
-  -- Parsed once per file alongside its lines, and for the same reason: every declaration in a module
-  -- asks the same question of the same source.
-  let mut fileCommands : Std.HashMap System.FilePath (Array CommandKeyword) := {}
+  -- ## First pass
+  let index := if scopeSeeds?.isNone then {} else exposedIndex depsCtx
+  let (facts, cache) ← match scopeSeeds? with
+    | none => collectFactsEager env projectDir pkg depsCtx simpLemmaNames
+    | some seeds =>
+      collectFactsLazy env projectDir pkg depsCtx simpLemmaNames index
+        (speakersForTargets env) seeds {}
+  let tFacts ← collectPhase
+    s!"pass 1: edges and keywords, {facts.size} declarations in {cache.commands.size} files" tCtx
+  -- `collectAxioms` for exactly the declarations that were reached. On a full build that is every
+  -- exposed declaration, as it always was; on a scoped one it is the scope, which is the only set
+  -- whose axioms any page reports.
+  let declAxioms ← axiomsOfDecls env (facts.map (·.name))
+  let facts := facts.map fun f => f.withAxioms (declAxioms.getD f.name #[])
+  let tAxioms ← collectPhase s!"collectAxioms, {facts.size} declarations" tFacts
+  -- ## The thin tier
+  --
+  -- Two walks, both from the scope outward and neither over the library. The second is bounded far
+  -- more tightly than it looks: `sorryChain` walks `deps` to the first declaration carrying its own
+  -- `sorry`, and every declaration on such a path depends on the `sorry` below it — so one with
+  -- `dependsOnSorry := false` cannot reach a gap and cannot lie on any chain. Pruning there loses
+  -- no chain, and on a project with no `sorry` anywhere the walk never starts.
+  let scopeNames : Std.HashSet Name := facts.foldl (fun acc f => acc.insert f.name) {}
+  let (thinFacts, _cache) ← match scopeSeeds? with
+    | none => pure (#[], cache)
+    | some _ => do
+      let (inlined, cache) ← expandTier env projectDir pkg depsCtx simpLemmaNames index scopeNames
+        (facts.map (·.name)) DeclFacts.closureDeps (fun reached => pure reached) cache
+      let sorried := facts.filterMap fun f => if f.dependsOnSorry then some f.name else none
+      if sorried.isEmpty then
+        pure (inlined, cache)
+      else
+        let known := inlined.foldl (fun acc f => acc.insert f.name) scopeNames
+        let (chained, cache) ← expandTier env projectDir pkg depsCtx simpLemmaNames index known
+          sorried (·.deps)
+          (fun reached => do
+            -- Batched per level rather than per declaration: one `CoreM` run for the whole
+            -- frontier instead of one apiece.
+            let axs ← axiomsOfDecls env (reached.map (·.name))
+            pure <| reached.filterMap fun f =>
+              let f := f.withAxioms (axs.getD f.name #[])
+              if f.dependsOnSorry then some f else none)
+          cache
+        pure (inlined ++ chained, cache)
+  let thin : Array ThinDecl := thinFacts.map fun f => {
+    name := f.name
+    moduleName := f.moduleName
+    kind := f.kind
+    isAlias := f.isAlias
+    deps := f.deps
+    typeDeps := f.typeDeps
+    hasOwnSorry := f.hasOwnSorry
+    dependsOnSorry := f.dependsOnSorry
+  }
+  let tThin ← collectPhase s!"thin tier: {thin.size} declarations" tAxioms
+  -- ## Second pass: the expensive analysis, for the declarations that get a page
+  let fileLines := cache.lines
   let mut decls := #[]
-  for (name, moduleName, info) in depsCtx.constants do
-    if !depsCtx.exposed.contains name then
-      continue
-    let ranges? ← findRanges? env name
-    let source? ← toSourceInfo? projectDir pkg moduleName ranges?
-    let mut text? : Option String := none
-    let lines ← match source? with
-      | none => pure #[]
-      | some src =>
-        match fileLines.get? src.absPath with
-        | some ls => pure ls
-        | none => do
-            let text ← IO.FS.readFile src.absPath
-            let ls := (text.splitOn "\n").toArray
-            fileLines := fileLines.insert src.absPath ls
-            text? := some text
-            pure ls
-    -- The command this declaration's range falls inside, which is where its keyword is read from.
-    let cmd? ← match source? with
-      | none => pure none
-      | some src => do
-        let cmds ← match fileCommands.get? src.absPath with
-          | some cs => pure cs
-          | none => do
-              let text ← match text? with
-                | some t => pure t
-                | none => IO.FS.readFile src.absPath
-              let cs ← commandKeywordsOf env text src.absPath.toString
-              fileCommands := fileCommands.insert src.absPath cs
-              pure cs
-        pure (commandKeywordAt? cmds src.line)
-    let kind := declKindOf env info name
+  for f in facts do
+    let name := f.name
+    let info := f.info
+    let kind := f.kind
+    let source? := f.source?
+    -- A hit by construction: the first pass read every source file it could and left them here.
+    let lines := match source? with
+      | none => #[]
+      | some src => fileLines.getD src.absPath #[]
     let expandedSignature ← ppExprString env info.type
     let anatomy? ← statementAnatomyOf env name info
-    -- Parsed syntax when the range lands in a command, the source text otherwise.
-    let isLemma := (kind == .theorem &&
-        match cmd? with
-        | some c => c.isLemma
-        | none => isLemmaFromSource kind source? lines)
-      || isSimpsGeneratedLemma env simpLemmaNames name info
     -- Before the signature, not after: an attribute-generated declaration has no source of its own
     -- to display and falls back to the pretty-printed type, which has to be introduced by the
     -- keyword the author actually wrote or the code block says `theorem` under a card labelled
     -- "Lemma".
     let displaySignature :=
       (displaySignatureFromSource kind source? lines).getD <|
-        displaySignatureFallback kind name expandedSignature (isLemma := isLemma)
+        displaySignatureFallback kind name expandedSignature (isLemma := f.isLemma)
     let proofText? := proofTextFromSource kind source? lines
-    let isInstanceDecl := kind == .theorem &&
-      match cmd? with
-      | some c => c.isInstance
-      | none => isInstanceFromSource kind source? lines
-    let isInstanceDecl := isInstanceDecl || (kind == .theorem && isInstanceName name)
     let doc? ← findDocString? env name
     let docBlocks :=
       match doc? with
       | some doc => markdownToBlocks doc
       | none => #[]
-    -- The constants this declaration rests on, recovered by `MeaningGraph` (which also looks
-    -- through compiler-generated helpers and recovers the notation/coercion dependencies the
-    -- elaborated term drops). The reverse notation direction — a declaration whose *source* uses a
-    -- notation — is handled syntactically during extraction, where the parsed syntax is available.
-    let (declDeps, cache') := depsCtx.declDeps cache name info
-    cache := cache'
-    let axs := declAxioms.getD name #[]
     let decl : DeclInfo := {
       name := name
-      moduleName := moduleName
-      modulePath := modulePathOf rootPrefix moduleName
-      groupKey := groupKeyOfModule rootPrefix moduleName
+      moduleName := f.moduleName
+      modulePath := modulePathOf rootPrefix f.moduleName
+      groupKey := groupKeyOfModule rootPrefix f.moduleName
       kind := kind
       displaySignature := displaySignature
       expandedSignature := expandedSignature
@@ -3094,19 +3561,12 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       docText? := doc?
       proofText? := proofText?
       source? := source?
-      dependsOnSorry := axs.contains ``sorryAx
-      -- `allowOpaque := true` is required, not cosmetic: `ConstantInfo.value?` returns `none` for
-      -- a `.thmInfo` without it, so every theorem — the declarations that actually carry a `sorry`
-      -- in their proof — reported `hasOwnSorry := false`, and `sorryChain` then found no culprit
-      -- and the page blamed the gap on an upstream package.
-      hasOwnSorry := info.type.hasSorry ||
-        ((info.value? (allowOpaque := true)).map Expr.hasSorry).getD false
-      axioms := axs
-      isLemma := isLemma
-      isInstanceDecl := isInstanceDecl
-      isAlias := match cmd? with
-        | some c => c.isAlias
-        | none => isAliasFromSource source? lines
+      dependsOnSorry := f.dependsOnSorry
+      hasOwnSorry := f.hasOwnSorry
+      axioms := f.axioms
+      isLemma := f.isLemma
+      isInstanceDecl := f.isInstanceDecl
+      isAlias := f.isAlias
       specifies := specsByTheorem.getD name #[]
       -- Only the forward direction here; `attachCharacterizes` fills in `characterizes` on the
       -- three declarations each bundle is made of, exactly as `attachSpecifiedBy` does.
@@ -3114,15 +3574,22 @@ def collectDecls (projectDir : System.FilePath) (rootPrefix : Name)
       -- One level here; `attachUpstreamPackages` propagates it along the project's own edges.
       -- The edges `closureDeps` picks: a theorem's *statement*, everything else's body too. A
       -- theorem's proof is not a trust dependency — the kernel checked it.
+      -- `isAliasFromSource` rather than `f.isAlias`, which prefers the parsed command keyword:
+      -- this is what the single-pass version passed, and the two disagree on a declaration whose
+      -- range lands in a command. Kept exactly as it was so the split changes no output.
       upstreamPackages := directUpstreamPackages env packages rootPrefix
-        (meaningDepsOf kind (isAliasFromSource source? lines) declDeps.deps declDeps.typeDeps
-          declDeps.dataDeps)
-      deps := declDeps.deps
-      typeDeps := declDeps.typeDeps
-      dataDeps := declDeps.dataDeps
+        (meaningDepsOf kind (isAliasFromSource source? lines) f.deps f.typeDeps f.dataDeps)
+      deps := f.deps
+      typeDeps := f.typeDeps
+      dataDeps := f.dataDeps
     }
     decls := decls.push decl
-  pure decls
+  let _ ← collectPhase s!"pass 2: full analysis, {decls.size} declarations" tThin
+  -- Straight off the context, which walked every project constant to build `exposed` in the first
+  -- place. The caller used to ask the environment the same question a second time.
+  let excludedNames := depsCtx.constants.filterMap fun (name, _, _) =>
+    if depsCtx.exposed.contains name then none else some name
+  pure { decls, thin, libraryDeclCount := depsCtx.exposed.size, excludedNames }
 
 /-! ## Dependency-graph passes
 
@@ -3208,11 +3675,17 @@ the *data* is. -/
 def CollectedData.integrityViolations (data : CollectedData) : Array String := Id.run do
   let byName : Std.HashMap Name DeclInfo :=
     data.decls.foldl (fun m d => m.insert d.name d) {}
+  -- The extraction closure walks through the thin tier, so closure-closedness has to be checked
+  -- through it too: without these edges a scoped file would pass the check by treating every thin
+  -- declaration as a leaf, which is the one reading that cannot fail.
+  let thinClosureEdges : Std.HashMap Name (Array Name) :=
+    data.thinDecls.foldl (fun m t => m.insert t.name t.closureDeps) {}
   let mut out : Array String := #[]
   for decl in data.decls do
     for (label, closure, direct) in
         #[("transDeps", decl.transDeps, closureDeps decl),
           ("dataTransDeps", decl.dataTransDeps, meaningDeps decl)] do
+      let isTrans := label == "transDeps"
       let inClosure : Std.HashSet Name := closure.foldl (fun s n => s.insert n) {}
       -- `transitiveDeps` filters the declaration itself out of its own closure.
       if closure.contains decl.name then
@@ -3227,8 +3700,13 @@ def CollectedData.integrityViolations (data : CollectedData) : Array String := I
       -- `transitiveDeps_closed`: the closure is closed under taking dependencies. Only project
       -- declarations have recorded edges; an upstream constant is a leaf here.
       for y in closure do
-        if let some ydecl := byName[y]? then
-          let yDirect := if label == "transDeps" then closureDeps ydecl else meaningDeps ydecl
+        let yDirect? : Option (Array Name) :=
+          match byName[y]? with
+          | some ydecl => some (if isTrans then closureDeps ydecl else meaningDeps ydecl)
+          -- Absent from `decls`: an upstream constant, which is a leaf, or — only ever in a scoped
+          -- file — a thin declaration the extraction closure walked through.
+          | none => if isTrans && !thinClosureEdges.isEmpty then thinClosureEdges[y]? else none
+        if let some yDirect := yDirect? then
           for z in yDirect do
             unless z == decl.name || inClosure.contains z do
               out := out.push s!"{decl.name}: {label} is not closed — contains {y},                 which depends on {z}, which is absent"
@@ -3387,9 +3865,16 @@ minimal standalone Lean file).
 
 This is the *extraction* closure and is deliberately wider than what the site reports: see
 `dataTransDeps` for the meaning closure the reader is shown. -/
-def attachTransitiveDeps (decls : Array DeclInfo) : Array DeclInfo :=
+def attachTransitiveDeps (decls : Array DeclInfo) (thin : Array ThinDecl := #[]) :
+    Array DeclInfo :=
+  -- Thin declarations contribute *edges* and receive nothing. A scoped build drops declarations a
+  -- minimal file still has to inline — a definition's body drags in the lemmas discharging its
+  -- embedded proof obligations, which `meaningDeps` rightly leaves out of the graph and extraction
+  -- rightly needs — and without their edges here the closure would stop at the scope boundary and
+  -- the extracted file would silently lose what it needs to compile.
   let depsMap : Std.HashMap Name (Array Name) :=
-    decls.foldl (fun acc decl => acc.insert decl.name (closureDeps decl)) {}
+    thin.foldl (init := decls.foldl (fun acc decl => acc.insert decl.name (closureDeps decl)) {})
+      fun acc t => acc.insert t.name t.closureDeps
   decls.map fun decl => { decl with transDeps := MeaningGraph.transitiveDeps depsMap decl.name }
 
 /-- Adds the transitive closure of `meaningDeps` as `dataTransDeps`, exactly as
@@ -3419,6 +3904,11 @@ of closure entries, seconds at 28k declarations. It is paid on load instead of a
 because storing the result is what did not scale: materialized closures measured at 69.9% of
 `data.json` on `Mathlib.Analysis`, against 12.6% for the direct edges they derive from. -/
 def CollectedData.withClosures (data : CollectedData) : CollectedData :=
-  { data with decls := data.decls |> attachTransitiveDeps |> attachDataTransitiveDeps }
+  -- Only the extraction closure walks through the thin tier. The meaning closure must not: the page
+  -- scope is closed under `meaningDeps` by construction, so a thin declaration appearing in a
+  -- `dataTransDeps` would be a graph node with no data behind it — and letting the edges through
+  -- here is exactly how that would happen.
+  { data with
+    decls := attachDataTransitiveDeps (attachTransitiveDeps data.decls data.thinDecls) }
 
 end Referee

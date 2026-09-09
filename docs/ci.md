@@ -90,6 +90,45 @@ Pages tree alongside other documentation:
 
 Or take the path from the action's `site` output and do what you like with it.
 
+## Scoped builds
+
+Both [scoped modes](claims.md#building-only-the-claims) are reachable from the action:
+
+```yaml
+  - uses: RemyDegenne/exposition@main
+    with:
+      root: MyLibrary
+      claims-only: true          # the project's main results and what their statements rest on
+      # claim: "A.thm_one, A.thm_two"   # override the metadata's list
+      # comparator-dir: challenges      # where the Comparator configs are
+```
+
+```yaml
+  - uses: RemyDegenne/exposition@main
+    with:
+      root: MyLibrary
+      only: MyLibrary.main_theorem   # the site for one declaration and its statement closure
+```
+
+`only` takes precedence over `claims-only`. Both are read by `collect`, so they decide what is *in*
+the data file; everything downstream — `extract`, `highlight-extracted`, `build-site` — follows from
+it with no further configuration. `highlight-extracted` is where this pays: it spawns one Lean
+process per published declaration, and a scoped build publishes a few dozen rather than a few
+thousand, which is what makes turning it on affordable at all.
+
+**Two interactions to know about.**
+
+`provenance: true` wants a *full* collect. The ledger is append-only and a fold records only the
+declarations the revision exposed; a scoped fold therefore freezes the recorded history of
+everything outside the scope, and a later full build attributes their accumulated changes to
+whichever revision next observed them. `provenance` warns when handed scoped data. If you want both,
+run a full `collect` for the fold and a scoped one for the site.
+
+`baseline: true` compares two artifacts. `build-site` refuses to diff files collected at different
+scopes and says so — otherwise every declaration the narrower build left out would be reported as
+removed. The run in which you switch a repository to `claims-only` therefore has no Changes page,
+and the next one has it again.
+
 ## Why it does what it does
 
 Nothing below is required reading to use the action. It is the reasoning the action encodes, which

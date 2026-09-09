@@ -318,89 +318,146 @@ a document the author wrote, and the Claims page reads it for the one thing no a
 environment can supply — which of the library's results the project puts forward as the point of it.
 See `Referee.Formalization` for the parser and for what it does not implement. -/
 
-/-- The `formalization.yaml`, when it declares at least one main result.
+/-- What the project puts forward, when something named it.
 
-The gate on every part of the Claims page, and it is two conditions rather than one. A project with
-no such file has not made the claim this page reports, so there is nothing to show; a project whose
-file declares no `status.main_results` — the schema calls the field optional — has made the rest of
-the declaration and not that one, and a page reading "this project names no main results" would be
-nagging about a field rather than reporting on a library. Both cases get no page, which is how
-`usesSpecs` gates the Specifications page and for the same reason. -/
-def claimedResults? (ctx : SiteContext) : Option Formalization :=
-  match ctx.formalization? with
-  | some form => if form.mainResults.isEmpty then none else some form
+The gate on every part of the Claims page. A project with no `formalization.yaml`, no Comparator
+config and no `--claim` has not made the claim this page reports, so there is nothing to show; a
+project whose file declares no `status.main_results` — the schema calls the field optional — has
+made the rest of the declaration and not that one, and a page reading "this project names no main
+results" would be nagging about a field rather than reporting on a library. Both cases get no page,
+which is how `usesSpecs` gates the Specifications page and for the same reason. -/
+def claimedResults? (ctx : SiteContext) : Option ClaimSet :=
+  match ctx.claims? with
+  | some set => if set.isEmpty then none else some set
   | none => none
 
-/-- Each declared main result paired with the declaration it names, where the library has one.
+/-- Each claim's declarations paired with what the library has under that name.
 
-Entries that match nothing are kept rather than dropped. A `formalization.yaml` naming a result the
-library does not export is exactly the discrepancy a referee is here to find — most often a rename
-the metadata did not follow — and a page that listed one fewer claim than the file declares would
-hide it behind a number that looked fine. -/
-private def resolvedMainResults (form : Formalization) (ctx : SiteContext) :
-    Array (MainResult × Option DeclInfo) :=
-  form.mainResults.map fun result => (result, ctx.declByName.get? result.declaration.toName)
+Entries that match nothing are kept rather than dropped. A `formalization.yaml` or a Comparator
+config naming a result the library does not export is exactly the discrepancy a referee is here to
+find — most often a rename the metadata did not follow — and a page that listed one fewer claim than
+the sources declare would hide it behind a number that looked fine. -/
+private def resolvedClaims (set : ClaimSet) (ctx : SiteContext) :
+    Array (Claim × Array (String × Option DeclInfo)) :=
+  set.claims.map fun claim =>
+    (claim, claim.declarations.map fun name => (name, ctx.declByName.get? name.toName))
 
-/-- Builds the Claims page: what the project's own `formalization.yaml` puts forward as its main
-results.
+/-- Builds the Claims page: what the project puts forward as its main results.
 
 The rows are the ones the Theorems page uses, deliberately and exactly: the same link, the same
 closure count, the same `sorry` flag, the same audit state under the same key. A claim is one
-declaration whether it is reached from the file's curated list or from the library's own, and a
-reader who has recorded work on it must see that work in both places. What differs is only which
-declarations are on the page and in what order — here, the file's order, because a curated list is
-an argument about what matters and its order is part of the argument.
+declaration whether it is reached from a curated list or from the library's own, and a reader who
+has recorded work on it must see that work in both places. What differs is only which declarations
+are on the page and in what order — here, the sources' order, because a curated list is an argument
+about what matters and its order is part of the argument.
 
-What it does *not* take from the file is anything the library already answers. `main_results` also
-carries a `sorry_count` and an `axioms` list per result; those are the project's account of facts
-this site computes from the environment, and rendering the account beside the measurement would
-invite a reader to compare two numbers that are not measured the same way — the file's counts
-exclude Comparator challenge modules, this site's do not. The row shows the measurement. The two
-fields the environment genuinely cannot supply, `literature_dependencies` and the file's own
-statement of scope, are below the list.
+What it does *not* take from `formalization.yaml` is anything the library already answers.
+`main_results` also carries a `sorry_count` and an `axioms` list per result; those are the project's
+account of facts this site computes from the environment, and rendering the account beside the
+measurement would invite a reader to compare two numbers that are not measured the same way — the
+file's counts exclude Comparator challenge modules, this site's do not. The row shows the
+measurement. The two fields the environment genuinely cannot supply,
+`literature_dependencies` and the file's own statement of scope, are below the list.
+
+What it *does* take from a Comparator setup is the one thing on this whole site that is not this
+tool's own reading: a statement replayed through the kernel from an export, against an explicit list
+of permitted axioms. That gets a section rather than a badge, because what it certifies and what it
+does not are both worth a sentence.
 
 Deliberately no audit apparatus: the excerpt payload turns off the export/import/report block (see
 `AuditData.excerpt`), which belongs to the page carrying every claim rather than to a page carrying
 the handful the author chose. -/
-private def mkClaimsPart (form : Formalization) (decls : Array DeclInfo) (ctx : SiteContext)
+private def mkClaimsPart (set : ClaimSet) (decls : Array DeclInfo) (ctx : SiteContext)
     : Part Manual := Id.run do
-  let resolved := resolvedMainResults form ctx
-  let matched := resolved.filterMap (·.2)
-  let listed := matched.filter (ctx.declPageHrefs.contains ·.name)
-  let missing := resolved.filterMap fun (result, decl?) =>
-    if decl?.isSome then none else some result
+  let resolved := resolvedClaims set ctx
+  -- In claim order, headline first within a claim, and deduplicated: two configs routinely share an
+  -- auxiliary target, and it is one declaration however many challenges name it.
+  let mut seen : Std.HashSet Name := {}
+  let mut listed : Array DeclInfo := #[]
+  let mut missing : Array (String × Claim) := #[]
+  for (claim, entries) in resolved do
+    for (name, decl?) in entries do
+      match decl? with
+      | some decl =>
+        if !seen.contains decl.name && ctx.declPageHrefs.contains decl.name then
+          seen := seen.insert decl.name
+          listed := listed.push decl
+      | none => missing := missing.push (name, claim)
+  let certified := set.claims.filterMap fun claim => claim.comparator?.map (claim, ·)
   let mut blocks : Array (Block Manual) := #[
-    .para #[
-      .text "These are the results the project puts forward as its own, read from the ",
-      .code "status.main_results", .text " list of its ", .code "formalization.yaml", .text " — \
-        the metadata document the ",
-      .link #[.text "Palomar registry"] "https://palomar-registry.org/",
-      .text " requires of a submission."
+    .para <| #[
+      .text "These are the results the project puts forward as its own, read from "
+    ] ++ (
+      -- Named rather than described, because which document said it is the whole provenance of
+      -- this page: one is prose the author wrote, the other is a machine-checkable challenge.
+      if set.origin.isEmpty then #[.text "the project's own metadata"]
+      else #[.text set.origin]) ++ #[
+      .text ". Everything else on this site is derived from the compiled library; this list is not."
     ]
   ]
   blocks := blocks.push <| .para #[
-    .text s!"{form.mainResults.size} \
-      {if form.mainResults.size == 1 then "result is" else "results are"} declared, in the order \
-      the file gives them."
+    .text s!"{set.claims.size} \
+      {if set.claims.size == 1 then "result is" else "results are"} declared, in the order \
+      the sources give them."
   ]
   if let some list := mkClaimListBlock listed ctx then
     blocks := blocks.push list
     blocks := blocks.push <|
       .other (Block.auditData (mkAuditData decls ctx (featured? := some (listed.map (·.name))))) #[]
+  -- The certification, where there is one. Above the discrepancies rather than below, because it
+  -- is the strongest thing this page can say and a reader deciding how much to trust the list
+  -- should meet it before the caveats.
+  if !certified.isEmpty then
+    blocks := blocks.push <| .para #[
+      .bold #[.text s!"{certified.size} of them \
+        {if certified.size == 1 then "is" else "are"} machine-checked. "],
+      .link #[.text "Comparator"] "https://github.com/leanprover/comparator",
+      .text " takes a challenge module restating the theorem and certifies that this project \
+        proves the same statement, using no axiom outside an explicit list, with the proof \
+        replayed through the kernel from an export. That is a stronger check than anything else \
+        here, and a narrower one: it settles the ",
+      .emph #[.text "statement"],
+      .text ", never what the definitions in it mean — which is the gap the rest of this site is \
+        for."
+    ]
+    blocks := blocks.push <| .ul <| certified.map fun (claim, config) =>
+      Verso.Doc.ListItem.mk #[
+        .para <| #[.code claim.label, .text " — ", .code config.path] ++
+          (if config.enableNanoda then
+            #[.text ", replayed through a second, independently implemented kernel"] else #[]) ++
+          (if config.permittedAxioms.isEmpty then #[]
+           else #[.text s!", permitting {String.intercalate ", " config.permittedAxioms.toList}"]),
+        -- The other names in the config. They are certified together with the headline, and a
+        -- reader who saw only the headline would not know what the challenge actually covers.
+        .para <|
+          if claim.additional.isEmpty then
+            #[.emph #[.text "Certified on its own."]]
+          else
+            #[.emph #[.text s!"Certified together with "]] ++
+              joinInlines (claim.additional.toList.map fun n => #[.code n]) #[.text ", "] ++
+              #[.text "."]
+      ]
   if !missing.isEmpty then
     blocks := blocks.push <| .para #[
       .bold #[.text s!"{missing.size} of them {if missing.size == 1 then "names a declaration this \
         library does not have" else "name declarations this library does not have"}. "],
       .text "A rename the metadata did not follow, a result not written yet, or a declaration this \
-        site does not expose — under all three the file and the library disagree about what exists, \
-        which is worth knowing before trusting either. The file's own account of where each lives \
-        is the only clue the site can offer."
+        site does not expose — under all three the sources and the library disagree about what \
+        exists, which is worth knowing before trusting either. The sources' own account of where \
+        each lives is the only clue the site can offer."
     ]
-    blocks := blocks.push <| .ul <| missing.map fun result =>
-      Verso.Doc.ListItem.mk #[.para (#[.code result.declaration] ++
-        (if result.file.isEmpty then #[.text " — no file given"]
-         else #[.text " — declared in ", .code result.file]))]
-  let assumed := resolved.filter fun (result, _) => !result.literatureDependencies.isEmpty
+    blocks := blocks.push <| .ul <| missing.map fun (name, claim) =>
+      Verso.Doc.ListItem.mk #[.para (#[.code name] ++
+        (match claim.mainResult? with
+         | some result =>
+           if result.file.isEmpty then #[.text " — no file given"]
+           else #[.text " — declared in ", .code result.file]
+         | none =>
+           match claim.comparator? with
+           | some config => #[.text " — challenged by ", .code config.path]
+           | none => #[.text " — named on the command line"]))]
+  let assumed := set.claims.filter fun claim =>
+    (claim.mainResult?.map (!·.literatureDependencies.isEmpty)).getD false
   if !assumed.isEmpty then
     blocks := blocks.push <| .para #[
       .bold #[.text "Assumed, not proved. "],
@@ -413,14 +470,15 @@ private def mkClaimsPart (form : Formalization) (decls : Array DeclInfo) (ctx : 
       .link #[.text "sorries and assumptions"] "sorries/",
       .text " page reports is separate from them, and neither list bounds the other."
     ]
-    blocks := blocks.push <| .ul <| assumed.map fun (result, _) =>
+    blocks := blocks.push <| .ul <| assumed.map fun claim =>
       Verso.Doc.ListItem.mk #[
-        .para #[.code result.declaration],
-        .ul <| result.literatureDependencies.map fun dep =>
+        .para #[.code claim.label],
+        .ul <| ((claim.mainResult?.map (·.literatureDependencies)).getD #[]).map fun dep =>
           Verso.Doc.ListItem.mk #[.para (#[.text dep.statement] ++
             (if dep.source.isEmpty then #[] else #[.text " — ", .emph #[.text dep.source]]))]
       ]
-  if !form.scope.isEmpty then
+  let scopeText := (ctx.formalization?.map (·.scope)).getD ""
+  if !scopeText.isEmpty then
     blocks := blocks.push <| .para #[
       .bold #[.text "What the project says it does and does not cover. "],
       .text "Its ", .code "status.scope", .text ", verbatim — the place a formalization declares \
@@ -430,7 +488,7 @@ private def mkClaimsPart (form : Formalization) (decls : Array DeclInfo) (ctx : 
     -- a `|` block chose those line breaks, and a project that states its omissions one per line is
     -- the common case; a `>-` block arrives here as a single line and is unaffected either way.
     blocks := blocks.push <| .blockquote <|
-      (form.scope.splitOn "\n").toArray.filterMap fun line =>
+      (scopeText.splitOn "\n").toArray.filterMap fun line =>
         let line := (String.trimAscii line).toString
         if line.isEmpty then none else some (.para #[.text line])
   return {
@@ -1043,12 +1101,36 @@ private def mkAssumptionsPart (decls : Array DeclInfo) (ctx : SiteContext) : Par
     d.axioms.any fun a => !ordinary.contains a && a != ``sorryAx
   let mut blocks : Array (Block Manual) := #[
     .para #[.text (String.join [
-      "Everything in the library that is incomplete or rests on an assumption beyond the three ",
+      if ctx.scope.isFull then "Everything in the library that is incomplete"
+      else "Everything in this build's scope that is incomplete",
+      " or rests on an assumption beyond the three ",
       "axioms every classical Lean development uses (",
     ]), .code "Classical.choice", .text ", ", .code "propext", .text ", ", .code "Quot.sound",
       .text "). This is the referee's checklist, and it reports only what is missing: nothing here \
         is a measure of how far the library has got."]
   ]
+  -- The one page whose honesty a scope most endangers. `dependsOnSorry` is `collectAxioms` against
+  -- the whole environment, so it stays right however the build was scoped — but the declaration
+  -- that *owns* the gap is usually one this build renders nothing for, and a page that listed the
+  -- claims resting on a `sorry` and then showed an empty "contains one directly" fold would read
+  -- as though the gap had no source. It has one; it is just not on this site.
+  if !ctx.scope.isFull then
+    let hiddenCulprits := ctx.thinByName.fold (fun n _ t => if t.hasOwnSorry then n + 1 else n) 0
+    blocks := blocks.push <| .para <| #[
+      .emph #[.text "Scoped build. "],
+      .text "The counts below are over the declarations this build kept, not over the library. \
+        A gap reached only through a proof is still reported — what a declaration rests on is \
+        computed against the whole environment, not against this scope — "
+    ] ++ (
+      if hiddenCulprits == 0 then
+        #[.text "and every declaration named below is on this site."]
+      else
+        #[.text s!"but {hiddenCulprits} of the declarations that ",
+          .emph #[.text "own"],
+          .text " a ", .code "sorry", .text s!" {if hiddenCulprits == 1 then "is" else "are"} \
+            outside it and {if hiddenCulprits == 1 then "has" else "have"} no page here. Each \
+            affected declaration's own page still names the chain that reaches the gap, culprit \
+            included."])
   blocks := blocks.push <| .para <|
     if sorried.isEmpty then
       #[.text "No declaration depends on a ", .code "sorry", .text "."]
@@ -1101,6 +1183,19 @@ private def mkLandingBlocks (rootPrefix : Name) (decls : Array DeclInfo) (ctx : 
   let (defs, lemmas, thms) := countGroups decls
   let sorried := decls.filter (·.dependsOnSorry)
   let mut blocks : Array (Block Manual) := #[]
+  -- First, before any count, because every count below is over the scope rather than over the
+  -- library and a reader who learns that afterwards has already misread them. The distinction that
+  -- makes a claims-only site defensible is in the last clause: what the *statements* rest on is
+  -- here, what the proofs call is not, and those differ by a factor of thirty-odd in practice.
+  if !ctx.scope.isFull && ctx.libraryDeclCount > decls.size then
+    let claimCount := (ctx.claims?.map (·.claims.size)).getD ctx.scope.seeds.size
+    blocks := blocks.push <| .para #[
+      .bold #[.text "This site is not the whole library. "],
+      .text s!"It covers {claimCount}         {if claimCount == 1 then "result the project puts forward" else
+          "results the project puts forward"} and the {decls.size - claimCount} declarations their ",
+      .emph #[.text "statements"],
+      .text s!" rest on, out of {ctx.libraryDeclCount} the library exposes. Everything below counts         only those. What the proofs call, rather than what the statements are about, is not here —         which is most of a formalization, and none of what a reader has to take on faith."
+    ]
   -- The theorem count is exactly what the Theorems page lists — `declGroupOfFields` splits on the
   -- same condition `DeclInfo.isClaim` does — so the number is a link rather than a coincidence.
   -- The other two have no page of their own and stay plain.
@@ -1122,11 +1217,12 @@ private def mkLandingBlocks (rootPrefix : Name) (decls : Array DeclInfo) (ctx : 
   -- gate the Claims page itself is built behind, so this sentence cannot promise a page that does
   -- not exist. It sits here, between what the library holds and what it rests on, because it says
   -- which of the first is worth the second.
-  if let some form := claimedResults? ctx then
-    blocks := blocks.push <| .para #[
-      .text "Its authors say which results the project is for, in a ",
-      .code "formalization.yaml", .text s!": {form.mainResults.size} main \
-        {if form.mainResults.size == 1 then "result" else "results"}, listed on ",
+  if let some set := claimedResults? ctx then
+    blocks := blocks.push <| .para <| #[
+      .text "Its authors say which results the project is for"] ++
+      (if set.origin.isEmpty then #[] else #[.text s!", in {set.origin}"]) ++ #[
+      .text s!": {set.claims.size} main \
+        {if set.claims.size == 1 then "result" else "results"}, listed on ",
       .link #[.text "Claims"] "claims/", .text "."
     ]
   -- The toolchain is filtered out: `Init` and `Std` are not a dependency anyone chose, and counting
@@ -1185,7 +1281,7 @@ def mkRootPart (cfg : Cli) (rootPrefix : Name) (groups : Array GroupInfo)
         else (if ctx.diff?.isNone && ctx.provenance?.isNone then #[]
           else #[mkChangesPart ctx.diff? decls ctx])
         ++ (match claimedResults? ctx with
-            | some form => #[mkClaimsPart form decls ctx]
+            | some set => #[mkClaimsPart set decls ctx]
             | none => #[])
         ++ #[mkTheoremsPart decls groups ctx]
         ++ (if ctx.usesSpecs then #[mkSpecificationsPart decls ctx] else #[])
