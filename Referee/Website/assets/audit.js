@@ -251,9 +251,30 @@ document.addEventListener('DOMContentLoaded', function () {
     if (host) renderControl(host, control);
   }
 
+  /* The reader's note, dropped into the issue the button opens. The URL arrives from the build
+     already carrying the declaration, its source path and line, and a "Describe the issue" heading
+     with nothing under it (`issueUrlOf`); the note goes under that heading, which is where the
+     reader would have typed it by hand. Rebuilt through `URL` rather than by string surgery, so a
+     note containing `&` or `#` cannot tear the query apart. */
+  function issueHrefWith(base, note) {
+    const text = (note || '').trim();
+    if (!base || !text) return base;
+    try {
+      const u = new URL(base, window.location.href);
+      u.searchParams.set('body', (u.searchParams.get('body') || '') + text + '\n');
+      return u.toString();
+    } catch (_) {
+      return base;
+    }
+  }
+
   function renderControl(host, decl) {
     const name = decl.name;
     const meaning = decl.meaning || '';
+    /* Empty on a site built without `--repo-url`, and on the controls the graph mounts under its
+       cards: those are about a node, and a node payload carries no source location — see
+       `AuditControlData`. No URL, no button. */
+    const issueBase = decl.issueUrl || '';
     host.innerHTML = `
       <div class="audit-control">
         <!-- Titled because everything else on the page is derived from the library and this is not:
@@ -277,8 +298,13 @@ document.addEventListener('DOMContentLoaded', function () {
               ${v}</button>`).join('')}
           </div>
           <span class="audit-hint audit-keys"></span>
+          <!-- Out at the right margin, away from the verdicts: this one leaves the site. -->
+          ${issueBase
+            ? `<a class="decl-card-action audit-issue" href="${esc(issueBase)}"
+                  target="_blank" rel="noopener">Open issue</a>`
+            : ''}
         </div>
-        <textarea class="audit-note" rows="2"
+        <textarea class="audit-note voice" data-voice="reader" rows="2"
           placeholder="Note — what you would ask the author"></textarea>
         <p class="audit-stale"></p>
       </div>`;
@@ -292,7 +318,16 @@ document.addEventListener('DOMContentLoaded', function () {
       b.addEventListener('click', () => setVerdict(name, b.dataset.v, noteBox.value, meaning));
     });
 
-    const c = { host: host, name: name, meaning: meaning, noteBox: noteBox, stale: null };
+    /* The href is kept current as the note changes rather than rewritten when the button is
+       clicked: a link is opened in more ways than a click — a middle click, a modifier, the
+       keyboard, the context menu — and only some of them run a click handler first. */
+    const issueLink = host.querySelector('.audit-issue');
+    if (issueLink) noteBox.addEventListener('input', () => {
+      issueLink.href = issueHrefWith(issueBase, noteBox.value);
+    });
+
+    const c = { host: host, name: name, meaning: meaning, noteBox: noteBox, stale: null,
+      issueLink: issueLink, issueBase: issueBase };
     controls.push(c);
     if (band) band.observe(host);
     paintControls();
@@ -311,6 +346,9 @@ document.addEventListener('DOMContentLoaded', function () {
       // Not while the reader is typing in it, which would fight them for the caret.
       const note = noteOf(c.name);
       if (document.activeElement !== c.noteBox && c.noteBox.value !== note) c.noteBox.value = note;
+      // The box can also be filled from outside the reader's typing — an import, another tab, the
+      // same declaration's other control on this page — and the button carries whatever it holds.
+      if (c.issueLink) c.issueLink.href = issueHrefWith(c.issueBase, c.noteBox.value);
       // Guarded on the flag rather than re-set, so that setting one verdict does not rewrite forty
       // paragraphs of markup on a page showing a whole closure.
       const stale = isStale(c.name, c.meaning);
@@ -486,7 +524,8 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('audit-queries').innerHTML = queries.length
         ? `<ul class="audit-list">${queries.map(i => `<li class="audit-item">
             <a class="audit-name" href="${esc(decls[i].href)}"><code>${esc(names[i])}</code></a>
-            <span class="audit-note-text">${esc(noteOf(names[i])) || '<em>no note</em>'}</span>
+            <span class="audit-note-text voice" data-voice="reader">${
+              esc(noteOf(names[i])) || '<em>no note</em>'}</span>
           </li>`).join('')}</ul>`
         : '<p>None.</p>';
 

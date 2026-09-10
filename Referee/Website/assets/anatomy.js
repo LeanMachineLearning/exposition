@@ -60,7 +60,9 @@
     const doc = tip.querySelector('.anatomy-tip-doc');
     if (doc) {
       const rendered = document.createElement('div');
-      rendered.className = 'anatomy-tip-doc';
+      // Quoted, as the docstring is wherever else it appears: the tooltip is the author's words.
+      rendered.className = 'anatomy-tip-doc voice';
+      rendered.setAttribute('data-voice', 'authors');
       if (typeof marked !== 'undefined' && marked && typeof marked.parse === 'function') {
         rendered.innerHTML = marked.parse(doc.textContent);
       } else {

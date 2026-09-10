@@ -1067,8 +1067,11 @@ document.addEventListener('DOMContentLoaded', () => {
       ? `<pre class="graph-card-code">${esc(signature)}${
           up.value ? `\n  :=\n${esc(up.value)}` : ''}</pre>`
       : '';
+    /* The docstring is the author's, the "No docstring." is the tool's: only the first is quoted.
+       See `Block.voice` — the site sets what a person wrote in a reading face and what it derived
+       itself in the interface face, here as everywhere. */
     const doc = docText
-      ? `<p class="graph-card-doc">${esc(docText)}</p>`
+      ? `<p class="graph-card-doc voice" data-voice="authors">${esc(docText)}</p>`
       : '<p class="graph-card-doc graph-card-nodoc">No docstring.</p>';
     return sig + doc;
   }
@@ -1143,10 +1146,6 @@ document.addEventListener('DOMContentLoaded', () => {
      (`«term_<_»`, for one), which would otherwise be swallowed as markup. */
   function entryHtml(n) {
     const up = (window.RefereeUpstream || {})[n.id] || {};
-    // Suppressed when it is the name again: a module node's name *is* its module path, and
-    // "Module · Online.Bandit.Regret" under a heading reading `Online.Bandit.Regret` says nothing.
-    const module = n.moduleName || up.module || '';
-    const where = module === n.id ? '' : module;
     const warn = n.status === 'sorry'
       ? '<p class="graph-card-warn">⚠ depends on <code>sorry</code></p>'
       : n.status === 'untrusted'
@@ -1159,18 +1158,24 @@ document.addEventListener('DOMContentLoaded', () => {
       ? `<p class="graph-card-cut">✂ ${esc(views[viewIx].unexpandedNote
           || 'Drawn without its dependencies: this view deliberately stops here.')}</p>`
       : '';
-    /* The full name and the module, above the card. The card itself carries neither: on its own
-       page the `<h1>` is the name, and here nothing else would say which node this is — which
-       matters more in a stack of forty than it ever did for one. */
+    /* The full name above the card, and the link to its page on the same line. The card itself
+       carries no name: on its own page the `<h1>` is the name, and here nothing else would say
+       which node this is — which matters more in a stack of forty than it ever did for one.
+
+       The kind and the module used to sit under the name. Both are already in the picture the
+       reader just clicked — the node's shape and colour say what kind it is, its tooltip says the
+       module — and a line of metadata between the name and the card pushed the thing the reader
+       asked for further down forty times over. */
     return `
       <section class="graph-card-entry" data-node="${esc(n.id)}">
         <div class="graph-card-head">
-          <h2 class="graph-card-name"><code>${esc(n.id)}</code></h2>
-          <p class="graph-card-meta">${esc(n.kind)}${where ? ` · <code>${esc(where)}</code>` : ''}</p>
+          <div class="graph-card-titlebar">
+            <h2 class="graph-card-name"><code>${esc(n.id)}</code></h2>
+            ${n.href
+              ? `<a class="decl-card-action" href="${esc(n.href)}">Open ${UNIT}</a>` : ''}
+          </div>
           ${warn}
           ${cut}
-          ${n.href
-            ? `<p><a class="decl-card-action" href="${esc(n.href)}">Open ${UNIT}</a></p>` : ''}
         </div>
         <div class="graph-card-body" ${loadable(n) ? `data-href="${esc(n.href)}"` : ''}
           >${summaryHtml(n)}</div>

@@ -127,6 +127,46 @@ def declGroupOfFields (kindLabel : String) (isLemma isInstanceDecl : Bool) : Str
   else "definition"
 
 
+/- Text somebody wrote, marked as such (`Block.voice`).
+
+The site's one typographic rule about *authorship*: what a person wrote is set in a reading face on
+a quoted ground, and what the tool derived from the compiled library stays in the interface face.
+The rule is carried by `data-voice` rather than by a class per writer, so that the CSS says once
+what a quoted voice looks like and each writer only adds what is different about it — which is what
+makes room for the voices that are not here yet.
+
+`wrapBlocks` rather than a class on the paragraphs: a docstring is any number of blocks — paragraphs,
+lists, code, math — and every one of them is quoted, including the ones Verso will generate from
+Markdown that nothing here can see.
+
+(A plain comment, not a docstring: `block_extension` does not take one.) -/
+block_extension Block.voice (_payload : VoiceData) where
+  data := ToJson.toJson _payload
+  traverse _ _ _ _ := pure none
+  toTeX := some fun _goI goB _id _data contents => contents.mapM goB
+  toHtml := some fun _goI goB _id data contents => do
+    let .ok (payload : VoiceData) := FromJson.fromJson? data
+      | Verso.reportError s!"Could not decode voice data from {data.compress}"
+        pure .empty
+    let label : Html :=
+      if payload.label.isEmpty then .empty
+      else {{<p class="voice-tag">{{payload.label}}</p>}}
+    pure {{
+      <div class="voice voice-block" data-voice={{payload.voice}}>
+        {{label}}
+        <div class="voice-body">{{← contents.mapM goB}}</div>
+      </div>
+    }}
+
+/-- Marks a run of blocks as somebody's own words rather than the tool's — see `Block.voice`.
+
+`label` names the writer above the block; leave it empty where the block is one of many and a
+label on each would be noise, as in a listing row or a hover. Empty in, empty out: there is nothing
+to attribute when there is no text, and an empty quoted block would draw a rule around nothing. -/
+def quotedBlocks (voice : String) (label : String) (blocks : Array (Block Manual)) :
+    Array (Block Manual) :=
+  if blocks.isEmpty then #[] else #[.other (Block.voice { voice, label }) blocks]
+
 block_extension Block.declCard (_payload : DeclCardData) where
   data := ToJson.toJson _payload
   traverse _ _ _ _ := pure none
@@ -258,7 +298,7 @@ lifted out of a docstring, and docstrings write names in backticks. -/
 private def glossHtml (gloss : String) : Html :=
   let rendered := (gloss.splitOn "`").toArray.zipIdx.map fun (part, i) =>
     if i % 2 == 1 then {{<code>{{part}}</code>}} else Html.text true part
-  {{<span class="anatomy-gloss">{{rendered}}</span>}}
+  {{<span class="anatomy-gloss voice" data-voice="authors">{{rendered}}</span>}}
 
 /-- The sentence after a row in the expanded view: one line about its head constant, linked to the
 constant's page where the project declares it. The constant is not named — the binder's type on the
@@ -334,7 +374,8 @@ private def anatomyTipHtml (tip : AnatomyTip) : Html :=
     if tip.signature.isEmpty then {{<code class="anatomy-tip-sig">{{tip.head}}</code>}}
     else {{<code class="anatomy-tip-sig">{{s!"{tip.head} : {tip.signature}"}}</code>}}
   let doc : Html :=
-    if tip.doc.isEmpty then .empty else {{<pre class="anatomy-tip-doc">{{tip.doc}}</pre>}}
+    if tip.doc.isEmpty then .empty
+    else {{<pre class="anatomy-tip-doc voice" data-voice="authors">{{tip.doc}}</pre>}}
   let link : Html :=
     if tip.href.isEmpty then .empty
     else {{<a class="anatomy-tip-link" href={{tip.href}}>"Go to its page"</a>}}
@@ -656,7 +697,8 @@ block_extension Block.claimList (_payload : ClaimListData) where
           <span class="audit-meta" data-slot="coverage">{{depsText}}</span>
           <span data-slot="status"></span>
           {{flag}}
-          {{if doc.isEmpty then .empty else {{<div class="audit-doc">{{doc}}</div>}}}}
+          {{if doc.isEmpty then .empty
+            else {{<div class="audit-doc voice" data-voice="authors">{{doc}}</div>}}}}
         </li>
       }}
     pure {{<ul class="audit-list">{{items}}</ul>}}

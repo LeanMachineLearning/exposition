@@ -196,10 +196,12 @@ it used to, and once the module pages stopped showing cards it pointed at the pa
 on. -/
 private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
   Id.run do
-    let issueUrl := issueUrlOf ctx.repoUrl? decl.name decl.source?
-    let sourceUrl := sourceUrlOf ctx.repoUrl? decl.source? ctx.sourceRef
     let mut blocks : Array (Block Manual) := #[]
-    blocks := blocks ++ decl.docBlocks
+    -- Quoted, not printed: the docstring is the one thing on this card the tool did not write, and
+    -- a reader deciding how much to believe it has to know that before reading it rather than
+    -- after. The note below is the tool's own, so it stays outside the quotation — an absence is
+    -- something only the tool can report.
+    blocks := blocks ++ quotedBlocks "authors" "From the authors" decl.docBlocks
     let hasDoc := !decl.docBlocks.isEmpty
     if !hasDoc then
       blocks := blocks.push (.para #[.emph #[.text "No docstring."]])
@@ -237,15 +239,18 @@ private def mkDeclBlock (decl : DeclInfo) (ctx : SiteContext) : Block Manual :=
     else
       blocks := blocks.push (.para #[.bold #[.text "Code"]])
       blocks := blocks.push codeBlock
-    -- The proof, then the links. Nothing about the declaration's dependencies: "Type uses" and
+    -- The proof closes the card. Nothing about the declaration's dependencies: "Type uses" and
     -- "Body uses" are both drawn in the graph directly below, and a second rendering of the same
     -- fact in the place a reader looks for what the declaration *says* is worse than none. "Used by"
     -- has no second home but answers a question this page is not for: who else depends on this is a
     -- property of the library, not of the claim.
+    --
+    -- Nor an "Actions: Source · Open Issue" line. It closed every card with two links that are not
+    -- what the card is for — one into GitHub's file view, one into a prefilled issue form. The URLs
+    -- themselves are not gone: `sourceUrlOf` and `issueUrlOf` still build them, and the issue link
+    -- is to come back as a button of its own rather than as a line of prose under the proof.
     if let some proof := decl.proofText? then
       blocks := blocks.push <| .other (Block.details { summary := "Proof" }) #[.code proof]
-    if let some block := mkLinkParagraph sourceUrl issueUrl then
-      blocks := blocks.push block
     let cardData : DeclCardData := {
       anchorId := anchorIdOf decl.name
       kindLabel := decl.kind.label
@@ -812,6 +817,7 @@ private def mkAuditControlBlocks (decl : DeclInfo) (ctx : SiteContext) : Array (
       name := decl.name.toString
       project := ctx.rootPrefix.toString
       meaning := meaningKeyOf decl
+      issueUrl := (issueUrlOf ctx.repoUrl? decl.name decl.source?).getD ""
     }) #[]]
 
 /-- The claims listing for `claims`, in the order given, with each row's docstring inlined.
@@ -830,6 +836,8 @@ def mkClaimListBlock (claims : Array DeclInfo) (ctx : SiteContext) : Option (Blo
     dependsOnSorry := decl.dependsOnSorry
     docLength := decl.docBlocks.size
     : ClaimRow })
+  -- Not wrapped per row here: `Block.claimList` splits this flat run back into one docstring per
+  -- row and marks each as it draws it, since only the listing knows where one row's blocks end.
   let docs := listed.flatMap (·.docBlocks)
   if rows.isEmpty then none else some (.other (Block.claimList { rows }) docs)
 

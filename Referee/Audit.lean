@@ -141,6 +141,11 @@ structure AuditControlData where
   project : String := ""
   /-- What this declaration means now (`meaningKeyOf`), recorded alongside any verdict set here. -/
   meaning : String := ""
+  /-- A prefilled issue for this declaration (`issueUrlOf`), empty without `--repo-url`. The control
+  offers it beside the verdicts and appends whatever is in the note box, so that a query and the
+  question it raises are one gesture rather than two. Built here rather than in the browser because
+  the source path and line are what make the issue worth filing, and only the build knows them. -/
+  issueUrl : String := ""
 deriving Repr, Inhabited, ToJson, FromJson
 
 /-- A fingerprint of the collected declarations: their names paired with what they meant.

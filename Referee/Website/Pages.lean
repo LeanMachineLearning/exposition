@@ -62,7 +62,7 @@ def mkProjectOverviewBlocks (readmeText : Option String) (repoUrl? : Option Stri
   if body.trimAscii.isEmpty then return #[]
   #[.other (Block.sectionHeading "Project overview") #[]]
     ++ mkSourceParagraph "README.md" (repoFileUrlOf repoUrl? "README.md")
-    ++ markdownToBlocks body
+    ++ quotedBlocks "authors" "From the project's README" (markdownToBlocks body)
 
 
 /-- Builds a module page from its declarations. -/
@@ -77,7 +77,7 @@ private def mkModulePart (moduleInfo : ModuleInfo) (ctx : SiteContext) : Part Ma
     }
     -- An index, not a transcript: one line per declaration rather than a full card each. Cards
     -- here duplicated every declaration page and made the largest module pages several megabytes.
-    content := moduleInfo.docBlocks ++ #[
+    content := quotedBlocks "authors" "From the authors" moduleInfo.docBlocks ++ #[
       .para #[
         .text "Module ",
         .code moduleInfo.name.toString,
