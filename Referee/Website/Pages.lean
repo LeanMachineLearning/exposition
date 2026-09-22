@@ -72,7 +72,7 @@ private def mkModulePart (moduleInfo : ModuleInfo) (ctx : SiteContext) : Part Ma
     titleString := moduleInfo.path
     metadata := some {
       file := some s!"module-{slugify moduleInfo.path}"
-      tag := some (.provided (moduleTagOf moduleInfo.name))
+      tag := some (moduleTagOf moduleInfo.name)
       shortTitle := some moduleInfo.path
     }
     -- An index, not a transcript: one line per declaration rather than a full card each. Cards
@@ -144,7 +144,7 @@ def mkGroupPart (group : GroupInfo) (ctx : SiteContext) : Part Manual :=
     metadata := some {
       file := some s!"chapter-{slugify group.key}"
       shortTitle := some title
-      tag := some (.provided (chapterTagOf group.key))
+      tag := some (chapterTagOf group.key)
     }
     -- Lists its modules itself rather than leaving that to Verso's automatic sub-page table of
     -- contents, which is switched off (see `renderConfig`) because on every other page it merely
@@ -248,7 +248,7 @@ private def mkTheoremsPart (decls : Array DeclInfo) (groups : Array GroupInfo) (
     metadata := some {
       file := some "theorems"
       shortTitle := some "Theorems"
-      tag := some (.provided "theorems")
+      tag := some "theorems"
       number := false
     }
     content := #[
@@ -497,7 +497,7 @@ private def mkClaimsPart (set : ClaimSet) (decls : Array DeclInfo) (ctx : SiteCo
     metadata := some {
       file := some "claims"
       shortTitle := some "Claims"
-      tag := some (.provided "claims")
+      tag := some "claims"
       number := false
     }
     content := blocks
@@ -755,7 +755,7 @@ private def mkChangesPart (report? : Option DiffReport) (decls : Array DeclInfo)
     metadata := some {
       file := some "changes"
       shortTitle := some "Changes"
-      tag := some (.provided "changes")
+      tag := some "changes"
       number := false
     }
     content := pickerBlocks ++ baselineBlocks
@@ -833,7 +833,7 @@ private def mkSpecificationsPart (decls : Array DeclInfo) (ctx : SiteContext) : 
     metadata := some {
       file := some "specifications"
       shortTitle := some "Specifications"
-      tag := some (.provided "specifications")
+      tag := some "specifications"
       number := false
     }
     content := blocks
@@ -880,7 +880,7 @@ private def mkBrowsePart (decls : Array DeclInfo) (ctx : SiteContext) : Part Man
     metadata := some {
       file := some "browse"
       shortTitle := some "Browse"
-      tag := some (.provided "browse")
+      tag := some "browse"
       number := false
     }
     content := #[
@@ -1157,7 +1157,7 @@ private def mkAssumptionsPart (decls : Array DeclInfo) (ctx : SiteContext) : Par
     metadata := some {
       file := some "sorries"
       shortTitle := some "Sorries"
-      tag := some (.provided "sorries")
+      tag := some "sorries"
       number := false
     }
     content := blocks

@@ -96,7 +96,7 @@ private def stubGroupPart (group : GroupInfo) : Part Manual :=
     metadata := some {
       file := some s!"chapter-{slugify group.key}"
       shortTitle := some title
-      tag := some (.provided (chapterTagOf group.key))
+      tag := some (chapterTagOf group.key)
     }
     content := #[]
     subParts := #[]

@@ -148,7 +148,7 @@ def collectData (cfg : Cli) (projectDir : System.FilePath) (ws : Lake.Workspace)
   let decls := decls |> dropUnsafeDeps |> attachReverseDeps
     |> attachSpecifiedBy |> attachCharacterizes
     |> attachUpstreamPackages
-  let tAttach ← collectPhase "graph passes over the collected declarations" tDecls
+  let _ ← collectPhase "graph passes over the collected declarations" tDecls
   -- Semantic hashes, when a `semantic_hash export` file was given. Coverage is reported rather
   -- than assumed: a hash file collected against a different revision of the project silently
   -- covers almost nothing, and the count is the only thing that says so before the diff does.

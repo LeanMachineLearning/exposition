@@ -924,7 +924,7 @@ private def mkMinimalFilePart (decl : DeclInfo) (ctx : SiteContext) : Option (Pa
       metadata := some {
         file := some "minimal"
         shortTitle := some "Minimal file"
-        tag := some (.provided (minimalFileTagOf decl.name))
+        tag := some (minimalFileTagOf decl.name)
         number := false
       }
       content := #[
@@ -1182,7 +1182,7 @@ def mkDeclPart (decl : DeclInfo) (ctx : SiteContext) : Part Manual :=
       shortTitle := some decl.name.getString!
       -- Explicit, so Verso does not derive a tag from the title: names differing only by a
       -- non-ASCII character (`induction_on₂` vs `induction_on₃`) derive the same one.
-      tag := some (.provided (declTagOf decl.name))
+      tag := some (declTagOf decl.name)
       number := false
     }
     content := blocks

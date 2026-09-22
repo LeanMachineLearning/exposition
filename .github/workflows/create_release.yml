@@ -1,0 +1,53 @@
+name: Create Release
+
+on:
+  push:
+    branches:
+      - 'main'
+      - 'master'
+    paths:
+      - 'lean-toolchain'
+
+jobs:
+  lean-release-tag:
+    name: Add Lean release tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # For `gh workflow run` below.
+      actions: write
+    steps:
+    - name: lean-release-tag action
+      uses: leanprover-community/lean-release-tag@9ca7ed09e240259871327bfc3a3a8d8c4bcb41aa # 2025-05-22
+      with:
+        before: ${{ github.event.before }}
+        after: ${{ github.event.after }}
+        do-release: true
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # The action above pushes the tag with GITHUB_TOKEN, and GitHub starts no workflow run for an
+    # event caused by that token. So the `push: tags` trigger in publish_referee_binary.yml never
+    # sees the tag, and the release it created would sit there with no binary — which breaks every
+    # consumer, since `ci/download-referee.sh` resolves `@main` to the most recent release.
+    #
+    # `workflow_dispatch` is the one exception to that rule, so the publish workflow is dispatched
+    # at the new tag explicitly. Its upload is idempotent (`--clobber`), so dispatching for a
+    # toolchain that had already been tagged does no harm.
+    - name: Publish the binary for the new tag
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # The tagging action checked the repository out at this commit, so the toolchain file is
+        # here and `origin` is configured.
+        toolchain="$(tr -d '[:space:]' < lean-toolchain)"
+        if [[ "$toolchain" != leanprover/lean4:* ]]; then
+          echo "Not on a leanprover/lean4 toolchain ($toolchain); nothing was tagged, so nothing to publish."
+          exit 0
+        fi
+        tag="${toolchain#leanprover/lean4:}"
+        if ! git ls-remote --tags --exit-code origin "$tag" >/dev/null; then
+          echo "The tagging step did not produce a tag named $tag; nothing to publish." >&2
+          exit 1
+        fi
+        echo "Dispatching publish_referee_binary.yml at $tag"
+        gh workflow run publish_referee_binary.yml --ref "$tag"

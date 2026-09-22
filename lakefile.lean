@@ -5,7 +5,7 @@ package Referee where
   version := v!"0.1.0"
   leanOptions := #[⟨`autoImplicit, false⟩]
 
-require verso from git "https://github.com/leanprover/verso" @ "v4.34.0-rc2"
+require verso from git "https://github.com/leanprover/verso" @ "v4.34.0"
 
 /-- The `@[specifies]` and `@[characterization]` attributes, in a *separate, dependency-free
 package* rather than a library of this one. A project that wants to annotate its specifications must
@@ -15,7 +15,7 @@ own, with its own checks.
 This tool depends on it for the other end of the same wire: reading the annotations back out of a
 target project needs the environment extension registered in *this* process, since imported
 extension entries are matched to registered extensions by name and silently dropped otherwise. -/
-require Characterization from git "https://github.com/RemyDegenne/characterization" @ "main"
+require Characterization from git "https://github.com/RemyDegenne/characterization" @ "v4.34.0"
 
 /-- Declaration-dependency analysis, in a *separate, dependency-free package* rather than a library
 of this one, for the same reason as `Characterization`: it is useful on its own to any project that
@@ -25,7 +25,7 @@ this tool's build.
 That independence is why it is a repository of its own rather than a subdirectory here, and its own
 tests and proofs went with it. This tool is one such consumer — `Referee/Collect.lean` delegates
 every dependency computation to it — but it is not a privileged one. -/
-require MeaningGraph from git "https://github.com/RemyDegenne/meaning-graph" @ "main"
+require MeaningGraph from git "https://github.com/RemyDegenne/meaning-graph" @ "v4.34.0"
 
 /-- Standalone-file extraction: one declaration turned into a file that compiles on its own, its
 dependencies inlined and its proofs `sorry`ed. A *separate, dependency-free package* for the same
@@ -39,7 +39,7 @@ something to say which declarations to extract and what each one's closure is.
 
 That independence is why it is a repository of its own rather than a subdirectory here, and its own
 checks went with it. -/
-require ChallengeGen from git "https://github.com/RemyDegenne/challenge-gen" @ "main"
+require ChallengeGen from git "https://github.com/RemyDegenne/challenge-gen" @ "v4.34.0"
 
 /-- Junk-value analysis — where a definition rests on the value a total function returns outside the
 domain its name suggests — as a *separate, dependency-free package*, for the same reason as
